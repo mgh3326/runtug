@@ -1,0 +1,4 @@
+/dist/
+/runtug
+*.test
+coverage.out

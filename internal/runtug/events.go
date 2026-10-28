@@ -1,0 +1,168 @@
+package runtug
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+)
+
+type Event struct {
+	Kind      string         `json:"kind"`
+	CreatedAt string         `json:"created_at"`
+	TS        string         `json:"ts"`
+	Payload   map[string]any `json:"payload"`
+	when      time.Time
+	name      string
+}
+type Job struct {
+	ID                                                                                                string
+	Owner, Parent, Role, Label, Pane, Tab, Task, Family, Profile, Effort, Report, HubLane, Machine, T string
+	Keep, Terminal, Reaped                                                                            bool
+	At                                                                                                time.Time
+	Receipt                                                                                           map[string]any
+	Events                                                                                            []Event
+}
+
+func (a *App) events(id string) ([]Event, error) {
+	if !validID(id) {
+		return nil, fail(2, "invalid job id")
+	}
+	dir := filepath.Join(a.Jobs, id, "events")
+	entries, e := os.ReadDir(dir)
+	if e != nil {
+		return nil, e
+	}
+	var out []Event
+	for _, ent := range entries {
+		if ent.IsDir() || filepath.Ext(ent.Name()) != ".json" {
+			continue
+		}
+		info, e := ent.Info()
+		if e != nil {
+			return nil, e
+		}
+		b, e := os.ReadFile(filepath.Join(dir, ent.Name()))
+		if e != nil {
+			return nil, e
+		}
+		var ev Event
+		if e = json.Unmarshal(b, &ev); e != nil {
+			return nil, fail(75, "unreadable job event %s", ent.Name())
+		}
+		if ev.Kind == "" {
+			return nil, fail(75, "event kind missing")
+		}
+		ev.name = ent.Name()
+		ev.when = info.ModTime()
+		for _, s := range []string{ev.CreatedAt, ev.TS} {
+			if t, e := time.Parse(time.RFC3339Nano, s); e == nil {
+				ev.when = t
+				break
+			}
+		}
+		out = append(out, ev)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].when.Equal(out[j].when) {
+			return out[i].name < out[j].name
+		}
+		return out[i].when.Before(out[j].when)
+	})
+	return out, nil
+}
+func (a *App) job(id string) (Job, error) {
+	evs, e := a.events(id)
+	j := Job{ID: id, Events: evs}
+	if e != nil {
+		return j, e
+	}
+	for _, ev := range evs {
+		p := ev.Payload
+		switch ev.Kind {
+		case "job.claim", "job.claimed", "job.reclaim":
+			j.Owner = str(p, "owner_lane")
+			j.Parent = str(p, "parent_lane")
+			if r := str(p, "role"); r != "" {
+				if r == "builder" || r == "captain" || j.Role == "" {
+					j.Role = r
+				}
+			}
+			j.Task = scalar(p["task_id"])
+			j.T = str(p, "t_level")
+			j.Terminal = false
+			j.Reaped = false
+		case "job.spawned":
+			j.Receipt = p
+			j.Pane = str(p, "pane_id")
+			j.Tab = str(p, "tab_id")
+			j.Label = str(p, "label")
+			if j.Label == "" {
+				j.Label = str(p, "agent_label")
+			}
+			j.Family = str(p, "family")
+			j.Profile = str(p, "profile")
+			j.Effort = str(p, "effort")
+			j.Report = str(p, "report")
+			j.HubLane = str(p, "hub_lane")
+			j.Machine = str(p, "hub_lane_machine")
+			j.Terminal = false
+			j.Reaped = false
+			if j.Task == "" {
+				j.Task = scalar(p["task_id"])
+			}
+		case "job.reprompted":
+			j.Terminal = false
+		case "job.completed", "job.joined", "job.revoked", "job.handed_off":
+			j.Terminal = true
+			j.At = ev.when
+		case "job.reaped":
+			j.Reaped = true
+		}
+		if boolean(p, "keep", false) {
+			j.Keep = true
+		}
+	}
+	if j.Receipt == nil && j.Task == "" {
+		return j, fail(75, "no claim or receipt for job %s", id)
+	}
+	return j, nil
+}
+func scalar(v any) string {
+	switch n := v.(type) {
+	case string:
+		return n
+	case float64:
+		b, _ := json.Marshal(n)
+		return string(b)
+	}
+	return ""
+}
+func (a *App) event(ctx context.Context, id, kind string, p map[string]any) error {
+	b, e := encode(p)
+	if e != nil {
+		return e
+	}
+	return a.must(ctx, "arbiter", "event", "--job", id, "--kind", kind, "--payload-json", string(b))
+}
+
+type DurableJob struct {
+	State   string         `json:"state"`
+	Owner   string         `json:"owner_lane"`
+	Label   string         `json:"agent_label"`
+	Receipt map[string]any `json:"receipt"`
+}
+
+func (a *App) durable(ctx context.Context, id string) (DurableJob, error) {
+	r := a.call(ctx, "arbiter", "job-get", "--job", id, "--json")
+	var j DurableJob
+	if e := check(r, "arbiter job-get"); e != nil {
+		return j, e
+	}
+	if e := json.Unmarshal([]byte(r.Out), &j); e != nil || j.State == "" {
+		return j, fail(75, "unreadable durable job %s", id)
+	}
+	return j, nil
+}
