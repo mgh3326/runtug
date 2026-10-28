@@ -1,7 +1,6 @@
 package runtug
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -172,7 +171,7 @@ func (c Config) hubArgs(role string) []string {
 	}
 	return a
 }
-func typeError(key string) error          { return fmt.Errorf("%s has an invalid type", key) }
+func typeError(key string) error          { return fail(70, "%s has an invalid type", key) }
 func unmarshalTOML(b []byte, v any) error { return toml.Unmarshal(b, v) }
 func (a *App) controlHubArgs(operator bool) []string {
 	token := str(a.Config.Hub, "hub_token_env")

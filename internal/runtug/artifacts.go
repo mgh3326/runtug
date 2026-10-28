@@ -290,6 +290,22 @@ func (a *App) moveInventory(ctx context.Context, src, target, root string, rows 
 		if e = check(r, "Drive eviction"); e != nil {
 			return e
 		}
+		status := a.Runner.Run(ctx, Command{Name: helper, Args: []string{"status"}, Input: strings.Join(paths, "\n") + "\n"})
+		if e = check(status, "Drive eviction status"); e != nil {
+			return e
+		}
+		evicted := map[string]bool{}
+		for _, line := range strings.Split(status.Out, "\n") {
+			flag, path, ok := strings.Cut(line, "\t")
+			if ok {
+				evicted[path] = flag == "10"
+			}
+		}
+		for _, path := range paths {
+			if !evicted[path] {
+				return fail(4, "Drive copy eviction unconfirmed; originals retained")
+			}
+		}
 		if scratch != "" {
 			if e = os.RemoveAll(scratch); e != nil {
 				return e
@@ -396,7 +412,7 @@ func (a *App) confirmUpload(ctx context.Context, paths []string) error {
 		fresh := false
 		entries, _ := os.ReadDir(logs)
 		for _, ent := range entries {
-			if info, e := ent.Info(); e == nil && !ent.IsDir() && a.Now().Sub(info.ModTime()) <= stale {
+			if info, e := ent.Info(); e == nil && !ent.IsDir() && a.Now().Sub(info.ModTime()) <= stale && info.ModTime().Sub(a.Now()) <= time.Minute {
 				fresh = true
 			}
 		}
@@ -609,6 +625,9 @@ func (a *App) artifactSweep(ctx context.Context, args []string) error {
 		if alive {
 			continue
 		}
+		if a.watchActive(j.ID) {
+			continue
+		}
 		r := a.call(ctx, "handoffkeep", "tasks", "show", j.Task)
 		if r.Code != 0 {
 			continue
@@ -745,6 +764,9 @@ func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRe
 		if e = a.putRecord(ctx, key, rec); e != nil {
 			return e
 		}
+		if e = a.sweepStillSafe(ctx, j); e != nil {
+			return e
+		}
 		if e = noSymlinks(path); e != nil {
 			return e
 		}
@@ -755,6 +777,46 @@ func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRe
 		if e = os.Remove(path); e != nil {
 			return e
 		}
+	}
+	return nil
+}
+func (a *App) watchActive(id string) bool {
+	path := filepath.Join(a.Jobs, id, ".runtug-watch.lock")
+	f, e := secureOpen(path, false)
+	if os.IsNotExist(e) {
+		_, e = os.Stat(filepath.Join(a.Jobs, id, "completion-sentinel.pid"))
+		return e == nil
+	}
+	if e != nil {
+		return true
+	}
+	defer f.Close()
+	return !tryLock(f)
+}
+func (a *App) sweepStillSafe(ctx context.Context, j Job) error {
+	latest, e := a.job(j.ID)
+	if e != nil {
+		return e
+	}
+	if !latest.Terminal || latest.Keep || a.watchActive(j.ID) {
+		return fail(75, "job or watcher changed during sweep")
+	}
+	agents, e := a.agents(ctx)
+	if e != nil {
+		return e
+	}
+	for _, ag := range agents {
+		if ag.Pane == latest.Pane {
+			return fail(75, "pane present during sweep")
+		}
+	}
+	r := a.call(ctx, "handoffkeep", "tasks", "show", j.Task)
+	if e = check(r, "sweep task recheck"); e != nil {
+		return e
+	}
+	var t struct{ State string }
+	if json.Unmarshal([]byte(r.Out), &t) != nil || !slices.Contains([]string{"merged", "dropped"}, t.State) {
+		return fail(75, "task reopened during sweep")
 	}
 	return nil
 }

@@ -48,7 +48,7 @@ func TestArtifactSweepConfirmationAndHashGates(t *testing.T) {
 		apply, mutate    bool
 		wantExist        bool
 		wantCode         int
-	}{{"preview", "drive_confirmed", "", false, false, true, 0}, {"unconfirmed", "running", "", true, false, true, 0}, {"hash differs", "drive_confirmed", "wrong", true, false, true, 0}, {"confirmed", "drive_confirmed", "", true, false, false, 0}, {"changed during record", "drive_confirmed", "", true, true, true, 75}} {
+	}{{"preview", "drive_confirmed", "", false, false, true, 0}, {"unconfirmed", "running", "", true, false, true, 0}, {"hash differs", "drive_confirmed", "wrong", true, false, true, 0}, {"confirmed", "drive_confirmed", "", true, false, false, 0}, {"changed during record", "drive_confirmed", "", true, true, true, 75}, {"task reopened", "drive_confirmed", "", true, false, true, 75}} {
 		t.Run(tt.name, func(t *testing.T) {
 			a := testApp(t)
 			f := ledgerRunner(t, a)
@@ -73,16 +73,23 @@ func TestArtifactSweepConfirmationAndHashGates(t *testing.T) {
 			body, _ := json.Marshal(rec)
 			doc, _ := json.Marshal(map[string]string{"body": string(body)})
 			original := f.Do
+			reopened := false
 			f.Do = func(c Command) Result {
 				if c.Name == "handoffkeep" {
 					switch strings.Join(c.Args[:2], " ") {
 					case "tasks show":
+						if reopened {
+							return Result{Out: `{"state":"reopened","project":"Example"}`}
+						}
 						return Result{Out: `{"state":"merged","project":"Example"}`}
 					case "doc list":
 						return Result{Out: `[{"key":"artifacts/Example/42/j/dataset"}]`}
 					case "doc get":
 						return Result{Out: string(doc)}
 					case "doc put":
+						if tt.name == "task reopened" {
+							reopened = true
+						}
 						if tt.mutate {
 							if e := os.WriteFile(path, []byte("changed"), 0600); e != nil {
 								t.Fatal(e)
