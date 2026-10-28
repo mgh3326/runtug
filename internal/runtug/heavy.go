@@ -55,6 +55,28 @@ func envInt(key string, def int) (int, error) {
 	}
 	return n, nil
 }
+func (a *App) loadRatio(ctx context.Context) (float64, error) {
+	var text string
+	if runtime.GOOS == "linux" {
+		b, e := os.ReadFile("/proc/loadavg")
+		if e != nil {
+			return 0, e
+		}
+		text = string(b)
+	} else {
+		r := a.call(ctx, "sysctl", "-n", "vm.loadavg")
+		if e := check(r, "load measurement"); e != nil {
+			return 0, e
+		}
+		text = r.Out
+	}
+	fields := strings.Fields(strings.Trim(text, "{} \n"))
+	if len(fields) < 2 {
+		return 0, fail(70, "host load unavailable")
+	}
+	load, e := strconv.ParseFloat(fields[1], 64)
+	return load / float64(runtime.NumCPU()), e
+}
 func (a *App) heavy(ctx context.Context, args []string) error {
 	host, _ := os.Hostname()
 	base := os.Getenv("WRK_HEAVY_LOCK")
@@ -201,6 +223,7 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 		}
 	}
 	cmd := exec.CommandContext(ctx, "nice", append([]string{"-n", "10"}, args...)...)
+	holdStart := a.Now()
 	cmd.Stdout = a.Out
 	cmd.Stderr = a.Err
 	cmd.ExtraFiles = []*os.File{held}
@@ -212,7 +235,7 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 			rc = x.ExitCode()
 		}
 	}
-	record := map[string]any{"ts": a.Now().UTC().Format(time.RFC3339Nano), "kind": "run", "pid": os.Getpid(), "class": class, "slot": slot, "limit": limit, "wait_s": a.Now().Sub(start).Seconds(), "rc": rc}
+	record := map[string]any{"ts": a.Now().UTC().Format(time.RFC3339Nano), "kind": "run", "pid": os.Getpid(), "class": class, "slot": slot, "limit": limit, "wait_s": holdStart.Sub(start).Seconds(), "hold_s": a.Now().Sub(holdStart).Seconds(), "rc": rc}
 	if nested {
 		record["kind"] = "nested"
 	}

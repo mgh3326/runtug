@@ -3,6 +3,8 @@ package runtug
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"slices"
@@ -108,7 +110,59 @@ func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[s
 }
 func encode(v any) ([]byte, error) { return json.Marshal(v) }
 func decode(b []byte, v any) error {
+	if e := uniqueJSON(b); e != nil {
+		return e
+	}
 	d := json.NewDecoder(strings.NewReader(string(b)))
 	d.DisallowUnknownFields()
 	return d.Decode(v)
+}
+func uniqueJSON(b []byte) error {
+	d := json.NewDecoder(strings.NewReader(string(b)))
+	var value func() error
+	value = func() error {
+		token, e := d.Token()
+		if e != nil {
+			return e
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delim {
+		case '{':
+			seen := map[string]bool{}
+			for d.More() {
+				k, e := d.Token()
+				if e != nil {
+					return e
+				}
+				key, ok := k.(string)
+				if !ok || seen[key] {
+					return fmt.Errorf("duplicate or invalid JSON key %q", key)
+				}
+				seen[key] = true
+				if e = value(); e != nil {
+					return e
+				}
+			}
+		case '[':
+			for d.More() {
+				if e = value(); e != nil {
+					return e
+				}
+			}
+		default:
+			return fmt.Errorf("unexpected JSON delimiter")
+		}
+		_, e = d.Token()
+		return e
+	}
+	if e := value(); e != nil {
+		return e
+	}
+	if _, e := d.Token(); e != io.EOF {
+		return fmt.Errorf("trailing JSON data")
+	}
+	return nil
 }

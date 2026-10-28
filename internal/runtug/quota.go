@@ -6,6 +6,9 @@ import (
 )
 
 type Launch struct {
+	Catalog struct {
+		Stale bool `json:"stale"`
+	} `json:"catalog"`
 	Profile string `json:"profile"`
 	ModelID string `json:"model_id"`
 	Effort  string `json:"effort"`
@@ -35,8 +38,14 @@ func (q CLIQuota) Launch(ctx context.Context, r QuotaRequest) (Launch, error) {
 		return Launch{}, e
 	}
 	var l Launch
+	if e := uniqueJSON([]byte(result.Out)); e != nil {
+		return l, fail(70, "ambiguous quota catalog JSON: %v", e)
+	}
 	if e := json.Unmarshal([]byte(result.Out), &l); e != nil {
 		return l, fail(70, "invalid quota catalog JSON: %v", e)
+	}
+	if l.Catalog.Stale {
+		return l, fail(70, "quota catalog is stale")
 	}
 	return l, nil
 }

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -29,6 +30,7 @@ type Content struct {
 	Mirror     bool   `json:"mirror_required,omitempty"`
 }
 type Archive struct {
+	SourceHost  string    `json:"source_host,omitempty"`
 	Source      string    `json:"source,omitempty"`
 	DrivePath   string    `json:"drive_path"`
 	Contents    []Content `json:"contents"`
@@ -48,11 +50,18 @@ type ArtifactRecord struct {
 }
 
 func hashFile(path string) (int64, string, error) {
-	f, e := os.Open(path)
+	f, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if e != nil {
 		return 0, "", e
 	}
 	defer f.Close()
+	info, e := f.Stat()
+	if e != nil {
+		return 0, "", e
+	}
+	if !info.Mode().IsRegular() {
+		return 0, "", fail(2, "artifact is not a regular file")
+	}
 	h := sha256.New()
 	n, e := io.Copy(h, f)
 	return n, hex.EncodeToString(h.Sum(nil)), e
@@ -201,6 +210,12 @@ func (a *App) artifactMove(ctx context.Context, args []string) error {
 	if len(rows) == 0 {
 		return fail(2, "empty artifact inventory")
 	}
+	return a.moveInventory(ctx, src, target, root, rows, *apply, "")
+}
+func (a *App) moveInventory(ctx context.Context, src, target, root string, rows []Content, apply bool, remoteHost string) error {
+	if len(rows) == 0 {
+		return fail(2, "empty artifact inventory")
+	}
 	rel, e := filepath.Rel(root, target)
 	if e != nil {
 		return e
@@ -209,14 +224,14 @@ func (a *App) artifactMove(ctx context.Context, args []string) error {
 	if len(parts) < 2 || !validID(parts[0]) {
 		return fail(2, "dest must be drive_folder/host/name")
 	}
-	fmt.Fprintf(a.Out, "artifact-move source=%s dest=%s files=%d apply=%t\n", src, target, len(rows), *apply)
-	if !*apply {
+	fmt.Fprintf(a.Out, "artifact-move source=%s dest=%s files=%d apply=%t\n", src, target, len(rows), apply)
+	if !apply {
 		for _, row := range rows {
 			fmt.Fprintf(a.Out, "copy path=%s bytes=%d sha256=%s\n", row.Path, row.Bytes, row.SHA)
 		}
 		return nil
 	}
-	record := ArtifactRecord{Schema: "fleet.artifact.v2", Host: parts[0], Name: strings.Join(parts[1:], "/"), Archive: Archive{Source: src, DrivePath: target, State: "running"}}
+	record := ArtifactRecord{Schema: "fleet.artifact.v2", Host: parts[0], Name: strings.Join(parts[1:], "/"), Archive: Archive{Source: src, SourceHost: remoteHost, DrivePath: target, State: "running"}}
 	key := "artifacts/" + parts[0] + "/" + record.Name
 	batchFiles := integer(a.Config.Artifacts, "batch_files", 2000)
 	batchBytes := integer(a.Config.Artifacts, "batch_bytes", 3<<30)
@@ -227,12 +242,25 @@ func (a *App) artifactMove(ctx context.Context, args []string) error {
 		end := i
 		size := int64(0)
 		for end < len(rows) && int64(end-i) < batchFiles && (size < batchBytes || end == i) {
+			if end > i && size+rows[end].Bytes > batchBytes {
+				break
+			}
 			size += rows[end].Bytes
 			end++
 		}
+		sourceDir := src
+		scratch := ""
+		if remoteHost != "" {
+			scratch, e = a.pullBatch(ctx, remoteHost, src, rows[i:end], size)
+			if e != nil {
+				return e
+			}
+			defer os.RemoveAll(scratch)
+			sourceDir = scratch
+		}
 		var paths []string
 		for _, row := range rows[i:end] {
-			source := filepath.Join(src, filepath.FromSlash(row.Path))
+			source := filepath.Join(sourceDir, filepath.FromSlash(row.Path))
 			destination := filepath.Join(target, filepath.FromSlash(row.Path))
 			if e = noSymlinks(destination); e != nil {
 				return e
@@ -261,6 +289,11 @@ func (a *App) artifactMove(ctx context.Context, args []string) error {
 		r := a.Runner.Run(ctx, Command{Name: helper, Args: []string{"evict"}, Input: strings.Join(paths, "\n") + "\n"})
 		if e = check(r, "Drive eviction"); e != nil {
 			return e
+		}
+		if scratch != "" {
+			if e = os.RemoveAll(scratch); e != nil {
+				return e
+			}
 		}
 		i = end
 	}
@@ -291,6 +324,9 @@ func (a *App) artifactMove(ctx context.Context, args []string) error {
 	return nil
 }
 func copyVerified(src, dest string, row Content) error {
+	if e := noSymlinks(src); e != nil {
+		return e
+	}
 	n, hash, e := hashFile(src)
 	if e != nil {
 		return e
@@ -418,25 +454,86 @@ func (a *App) remoteArtifactMove(ctx context.Context, src, dest, host string, ap
 	if !ok || str(h, "ssh") == "" || !filepath.IsAbs(src) {
 		return fail(70, "remote source needs configured SSH host and absolute source")
 	}
-	if !apply {
-		fmt.Fprintf(a.Out, "dry-run pull source_host=%s source=%s dest=%s (remote read only)\n", host, src, dest)
-		return nil
+	request := struct {
+		Root    string
+		Exclude []string
+	}{src, stringsValue(a.Config.Artifacts, "exclude")}
+	b, _ := encode(request)
+	r := a.Runner.Run(ctx, Command{Name: "ssh", Args: []string{"-o", "BatchMode=yes", "--", str(h, "ssh"), "runtug _artifact-inventory"}, Input: string(b)})
+	if e := check(r, "remote artifact inventory"); e != nil {
+		return e
 	}
-	// Transfer only, using rsync's exclude filters; no remote command or delete.
-	scratch, e := os.MkdirTemp(expand(str(a.Config.Artifacts, "scratch_dir")), "runtug-pull-*")
+	var rows []Content
+	if e := json.Unmarshal([]byte(r.Out), &rows); e != nil {
+		return e
+	}
+	for _, row := range rows {
+		if !within(src, filepath.Join(src, row.Path)) || row.Bytes < 0 || len(row.SHA) != 64 || excluded(row.Path, request.Exclude) {
+			return fail(70, "invalid remote artifact inventory")
+		}
+	}
+	return a.moveInventory(ctx, src, dest, expand(str(a.Config.Artifacts, "drive_folder")), rows, apply, host)
+}
+func (a *App) artifactInventory() error {
+	var request struct {
+		Root    string
+		Exclude []string
+	}
+	b, e := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 	if e != nil {
 		return e
 	}
-	defer os.RemoveAll(scratch)
-	args := []string{"-a", "--safe-links", "--protect-args"}
-	for _, pat := range append(stringsValue(a.Config.Artifacts, "exclude"), ".env*", "*.pem", "*.key", "*secret*", "*credential*", ".git") {
-		args = append(args, "--exclude", pat)
-	}
-	args = append(args, "--", str(h, "ssh")+":"+src+"/", scratch+"/")
-	if e = a.must(ctx, "rsync", args...); e != nil {
+	if e = decode(b, &request); e != nil {
 		return e
 	}
-	return a.artifactMove(ctx, []string{scratch, "--dest", dest, "--apply"})
+	if !filepath.IsAbs(request.Root) {
+		return fail(2, "inventory root must be absolute")
+	}
+	if e = noSymlinks(request.Root); e != nil {
+		return e
+	}
+	rows, e := inventory(request.Root, request.Exclude)
+	if e != nil {
+		return e
+	}
+	return writeJSON(a.Out, rows)
+}
+func (a *App) pullBatch(ctx context.Context, host, src string, rows []Content, size int64) (string, error) {
+	base := expand(str(a.Config.Artifacts, "scratch_dir"))
+	if base == "" {
+		base = filepath.Join(a.Home, ".local", "share", "fleet-upload", "scratch")
+	}
+	if e := noSymlinks(base); e != nil {
+		return "", e
+	}
+	if e := os.MkdirAll(base, 0700); e != nil {
+		return "", e
+	}
+	var stat syscall.Statfs_t
+	if e := syscall.Statfs(base, &stat); e != nil {
+		return "", e
+	}
+	free := uint64(stat.Bavail) * uint64(stat.Bsize)
+	floor := integer(a.Config.Artifacts, "free_floor_bytes", 20<<30)
+	if floor < 0 || free < uint64(size)+uint64(floor) {
+		return "", fail(75, "artifact scratch free-space floor would be crossed")
+	}
+	scratch, e := os.MkdirTemp(base, "runtug-pull-*")
+	if e != nil {
+		return "", e
+	}
+	var names strings.Builder
+	for _, row := range rows {
+		names.WriteString(row.Path)
+		names.WriteByte(0)
+	}
+	args := []string{"-a", "--no-links", "--protect-args", "--from0", "--files-from=-", "--", str(a.Config.Hosts[host], "ssh") + ":" + src + "/", scratch + "/"}
+	r := a.Runner.Run(ctx, Command{Name: "rsync", Args: args, Input: names.String()})
+	if e = check(r, "artifact batch pull"); e != nil {
+		os.RemoveAll(scratch)
+		return "", e
+	}
+	return scratch, nil
 }
 
 type ArtifactPolicy struct {
@@ -553,6 +650,9 @@ func (a *App) artifactSweep(ctx context.Context, args []string) error {
 	return nil
 }
 func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRecord, pol ArtifactPolicy, hatch string, apply bool) error {
+	if rec.Archive.SourceHost != "" && rec.Archive.SourceHost != a.machine() {
+		return nil
+	}
 	src := rec.Archive.Source
 	if !filepath.IsAbs(src) || !within(filepath.Join(a.Jobs, j.ID), src) {
 		return nil

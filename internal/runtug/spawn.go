@@ -230,6 +230,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	qr := QuotaRequest{Profile: seat.Canon, Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
 	launch, e := a.Quota.Launch(ctx, qr)
 	if e != nil {
+		// Preserve the gate's role/quota refusal even when the catalog also
+		// refuses this launch; no fallback launch data is ever invented.
+		if _, gateErr := a.Quota.Gate(ctx, qr); gateErr != nil {
+			return gateErr
+		}
 		return e
 	}
 	if effort != "" && launch.Effort != effort {
@@ -242,10 +247,6 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return e
 	}
 	qr.Effort = launch.Effort
-	mockEnv, e := a.mock(ctx, s, seat)
-	if e != nil {
-		return e
-	}
 	gate, e := a.Quota.Gate(ctx, qr)
 	if e != nil {
 		return e
@@ -335,6 +336,10 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		_ = a.releaseQuota(ctx, Job{ID: s.Job})
 		return fail(70, "lease missing pool")
 	}
+	mockEnv, e := a.mock(ctx, s, seat)
+	if e != nil {
+		return e
+	}
 	argv, env, e := a.launchArgs(seat, launch)
 	if e != nil {
 		return e
@@ -348,6 +353,9 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	env = append(env, "ARBITER_JOB="+s.Job, "ARBITER_RESOURCE="+pool, "ARBITER_KIND=quota_pool", "ARBITER_PROFILE="+seat.Canon, "HK_TASK_ID="+s.Task)
 	if seat.Kind == "claude" && s.Purpose != "director" {
 		env = append(env, "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false")
+	}
+	if e = a.workspaceTrust(ctx, s, seat, env); e != nil {
+		return fail(70, "workspace trust: %v", e)
 	}
 	tabArgs := []string{"tab", "create", "--workspace", s.Workspace, "--cwd", s.CWD, "--label", s.Label, "--no-focus"}
 	for _, v := range env {
@@ -399,10 +407,8 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return e
 	}
 	committed = true
-	if s.Report != "" {
-		if e = a.startWatch(s.Job); e != nil {
-			a.warn("completion watcher failed: %v", e)
-		}
+	if e = a.startWatch(s.Job); e != nil {
+		a.warn("completion watcher failed: %v", e)
 	}
 	laneStatus := ""
 	if laneOK {
@@ -431,6 +437,12 @@ func unwrap(m map[string]any) map[string]any {
 	return m
 }
 func (a *App) machine() string {
+	if mapping, ok := a.Config.Hub["session_machine_ids"].(map[string]any); ok {
+		session := firstNonempty(os.Getenv("HERDR_SESSION"), "default")
+		if id := str(mapping, session); id != "" {
+			return id
+		}
+	}
 	for _, m := range []map[string]any{a.Config.Local, a.Config.Hub} {
 		if v := str(m, "machine_id"); v != "" {
 			return v

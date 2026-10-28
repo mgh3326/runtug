@@ -15,6 +15,7 @@ type Event struct {
 	TS        string         `json:"ts"`
 	Payload   map[string]any `json:"payload"`
 	when      time.Time
+	mtime     time.Time
 	name      string
 }
 type Job struct {
@@ -31,12 +32,18 @@ func (a *App) events(id string) ([]Event, error) {
 		return nil, fail(2, "invalid job id")
 	}
 	dir := filepath.Join(a.Jobs, id, "events")
+	if e := noSymlinks(dir); e != nil {
+		return nil, e
+	}
 	entries, e := os.ReadDir(dir)
 	if e != nil {
 		return nil, e
 	}
 	var out []Event
 	for _, ent := range entries {
+		if ent.Type()&os.ModeSymlink != 0 {
+			return nil, fail(75, "symlink event refused")
+		}
 		if ent.IsDir() || filepath.Ext(ent.Name()) != ".json" {
 			continue
 		}
@@ -57,6 +64,7 @@ func (a *App) events(id string) ([]Event, error) {
 		}
 		ev.name = ent.Name()
 		ev.when = info.ModTime()
+		ev.mtime = info.ModTime()
 		for _, s := range []string{ev.CreatedAt, ev.TS} {
 			if t, e := time.Parse(time.RFC3339Nano, s); e == nil {
 				ev.when = t
@@ -67,6 +75,9 @@ func (a *App) events(id string) ([]Event, error) {
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].when.Equal(out[j].when) {
+			if !out[i].mtime.Equal(out[j].mtime) {
+				return out[i].mtime.Before(out[j].mtime)
+			}
 			return out[i].name < out[j].name
 		}
 		return out[i].when.Before(out[j].when)

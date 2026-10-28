@@ -63,6 +63,7 @@ func (a *App) watch(ctx context.Context, args []string) error {
 	var modified time.Time
 	pending := false
 	missing := 0
+	latePoll := false
 	for {
 		j, e := a.job(id)
 		if e != nil {
@@ -83,9 +84,12 @@ func (a *App) watch(ctx context.Context, args []string) error {
 				pending = false
 			}
 		}
-		if a.Now().After(deadline) && !pending {
+		if a.Now().After(deadline) && (!pending || latePoll) {
 			fmt.Fprintln(a.Err, "watch-expired: job stays live; quota retained")
 			return nil
+		}
+		if a.Now().After(deadline) {
+			latePoll = true
 		}
 		agents, e := a.agents(ctx)
 		if e != nil {

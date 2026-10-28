@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -12,6 +13,7 @@ import (
 // Config accepts the existing wrk hosts.toml surface. Capability booleans remain
 // data so new harnesses do not require a configuration parser change.
 type Config struct {
+	HostOrder []string                  `toml:"-"`
 	Local     map[string]any            `toml:"local"`
 	Hub       map[string]any            `toml:"hub"`
 	Hosts     map[string]map[string]any `toml:"hosts"`
@@ -63,6 +65,9 @@ func LoadConfig(path string) (Config, error) {
 	if e = toml.Unmarshal(b, &c); e != nil {
 		return c, fail(70, "hosts config: %v", e)
 	}
+	for _, m := range regexp.MustCompile(`(?m)^\s*\[hosts\.([A-Za-z0-9._-]+)\]\s*(?:#.*)?$`).FindAllStringSubmatch(string(b), -1) {
+		c.HostOrder = append(c.HostOrder, m[1])
+	}
 	for _, k := range []string{"spawn", "pi_anthropic", "cmd_dsflash41", "heavy_load_wait"} {
 		if v, ok := c.Local[k]; ok {
 			if _, ok = v.(bool); !ok {
@@ -89,8 +94,31 @@ func LoadConfig(path string) (Config, error) {
 		if !validID(name) {
 			return c, fail(70, "invalid host name")
 		}
+		if v := str(h, "ssh"); v != "" && !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._-]*$`).MatchString(v) {
+			return c, fail(70, "SSH target must be an SSH config alias")
+		}
 		if v := str(h, "via"); v != "" && v != "ssh" && v != "hub" {
 			return c, fail(70, "hosts.%s.via must be ssh or hub", name)
+		}
+	}
+	if v, ok := c.Local["max_load_ratio"]; ok {
+		switch n := v.(type) {
+		case int64:
+			if n < 0 {
+				return c, typeError("local.max_load_ratio")
+			}
+		case float64:
+			if n < 0 {
+				return c, typeError("local.max_load_ratio")
+			}
+		default:
+			return c, fail(70, "local.max_load_ratio must be a nonnegative number")
+		}
+	}
+	if v, ok := c.Local["shell_ready_timeout_ms"]; ok {
+		n := v.(int64)
+		if n < 30000 || n > 300000 {
+			return c, fail(70, "shell_ready_timeout_ms must be 30000..300000")
 		}
 	}
 	return c, nil
@@ -146,3 +174,14 @@ func (c Config) hubArgs(role string) []string {
 }
 func typeError(key string) error          { return fmt.Errorf("%s has an invalid type", key) }
 func unmarshalTOML(b []byte, v any) error { return toml.Unmarshal(b, v) }
+func (a *App) controlHubArgs(operator bool) []string {
+	token := str(a.Config.Hub, "hub_token_env")
+	if operator {
+		token = firstNonempty(str(a.Config.Hub, "operator_token_env"), token)
+	}
+	args := []string{"--hub-url", str(a.Config.Hub, "hub_url"), "--hub-token-env", token}
+	if v := str(a.Config.Hub, "hub_cf_env"); v != "" {
+		args = append(args, "--hub-cf-env", v)
+	}
+	return args
+}

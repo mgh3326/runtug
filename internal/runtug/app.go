@@ -129,6 +129,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.heavy(ctx, args[1:])
 	case "artifacts":
 		return a.artifacts(ctx, args[1:])
+	case "_artifact-inventory":
+		return a.artifactInventory()
 	case "_watch":
 		return a.watch(ctx, args[1:])
 	case "_spawn-stdin":
@@ -140,7 +142,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 func (a *App) help(cmd string) error {
 	switch cmd {
 	case "spawn":
-		fmt.Fprintln(a.Out, "Usage: runtug spawn -c CWD -m PROFILE -p BRIEF -w WORKSPACE -l LABEL --t T0..T3 [--task ID|--parent-job JOB] [--effort E] [--role worker|builder|tester|reviewer|counsel] [--lane L] [--parent L] [--owner L] [--job ID] [--host auto|local|NAME] [--report PATH] [-L live|mock] [--keep] [--job-dup-ok] [--task-hk-bypass] [--operator-request REF] [--requested-by NAME] [--purpose PURPOSE] [--lane-defer HOST] [--report-relative PATH]")
+		fmt.Fprintln(a.Out, "Usage: runtug spawn -c CWD -m PROFILE -p BRIEF -w WORKSPACE -l LABEL --t T0..T3 [--task ID|--parent-job JOB] [--effort E] [--role worker|builder|tester|reviewer|counsel] [--lane L] [--parent L] [--owner L] [--job ID] [--host auto|local|NAME] [--report PATH] [-L live|mock] [--keep] [--job-dup-ok] [--task-hk-bypass] [--operator-request REF] [--requested-by NAME] [--purpose PURPOSE] [--lane-defer HOST] [--report-relative PATH] [--dry-run]")
 	case "done":
 		fmt.Fprintln(a.Out, "Usage: runtug done JOB [--report PATH]")
 	case "escalate":
