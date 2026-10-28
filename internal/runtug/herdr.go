@@ -51,6 +51,8 @@ func (a *App) launchArgs(s Seat, l Launch) ([]string, []string, error) {
 		return []string{"chat", "--v3", "--trust-all-tools", "--require-mcp-startup", "--model", m, "--effort", e}, env, nil
 	case "opencode":
 		return []string{"--auto", "--model", m}, env, nil
+	case "agy":
+		return []string{"--model", m, "--dangerously-skip-permissions"}, env, nil
 	default:
 		return nil, nil, fail(70, "unsupported agent kind %s", s.Kind)
 	}
@@ -362,7 +364,33 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			return e
 		}
 	}
+	if seat.Proof == "codex-footer" {
+		screen, e := a.visible(ctx, pane)
+		if e != nil {
+			return e
+		}
+		if !CodexFooterProof(screen, l.ModelID, l.Effort, s.CWD, a.Home) {
+			return fail(70, "Codex model/effort footer not proven")
+		}
+	}
 	return a.must(ctx, "herdr", "agent", "wait", pane, "--until", "idle", "--timeout", fmt.Sprint(timeout.Milliseconds()))
+}
+func CodexFooterProof(screen, model, effort, cwd, home string) bool {
+	lines := cleanScreen(screen)
+	expected := strings.ToLower(strings.ReplaceAll(model, "-", " "))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if !strings.Contains(strings.ToLower(line), "context") {
+			continue
+		}
+		shown := strings.ToLower(strings.ReplaceAll(line, "-", " "))
+		cwdShown := strings.Contains(line, cwd)
+		if strings.HasPrefix(cwd, home+"/") {
+			cwdShown = cwdShown || strings.Contains(line, "~"+strings.TrimPrefix(cwd, home))
+		}
+		return cwdShown && strings.Contains(shown, expected) && regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(effort)+`\b`).MatchString(line)
+	}
+	return false
 }
 func executables(kind string) []string {
 	switch kind {

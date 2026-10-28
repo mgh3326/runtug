@@ -645,6 +645,13 @@ func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRe
 		if e = a.putRecord(ctx, key, rec); e != nil {
 			return e
 		}
+		if e = noSymlinks(path); e != nil {
+			return e
+		}
+		n, h, e = hashFile(path)
+		if e != nil || n != row.Bytes || h != row.SHA {
+			return fail(75, "artifact changed while recording deletion")
+		}
 		if e = os.Remove(path); e != nil {
 			return e
 		}

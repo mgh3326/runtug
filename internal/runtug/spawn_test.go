@@ -34,6 +34,9 @@ func testApp(t *testing.T) *App {
 	}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	root := t.TempDir()
+	if real, e := filepath.EvalSymlinks(root); e == nil {
+		root = real
+	}
 	return &App{Runner: &fakeRunner{}, Policy: p, Config: Config{}, Home: root, Jobs: filepath.Join(root, "work", "herdr-inbox", "jobs"), Bins: map[string]string{}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }, Sleep: func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }}
 }
 func putEvent(t *testing.T, a *App, job, kind string, p map[string]any) {

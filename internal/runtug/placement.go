@@ -113,6 +113,7 @@ func (a *App) place(ctx context.Context, s Spawn, brief string) (bool, error) {
 			return true, fail(70, "invalid SSH target")
 		}
 		remote := s
+		remote.ParentJob = ""
 		remote.CWD = cwd
 		remote.Host = "local"
 		remote.Workspace = str(h, "workspace")

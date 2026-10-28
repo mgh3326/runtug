@@ -498,7 +498,8 @@
       ],
       "effort": "medium",
       "pin": true,
-      "e6": true
+      "e6": true,
+      "proof": "codex-footer"
     },
     "builder-terra61-high": {
       "canon": "codex-terra61",
@@ -514,7 +515,8 @@
       ],
       "effort": "high",
       "pin": true,
-      "e6": true
+      "e6": true,
+      "proof": "codex-footer"
     },
     "builder-terra61-xhigh": {
       "canon": "codex-terra61",
@@ -530,7 +532,8 @@
       ],
       "effort": "xhigh",
       "pin": true,
-      "e6": true
+      "e6": true,
+      "proof": "codex-footer"
     },
     "builder-terra61-max": {
       "canon": "codex-terra61",
@@ -546,7 +549,8 @@
       ],
       "effort": "max",
       "pin": true,
-      "e6": true
+      "e6": true,
+      "proof": "codex-footer"
     },
     "builder-grok-low": {
       "canon": "grok-hi",
@@ -760,7 +764,8 @@
         "reviewer",
         "counsel"
       ],
-      "effort": "low"
+      "effort": "low",
+      "proof": "codex-footer"
     },
     "codex-astra": {
       "canon": "codex-astra",
@@ -1721,6 +1726,153 @@
         "reviewer",
         "counsel"
       ]
+    },
+    "codex-sol56": {
+      "canon": "codex-sol56",
+      "kind": "codex",
+      "family": "openai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "codex-luna56": {
+      "canon": "codex-luna56",
+      "kind": "codex",
+      "family": "openai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "codex-sol6": {
+      "canon": "codex-sol6",
+      "kind": "codex",
+      "family": "openai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "grok45": {
+      "canon": "grok45",
+      "kind": "grok",
+      "family": "xai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "grok45-med": {
+      "canon": "grok45-med",
+      "kind": "grok",
+      "family": "xai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "grok46": {
+      "canon": "grok46",
+      "kind": "grok",
+      "family": "xai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "grok46-med": {
+      "canon": "grok46-med",
+      "kind": "grok",
+      "family": "xai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "kiro": {
+      "canon": "kiro",
+      "kind": "kiro",
+      "family": "openai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "agy-flash": {
+      "canon": "agy-flash",
+      "kind": "agy",
+      "family": "google",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "agy-flash36": {
+      "canon": "agy-flash36",
+      "kind": "agy",
+      "family": "google",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "agy-flash37": {
+      "canon": "agy-flash37",
+      "kind": "agy",
+      "family": "google",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "builder-sol6": {
+      "canon": "codex-sol6",
+      "kind": "codex",
+      "family": "openai",
+      "capability": "standard",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel",
+        "builder"
+      ],
+      "effort": "high",
+      "pin": true
     }
   }
 }

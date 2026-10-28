@@ -15,7 +15,7 @@ import (
 type Spawn struct {
 	CWD, Profile, Prompt, Workspace, Label, T, Job, Owner, Effort, Role, Lane, Parent, Task, ParentJob, Host, Report, ExecutionLane, OperatorRequest, RequestedBy, Purpose, LaneDefer, ReportRelative string
 	Keep, DupOK, Bypass, DryRun                                                                                                                                                                       bool
-	Inherited                                                                                                                                                                                         string
+	Inherited, ParentFamily                                                                                                                                                                           string
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -127,7 +127,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			s.Task = os.Getenv("HK_TASK_ID")
 		}
 	}
-	builderFamily := ""
+	builderFamily := s.ParentFamily
 	if s.ParentJob != "" {
 		j, e := a.job(s.ParentJob)
 		if e != nil {
@@ -144,6 +144,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		if s.Owner == "" {
 			s.Owner = j.Owner
 		}
+		s.ParentFamily = builderFamily
 		if s.Report == "" && s.ReportRelative == "" {
 			return fail(2, "--parent-job requires --report")
 		}
@@ -198,7 +199,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		s.Report = filepath.Join(a.Jobs, s.ReportRelative)
 	}
 	if s.Report != "" {
-		if e := safeReport(a.Jobs, s.Job, s.ParentJob, s.Report); e != nil {
+		if e := safeReport(a.Jobs, s.Job, firstNonempty(s.ParentJob, s.Inherited), s.Report); e != nil {
 			return e
 		}
 	}
@@ -326,10 +327,12 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	var lease map[string]any
 	if e = json.Unmarshal([]byte(r.Out), &lease); e != nil {
+		_ = a.releaseQuota(ctx, Job{ID: s.Job})
 		return e
 	}
 	pool = str(lease, "pool")
 	if pool == "" {
+		_ = a.releaseQuota(ctx, Job{ID: s.Job})
 		return fail(70, "lease missing pool")
 	}
 	argv, env, e := a.launchArgs(seat, launch)
@@ -412,6 +415,14 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return fail(82, "builder pane exists but lane is UNREGISTERED")
 	}
 	return nil
+}
+func firstNonempty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 func unwrap(m map[string]any) map[string]any {
 	if r, ok := m["result"].(map[string]any); ok {

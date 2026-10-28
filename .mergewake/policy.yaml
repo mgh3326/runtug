@@ -1,0 +1,16 @@
+version: 1
+enabled: false
+required_checks:
+  - vet
+  - test
+  - build-linux-amd64
+  - build-linux-arm64
+  - build-darwin-amd64
+  - build-darwin-arm64
+blocking:
+  - paths: [internal/runtug/artifacts.go, internal/runtug/hygiene.go]
+    reason: Cleanup can remove user files or terminate a pane before a revert
+  - paths: [internal/runtug/policy.json, internal/runtug/brief-policy.json, internal/runtug/trust.go]
+    reason: Admission and host rules can permit unsafe work before recovery
+  - paths: [.mergewake/**, .github/workflows/**, install.sh]
+    reason: Changes to verification or installation can bypass recovery controls

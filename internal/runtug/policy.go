@@ -17,6 +17,7 @@ type Policy struct {
 	Profiles map[string]Seat `json:"profiles"`
 }
 type Seat struct {
+	Proof      string          `json:"proof,omitempty"`
 	Canon      string          `json:"canon"`
 	Kind       string          `json:"kind"`
 	Family     string          `json:"family"`
