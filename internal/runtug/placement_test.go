@@ -783,13 +783,17 @@ func TestQuotaBinaryDefaultsToPacelever(t *testing.T) {
 	t.Setenv("RUNTUG_QUOTA_BIN", "")
 	a, e := New(io.Discard, io.Discard)
 	if e != nil {
-		t.Skipf("New needs local config: %v", e)
+		t.Fatalf("New: %v", e)
 	}
 	if got := a.Bins["scopefuel"]; got != "pacelever" {
 		t.Fatalf("quota CLI default = %q, want pacelever (scopefuel is retired)", got)
 	}
+	t.Setenv("SCOPEFUEL_BIN", "/opt/legacy-quota")
+	if a, e = New(io.Discard, io.Discard); e != nil || a.Bins["scopefuel"] != "/opt/legacy-quota" {
+		t.Fatalf("SCOPEFUEL_BIN must still override: %q %v", a.Bins["scopefuel"], e)
+	}
 	t.Setenv("RUNTUG_QUOTA_BIN", "/opt/quota")
-	if a, _ = New(io.Discard, io.Discard); a.Bins["scopefuel"] != "/opt/quota" {
-		t.Fatalf("RUNTUG_QUOTA_BIN must override: %q", a.Bins["scopefuel"])
+	if a, e = New(io.Discard, io.Discard); e != nil || a.Bins["scopefuel"] != "/opt/quota" {
+		t.Fatalf("RUNTUG_QUOTA_BIN must win over SCOPEFUEL_BIN: %q %v", a.Bins["scopefuel"], e)
 	}
 }
