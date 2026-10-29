@@ -295,7 +295,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if effort != "" && launch.Effort != effort {
 		return fail(70, "catalog effort does not match request")
 	}
-	if autoSel && launch.Effort != selEffort {
+	if autoSel && selEffort != "" && launch.Effort != selEffort {
 		return fail(70, "launch rung does not match selected catalog rung")
 	}
 	if launch.Profile != seat.Canon {

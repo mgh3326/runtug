@@ -515,6 +515,46 @@ func TestSelectDropsRunglessRows(t *testing.T) {
 	}
 }
 
+// A default-rung row (effort "") sorts before a runged row on the effort
+// tiebreak; without the effort_empty drop it would be chosen and its launch
+// could never pass Seat.Check. The runged sibling must win the dry-run.
+func TestSpawnAutoSkipsDefaultRung(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	s.Profile = "auto"
+	s.Host = "auto"
+	s.DryRun = true
+	q := a.Quota.(*fakeQuota)
+	q.CatalogRows = []CatalogRow{
+		{Profile: "cmd-dsflash41", Grade: "A+", Pool: "example", Gate: "default", ModelID: "provider/example-model"},
+		{Profile: "cmd-dsflash41", Effort: "high", Grade: "A+", Pool: "example", Gate: "default", ModelID: "provider/example-model"},
+	}
+	q.PoolViews = map[string]PoolView{"example": {Status: "ok", Class: "spend"}}
+	now := a.Now()
+	key := "example:0123456789abcdef"
+	a.Source = &fakePlacementSource{
+		presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: now}},
+		accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true}},
+	}
+	q.GateDo = func(r QuotaRequest) (string, error) { return "pool=example\n", nil }
+	if e := a.Spawn(context.Background(), s); e != nil {
+		t.Fatal(e)
+	}
+	out := a.Out.(interface{ String() string }).String()
+	var sel map[string]any
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "selection="); ok {
+			if e := json.Unmarshal([]byte(v), &sel); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
+	chosen, _ := sel["chosen"].(map[string]any)
+	if chosen["effort"] != "high" {
+		t.Fatalf("the runged sibling must be chosen over the default rung: %v", chosen)
+	}
+	_ = f
+}
+
 func TestSpawnWaitValidatesTimeoutBeforePane(t *testing.T) {
 	a, s, f, _ := cmdFixture(t)
 	s.Wait = true
