@@ -303,7 +303,7 @@ func TestPlacementRepoConventionAndCloneOnMissing(t *testing.T) {
 			stdinCmd = &f.Calls[i]
 		}
 	}
-	if stdinCmd == nil || !strings.Contains(stdinCmd.Input, `"$HOME/work/repo-a"`) {
+	if stdinCmd == nil || !strings.Contains(stdinCmd.Input, `"~/work/repo-a"`) {
 		t.Fatal("remote cwd must resolve to the repo convention")
 	}
 }

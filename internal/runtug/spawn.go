@@ -311,7 +311,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			placementRec = map[string]any{"source": "forced", "tags": tags, "profile": s.Profile, "host": a.machine()}
 		}
 		if e = a.event(ctx, s.Job, "job.placement", placementRec); e != nil {
-			return e
+			a.warn("placement decision record failed: %v", e)
 		}
 	}
 	committed := false

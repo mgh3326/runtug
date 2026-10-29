@@ -1,6 +1,8 @@
 package runtug
 
 import (
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -130,8 +132,11 @@ func LoadConfig(path string) (Config, error) {
 			}
 		}
 	}
-	if v := str(c.Quota, "url"); v != "" && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "http://127.") && !strings.HasPrefix(v, "http://localhost") {
-		return c, fail(70, "quota.url requires HTTPS")
+	if v := str(c.Quota, "url"); v != "" {
+		u, e := url.Parse(v)
+		if e != nil || u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
+			return c, fail(70, "quota.url requires HTTPS")
+		}
 	}
 	if v := str(c.Quota, "credential_env"); v != "" && !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(v) {
 		return c, fail(70, "quota.credential_env must name an environment variable")
@@ -219,6 +224,14 @@ func (c Config) hubArgs(role string) []string {
 }
 
 var tagRule = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+func isLoopbackHost(h string) bool {
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
 
 func validTags(v any, key string) error {
 	if v == nil {

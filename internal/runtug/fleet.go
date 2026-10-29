@@ -128,7 +128,7 @@ func (a *App) quotaClient() (*hkQuota, error) {
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
 		return nil, fail(70, "invalid shared quota endpoint scheme")
 	}
-	if parsed.Scheme == "http" && !strings.HasPrefix(parsed.Host, "127.") && parsed.Host != "localhost" {
+	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) {
 		return nil, fail(70, "shared quota cache requires HTTPS")
 	}
 	c := &hkQuota{base: strings.TrimRight(u, "/"), token: token, cfID: read("HANDOFFKEEP_CF_ACCESS_CLIENT_ID"), cfSecret: read("HANDOFFKEEP_CF_ACCESS_CLIENT_SECRET"), now: a.Now, freshTTL: a.placementTTL("fresh_ttl_s", 300)}

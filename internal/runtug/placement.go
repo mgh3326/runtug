@@ -524,7 +524,13 @@ func (a *App) wakeTargets(s Spawn, p *placePlan, unreachable []string) ([]string
 	}
 	if !presentOnAwake && len(presentSleepers) > 0 {
 		reasons = append(reasons, "account_only_on")
-		targets = append(presentSleepers, targets...)
+		merged := slices.Clone(presentSleepers)
+		for _, t := range targets {
+			if !slices.Contains(merged, t) {
+				merged = append(merged, t)
+			}
+		}
+		targets = merged
 	}
 	if len(reasons) > 0 {
 		for _, name := range unreachable {
@@ -621,7 +627,7 @@ func remoteDir(h map[string]any, cwd string, repo *repoResolution) (string, *rep
 	if repo == nil {
 		return "", nil
 	}
-	dir := "$HOME/work/" + repo.name
+	dir := "~/work/" + repo.name
 	if repo.rel != "." && repo.rel != "" {
 		dir += "/" + repo.rel
 	}
