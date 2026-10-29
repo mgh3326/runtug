@@ -313,11 +313,15 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		local.excluded = "spawn_disabled"
 	}
 	local.load = a.localLoad(ctx)
-	if local.load != nil {
-		maxRatio, ok := number(a.Config.Local, "max_load_ratio")
-		if ok && *local.load >= maxRatio {
-			local.over = true
-		}
+	maxRatio, hasGuard := number(a.Config.Local, "max_load_ratio")
+	if local.load != nil && hasGuard && *local.load >= maxRatio {
+		local.over = true
+	}
+	if local.load == nil && hasGuard {
+		// A broken load probe must not silently disable the pressure
+		// guard; treat local as pressured like the old fail-closed path.
+		local.over = true
+		degraded = append(degraded, "local_load_degraded")
 	}
 	if _, ok := a.Config.Local["max_active"]; ok {
 		agents, e := a.agents(ctx)
@@ -712,10 +716,16 @@ func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, rep
 func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCandidate, repo *repoResolution, forced bool) candResult {
 	h := c.cfg
 	if s.ExecutionLane == "mock" {
-		return candResult{stop: fail(79, "remote mock spawns refused")}
+		if forced {
+			return candResult{stop: fail(79, "remote mock spawns refused")}
+		}
+		return candResult{rc: 79, note: "mock_lane_remote_refused"}
 	}
 	if str(h, "via") == "hub" {
-		return candResult{stop: fail(70, "hub spawn transport still targets wrk; use an SSH target running runtug")}
+		if forced {
+			return candResult{stop: fail(70, "hub spawn transport still targets wrk; use an SSH target running runtug")}
+		}
+		return candResult{rc: 70, note: "via_hub_unsupported"}
 	}
 	cwd, clone := remoteDir(h, s.CWD, repo)
 	if cwd == "" {
