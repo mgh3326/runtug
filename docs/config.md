@@ -133,6 +133,22 @@ waits for the node and places the job. Explicit `--host NAME` stays a forced
 override; an unreachable wakeable target is woken once. Every decision is
 recorded as a `job.placement` event in the job record.
 
+Before trying a remote candidate (including an explicit `--host NAME`), runtug
+resolves that host's most recent fresh presence for the launch pool, then asks
+`pacelever gate --account-key POOL:FINGERPRINT --json` to judge its shared
+observation. The spawner's `[quota.accounts]` does not pin remote accounts.
+Missing, ambiguous, stale or degraded target evidence refuses that host; auto
+placement tries the next candidate. Local placement keeps the local gate path.
+The selection's `quota_gates` and placement candidate's `quota_gate` record the
+host, account key, evidence source, outcome and exit code of each attempt.
+
+The spawning host needs a pacelever version that supports account-bound gate
+receipts. A successful response must confirm the requested `account_key` and
+pool; versions that silently ignore the flag are refused. The target still
+runs its own final local gate before spawning. Upgrade pacelever on spawning
+hosts before rolling out this change; roll back runtug to restore the earlier
+placement path if needed. No remote checkout provisioning changes are included.
+
 Runtug must already be installed on SSH targets. `_spawn-stdin` transports a
 structured request and original brief through stdin, uses a private temporary
 brief file and deletes it after spawn. The target composes its own preamble.

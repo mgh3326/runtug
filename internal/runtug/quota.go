@@ -23,7 +23,11 @@ type Launch struct {
 
 // QuotaRequest asks the quota CLI about one launch. Profile is the launch
 // canon; GateProfile, when set, is the name its gate knows the profile by.
-type QuotaRequest struct{ Profile, Effort, Role, OperatorRequest, RequestedBy, Purpose, GateProfile string }
+// AccountKey scopes only Gate to shared evidence for a remote host's account.
+type QuotaRequest struct {
+	Profile, Effort, Role, OperatorRequest, RequestedBy, Purpose, GateProfile string
+	AccountKey                                                                string
+}
 
 // CatalogRow is one bench catalog rung: profile@effort with its operator-set
 // grade, admission gate and quota pool. Retired rows are excluded by the
@@ -96,14 +100,68 @@ func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
 	if r.GateProfile != "" {
 		name = r.GateProfile
 	}
-	x := q.Runner.Run(ctx, Command{Name: q.Binary, Args: quotaArgs([]string{"gate", "-m", name}, r)})
+	args := quotaArgs([]string{"gate", "-m", name}, r)
+	if r.AccountKey != "" {
+		args = append(args, "--account-key", r.AccountKey, "--json")
+	}
+	x := q.Runner.Run(ctx, Command{Name: q.Binary, Args: args})
 	if x.Code == 5 {
 		return "", fail(77, "quota role-denied (gate exit 5 → runtug exit 77): %s", x.Err)
 	}
 	if e := check(x, "quota gate"); e != nil {
 		return "", e
 	}
+	if r.AccountKey != "" {
+		// Older pacelever versions accept this flag but ignore it. Require an
+		// account-bound receipt before trusting a successful remote judgement.
+		var receipt struct {
+			Schema     string `json:"schema"`
+			AccountKey string `json:"account_key"`
+			Pool       string `json:"provider_id"`
+			OK         bool   `json:"ok"`
+			ExitCode   *int   `json:"exit_code"`
+		}
+		pool, _, _ := strings.Cut(r.AccountKey, ":")
+		if uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != r.AccountKey || receipt.Pool != pool || !receipt.OK || receipt.ExitCode == nil || *receipt.ExitCode != 0 {
+			return "", fail(70, "quota gate did not confirm the target account")
+		}
+	}
 	return x.Out, nil
+}
+
+// quotaJudgment binds a gate attempt to its host and, for shared evidence, the
+// exact account passed to pacelever. Unknown evidence never invokes a local gate.
+type quotaJudgment struct {
+	Host       string `json:"host"`
+	AccountKey string `json:"account_key,omitempty"`
+	Source     string `json:"source"`
+	Outcome    string `json:"outcome"`
+	ExitCode   int    `json:"exit_code"`
+}
+
+func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
+	j := quotaJudgment{Host: host, Source: "local", Outcome: "unknown", ExitCode: 4}
+	if !local {
+		j.Source, j.AccountKey = "shared", key
+		if key == "" || acc.Key != key || !acc.Observed || !acc.Fresh || acc.Degraded {
+			return j, fail(4, "target account quota unavailable")
+		}
+		r.AccountKey = key
+	}
+	if a.Quota == nil {
+		return j, fail(4, "quota gate unavailable")
+	}
+	gate, err := a.Quota.Gate(ctx, r)
+	if err == nil {
+		if got := gatePool(gate); pool != "" && got != pool && (got != "" || !local) {
+			err = fail(70, "quota gate pool mismatch")
+		}
+	}
+	j.Outcome, j.ExitCode = "admitted", 0
+	if err != nil {
+		j.Outcome, j.ExitCode = "refused", exitCode(err)
+	}
+	return j, err
 }
 
 // Catalog lists the bench catalog rungs. Newer quota CLIs serve a JSON
