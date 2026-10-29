@@ -1,6 +1,7 @@
 package runtug
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -103,7 +104,7 @@ func parseTags(raw string) ([]string, error) {
 			continue
 		}
 		if !tagPattern.MatchString(t) {
-			return nil, fail(2, "invalid tag %q", t)
+			return nil, fail(exitUsage, "invalid tag %q", t)
 		}
 		if !slices.Contains(out, t) {
 			out = append(out, t)
@@ -470,22 +471,25 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		if bx, by := placeBucket(*x, threshold), placeBucket(*y, threshold); bx != by {
 			return bx - by
 		}
-		if x.login != y.login {
-			if x.login == loginPresent || x.login == "" {
-				return -1
-			}
-			return 1
+		if rx, ry := loginRank(x.login), loginRank(y.login); rx != ry {
+			return rx - ry
 		}
-		lx, ly := loadOrInf(x.load), loadOrInf(y.load)
-		if lx != ly {
-			if lx < ly {
-				return -1
-			}
-			return 1
+		if c := cmp.Compare(loadOrInf(x.load), loadOrInf(y.load)); c != 0 {
+			return c
 		}
 		return x.order - y.order
 	})
 	return p, nil
+}
+
+// loginRank orders login evidence: positive evidence and "no account needed"
+// rank equally ahead of unknown evidence. It is symmetric so the comparator
+// above stays a strict weak ordering.
+func loginRank(login string) int {
+	if login == loginUnknown {
+		return 1
+	}
+	return 0
 }
 
 func loadOrInf(l *float64) float64 {
@@ -687,7 +691,7 @@ func (a *App) waitForNode(ctx context.Context, host string, h map[string]any, wa
 			return nil
 		}
 		if !a.Now().Before(deadline) {
-			return fail(81, "node %s did not connect after wake", host)
+			return fail(exitPlacement, "node %s did not connect after wake", host)
 		}
 		if e := a.Sleep(ctx, 5*time.Second); e != nil {
 			return e
@@ -759,23 +763,23 @@ func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, rep
 			return nil
 		}
 		o := a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "git -C "+dir+" remote get-url origin")
-		if o.Code == 255 {
-			return fail(255, "repo origin check unreachable")
+		if o.Code == exitUnreachable {
+			return fail(exitUnreachable, "repo origin check unreachable")
 		}
 		if got := strings.TrimSpace(o.Out); o.Code != 0 || got != repo.url {
-			return fail(70, "repo %s on %s has an origin that does not match the local checkout", repo.name, host)
+			return fail(exitConfig, "repo %s on %s has an origin that does not match the local checkout", repo.name, host)
 		}
 		return nil
 	}
-	if r.Code == 255 {
-		return fail(255, "repo check unreachable")
+	if r.Code == exitUnreachable {
+		return fail(exitUnreachable, "repo check unreachable")
 	}
 	if repo.url == "" {
-		return fail(70, "repo %s missing on %s and no origin URL to clone", repo.name, host)
+		return fail(exitConfig, "repo %s missing on %s and no origin URL to clone", repo.name, host)
 	}
 	r = a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "--", target, `mkdir -p "$HOME/work" && git clone -- `+shellQuote(repo.url)+" "+dir)
-	if r.Code == 255 {
-		return fail(255, "repo clone unreachable")
+	if r.Code == exitUnreachable {
+		return fail(exitUnreachable, "repo clone unreachable")
 	}
 	if e := check(r, "repo clone"); e != nil {
 		return e
@@ -787,15 +791,15 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	h := c.cfg
 	if s.ExecutionLane == "mock" {
 		if forced {
-			return candResult{stop: fail(79, "remote mock spawns refused")}
+			return candResult{stop: fail(exitMockRefused, "remote mock spawns refused")}
 		}
-		return candResult{rc: 79, note: "mock_lane_remote_refused"}
+		return candResult{rc: exitMockRefused, note: "mock_lane_remote_refused"}
 	}
 	if str(h, "via") == "hub" {
 		if forced {
-			return candResult{stop: fail(70, "hub spawn transport still targets wrk; use an SSH target running runtug")}
+			return candResult{stop: fail(exitConfig, "hub spawn transport still targets wrk; use an SSH target running runtug")}
 		}
-		return candResult{rc: 70, note: "via_hub_unsupported"}
+		return candResult{rc: exitConfig, note: "via_hub_unsupported"}
 	}
 	cwd, clone := remoteDir(h, s.CWD, repo)
 	if cwd == "" {
@@ -811,7 +815,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	}
 	if clone != nil {
 		if e := a.ensureRepo(ctx, h, c.name, clone); e != nil {
-			if exitCode(e) == 255 {
+			if exitCode(e) == exitUnreachable {
 				return candResult{unreachable: true, note: "repo:" + e.Error()}
 			}
 			return candResult{rc: exitCode(e), note: "repo:" + e.Error()}
@@ -822,7 +826,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 		target = c.name
 	}
 	if strings.HasPrefix(target, "-") || strings.ContainsAny(target, "\r\n") {
-		return candResult{stop: fail(70, "invalid SSH target")}
+		return candResult{stop: fail(exitConfig, "invalid SSH target")}
 	}
 	remote := s
 	remote.ParentJob = ""
@@ -838,7 +842,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	remote.Wait = false
 	if s.Report != "" {
 		if !within(a.Jobs, s.Report) {
-			return candResult{stop: fail(2, "remote report outside jobs root")}
+			return candResult{stop: fail(exitUsage, "remote report outside jobs root")}
 		}
 		rel, e := filepath.Rel(a.Jobs, s.Report)
 		if e != nil {
@@ -869,9 +873,9 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 		return candResult{ok: true, res: r}
 	}
 	if r.Code == 0 {
-		return candResult{stop: fail(75, "remote spawn returned no receipt")}
+		return candResult{stop: fail(exitStateConflict, "remote spawn returned no receipt")}
 	}
-	if r.Code == 255 {
+	if r.Code == exitUnreachable {
 		return candResult{unreachable: true, rc: r.Code, note: "unreachable", res: r}
 	}
 	if forced || slices.Contains([]int{2, 70, 74, 75, 76, 79, 82}, r.Code) {
@@ -913,7 +917,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	spawn := func(c *placeCandidate) candResult {
 		qr, ok := a.quotaRequest(s)
 		if !ok {
-			return candResult{rc: 70, note: "quota_request_unavailable"}
+			return candResult{rc: exitConfig, note: "quota_request_unavailable"}
 		}
 		key, acc := a.remoteAccount(ctx, pool, c.name, c.cfg)
 		j, err := a.judgeHost(ctx, qr, pool, c.name, false, key, acc)
@@ -1011,7 +1015,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		case a.Wake != nil:
 			wakeErr = a.Wake.Wake(ctx, w, req)
 		default:
-			wakeErr = fail(81, "no waker configured")
+			wakeErr = fail(exitPlacement, "no waker configured")
 		}
 		if wakeErr == nil && !s.DryRun {
 			wakeErr = a.waitForNode(ctx, w, h, req.WaitSeconds)
@@ -1039,17 +1043,17 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	}
 	if len(targets) > 0 {
 		if lastNote != "" {
-			return true, nil, fail(81, "wake target did not accept spawn: %s", lastNote)
+			return true, nil, fail(exitPlacement, "wake target did not accept spawn: %s", lastNote)
 		}
-		return true, nil, fail(81, "wake target did not accept spawn")
+		return true, nil, fail(exitPlacement, "wake target did not accept spawn")
 	}
 	if !boolean(a.Config.Local, "spawn", true) {
-		return true, nil, fail(80, "local spawns are disabled on this host; no remote candidate completed")
+		return true, nil, fail(exitLocalDisabled, "local spawns are disabled on this host; no remote candidate completed")
 	}
 	if localRefusal != nil {
 		return true, nil, localRefusal
 	}
-	return true, nil, fail(81, "no placement candidate accepted spawn; no local fallback")
+	return true, nil, fail(exitPlacement, "no placement candidate accepted spawn; no local fallback")
 }
 
 func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map[string]any, error) {
@@ -1061,10 +1065,10 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 	}
 	h, ok := a.Config.Hosts[s.Host]
 	if !ok {
-		return true, nil, fail(70, "placement selected unconfigured host %s", s.Host)
+		return true, nil, fail(exitConfig, "placement selected unconfigured host %s", s.Host)
 	}
 	if seat, ok := a.Policy.Profiles[s.Profile]; ok && seat.Capability != "standard" && !boolean(h, seat.Capability, false) {
-		return true, nil, fail(70, "host %s lacks capability %s", s.Host, seat.Capability)
+		return true, nil, fail(exitConfig, "host %s lacks capability %s", s.Host, seat.Capability)
 	}
 	if _, _, e := a.taskPrecheck(ctx, s); e != nil {
 		return true, nil, e
@@ -1080,7 +1084,7 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 	c := placeCandidate{name: s.Host, cfg: h, wakeable: str(h, "wake") == "panewire", awake: true, eligible: true}
 	qr, ok := a.quotaRequest(s)
 	if !ok {
-		return true, nil, fail(70, "quota_request_unavailable")
+		return true, nil, fail(exitConfig, "quota_request_unavailable")
 	}
 	pool := a.quotaPool(ctx, s)
 	spawn := func() candResult {
@@ -1101,15 +1105,15 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 		return true, nil, res.stop
 	}
 	if res.note == "repo_unmappable" {
-		return true, nil, fail(70, "host %s cannot map the job cwd: no cwd_map override and no resolvable repo", s.Host)
+		return true, nil, fail(exitConfig, "host %s cannot map the job cwd: no cwd_map override and no resolvable repo", s.Host)
 	}
 	if res.unreachable && c.wakeable {
 		req := WakeRequest{HoldMinutes: int(integer(h, "wake_hold", 10)), WaitSeconds: int(integer(h, "wake_wait", 90)), Reason: "runtug: explicit host unreachable"}
 		if a.Wake == nil {
-			return true, nil, fail(81, "host wake unavailable")
+			return true, nil, fail(exitPlacement, "host wake unavailable")
 		}
 		if e := a.Wake.Wake(ctx, s.Host, req); e != nil {
-			return true, nil, fail(81, "host wake failed: %v", e)
+			return true, nil, fail(exitPlacement, "host wake failed: %v", e)
 		}
 		if e := a.waitForNode(ctx, s.Host, h, req.WaitSeconds); e != nil {
 			return true, nil, e
@@ -1128,7 +1132,7 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 		if res.rc != 0 {
 			return true, nil, fail(res.rc, "host %s answered its wake but the spawn still failed: %s", s.Host, res.note)
 		}
-		return true, nil, fail(81, "host %s answered its wake but the spawn still failed: %s", s.Host, res.note)
+		return true, nil, fail(exitPlacement, "host %s answered its wake but the spawn still failed: %s", s.Host, res.note)
 	}
 	if res.res.Code != 0 {
 		return true, nil, check(res.res, "remote spawn")
@@ -1136,7 +1140,7 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 	if res.rc != 0 {
 		return true, nil, fail(res.rc, "host %s refused the spawn: %s", s.Host, res.note)
 	}
-	return true, nil, fail(81, "host %s refused the spawn: %s", s.Host, res.note)
+	return true, nil, fail(exitPlacement, "host %s refused the spawn: %s", s.Host, res.note)
 }
 
 // quotaPool resolves which shared-quota pool the job's profile draws on, so
@@ -1189,7 +1193,7 @@ func parseHubHosts(raw string) ([]HostView, error) {
 		Candidates []json.RawMessage `json:"candidates"`
 	}
 	if e := json.Unmarshal([]byte(raw), &p); e != nil {
-		return nil, fail(70, "invalid placement response")
+		return nil, fail(exitConfig, "invalid placement response")
 	}
 	var out []HostView
 	for _, v := range p.Candidates {
@@ -1201,7 +1205,7 @@ func parseHubHosts(raw string) ([]HostView, error) {
 		var name string
 		if json.Unmarshal(v, &name) != nil {
 			if json.Unmarshal(v, &c) != nil {
-				return nil, fail(70, "invalid placement candidate")
+				return nil, fail(exitConfig, "invalid placement candidate")
 			}
 			name = c.Machine
 			if name == "" {
@@ -1257,7 +1261,7 @@ func (a *App) spawnStdin(ctx context.Context) error {
 		return e
 	}
 	if env.Spawn.Host != "local" {
-		return fail(2, "delegation must target local")
+		return fail(exitUsage, "delegation must target local")
 	}
 	f, e := os.CreateTemp("", "runtug-brief-*")
 	if e != nil {

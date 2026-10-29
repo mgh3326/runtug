@@ -29,7 +29,7 @@ type Job struct {
 
 func (a *App) events(id string) ([]Event, error) {
 	if !validID(id) {
-		return nil, fail(2, "invalid job id")
+		return nil, fail(exitUsage, "invalid job id")
 	}
 	dir := filepath.Join(a.Jobs, id, "events")
 	if e := noSymlinks(dir); e != nil {
@@ -42,7 +42,7 @@ func (a *App) events(id string) ([]Event, error) {
 	var out []Event
 	for _, ent := range entries {
 		if ent.Type()&os.ModeSymlink != 0 {
-			return nil, fail(75, "symlink event refused")
+			return nil, fail(exitStateConflict, "symlink event refused")
 		}
 		if ent.IsDir() || filepath.Ext(ent.Name()) != ".json" {
 			continue
@@ -57,10 +57,10 @@ func (a *App) events(id string) ([]Event, error) {
 		}
 		var ev Event
 		if e = json.Unmarshal(b, &ev); e != nil {
-			return nil, fail(75, "unreadable job event %s", ent.Name())
+			return nil, fail(exitStateConflict, "unreadable job event %s", ent.Name())
 		}
 		if ev.Kind == "" {
-			return nil, fail(75, "event kind missing")
+			return nil, fail(exitStateConflict, "event kind missing")
 		}
 		ev.name = ent.Name()
 		ev.when = info.ModTime()
@@ -137,7 +137,7 @@ func (a *App) job(id string) (Job, error) {
 		}
 	}
 	if j.Receipt == nil && j.Task == "" {
-		return j, fail(75, "no claim or receipt for job %s", id)
+		return j, fail(exitStateConflict, "no claim or receipt for job %s", id)
 	}
 	return j, nil
 }
@@ -173,7 +173,7 @@ func (a *App) durable(ctx context.Context, id string) (DurableJob, error) {
 		return j, e
 	}
 	if e := json.Unmarshal([]byte(r.Out), &j); e != nil || j.State == "" {
-		return j, fail(75, "unreadable durable job %s", id)
+		return j, fail(exitStateConflict, "unreadable durable job %s", id)
 	}
 	return j, nil
 }

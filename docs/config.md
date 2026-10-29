@@ -312,8 +312,9 @@ pruning. `--queue-key` remains an audit label, not a durable retry reservation.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success or preview. |
+| 1 | Generic failure: no, ambiguous or multiple `find`/`name-sync` matches; restore receipt failure after reclaim. |
 | 2 | Usage/task/policy target refusal. |
-| 3 / 4 | Quota-tool refusal, unchanged; artifacts use 3 for upload confirmation timeout. |
+| 3 / 4 | Quota-tool refusal, unchanged; artifacts use 3 for upload confirmation timeout and 4 for unconfirmed Drive eviction. |
 | 5 / 6 | Hub quota denial / authentication refusal. |
 | 70 | Configuration, trust or unverified admission evidence. |
 | 74 | Active job duplicate. |
@@ -328,7 +329,8 @@ pruning. `--queue-key` remains an audit label, not a durable retry reservation.
 | 83 | `spawn --wait`: the job escalated. |
 | 84 | `spawn --wait`: the job was lost or revoked. |
 | 85 | `spawn --wait`: the wait deadline expired; the job is retained. |
+| 124 | A time-bounded CLI call reached its context deadline. |
+| 255 | SSH could not reach a remote host (repository check, clone or spawn leg). |
 
-Unexpected dependency failures preserve their subprocess exit code. Time-bounded
-CLI calls return 124 when their context deadline expires. A pane success receipt
-is always authoritative for avoiding a second spawn, even with exit 82.
+Unexpected dependency failures preserve their subprocess exit code. A pane
+success receipt is always authoritative for avoiding a second spawn, even with exit 82.

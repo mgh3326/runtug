@@ -60,7 +60,7 @@ func hashFile(path string) (int64, string, error) {
 		return 0, "", e
 	}
 	if !info.Mode().IsRegular() {
-		return 0, "", fail(2, "artifact is not a regular file")
+		return 0, "", fail(exitUsage, "artifact is not a regular file")
 	}
 	h := sha256.New()
 	n, e := io.Copy(h, f)
@@ -136,7 +136,7 @@ func inventory(root string, exclude []string) ([]Content, error) {
 			return e
 		}
 		if !info.Mode().IsRegular() || strings.ContainsAny(rel, "\t\r\n") {
-			return fail(2, "nonregular or unrepresentable artifact path")
+			return fail(exitUsage, "nonregular or unrepresentable artifact path")
 		}
 		n, h, e := hashFile(path)
 		if e != nil {
@@ -149,7 +149,7 @@ func inventory(root string, exclude []string) ([]Content, error) {
 }
 func (a *App) artifacts(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fail(2, "artifacts requires move or sweep")
+		return fail(exitUsage, "artifacts requires move or sweep")
 	}
 	switch args[0] {
 	case "move":
@@ -157,12 +157,12 @@ func (a *App) artifacts(ctx context.Context, args []string) error {
 	case "sweep":
 		return a.artifactSweep(ctx, args[1:])
 	default:
-		return fail(2, "unknown artifacts command")
+		return fail(exitUsage, "unknown artifacts command")
 	}
 }
 func (a *App) artifactMove(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fail(2, "move requires a source tree")
+		return fail(exitUsage, "move requires a source tree")
 	}
 	src := expand(args[0])
 	f := flags("artifacts move")
@@ -170,25 +170,25 @@ func (a *App) artifactMove(ctx context.Context, args []string) error {
 	sourceHost := f.String("source-host", "", "")
 	apply := f.Bool("apply", false, "")
 	if e := f.Parse(args[1:]); e != nil {
-		return fail(2, "%v", e)
+		return fail(exitUsage, "%v", e)
 	}
 	if f.NArg() > 0 {
-		return fail(2, "unexpected move arguments")
+		return fail(exitUsage, "unexpected move arguments")
 	}
 	root := expand(str(a.Config.Artifacts, "drive_folder"))
 	target := expand(*dest)
 	if !filepath.IsAbs(root) || !filepath.IsAbs(target) || !within(root, target) || *dest == "" {
-		return fail(2, "--dest must be under artifacts.drive_folder")
+		return fail(exitUsage, "--dest must be under artifacts.drive_folder")
 	}
 	if e := noSymlinks(target); e != nil {
 		return e
 	}
 	if src == target || within(src, target) || within(target, src) {
-		return fail(2, "source and destination trees overlap")
+		return fail(exitUsage, "source and destination trees overlap")
 	}
 	exclude := stringsValue(a.Config.Artifacts, "exclude")
 	if len(exclude) == 0 {
-		return fail(70, "artifacts.exclude is required")
+		return fail(exitConfig, "artifacts.exclude is required")
 	}
 	if *sourceHost != "" {
 		return a.remoteArtifactMove(ctx, src, target, *sourceHost, *apply)
@@ -208,13 +208,13 @@ func (a *App) artifactMove(ctx context.Context, args []string) error {
 		return e
 	}
 	if len(rows) == 0 {
-		return fail(2, "empty artifact inventory")
+		return fail(exitUsage, "empty artifact inventory")
 	}
 	return a.moveInventory(ctx, src, target, root, rows, *apply, "")
 }
 func (a *App) moveInventory(ctx context.Context, src, target, root string, rows []Content, apply bool, remoteHost string) error {
 	if len(rows) == 0 {
-		return fail(2, "empty artifact inventory")
+		return fail(exitUsage, "empty artifact inventory")
 	}
 	rel, e := filepath.Rel(root, target)
 	if e != nil {
@@ -222,7 +222,7 @@ func (a *App) moveInventory(ctx context.Context, src, target, root string, rows 
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	if len(parts) < 2 || !validID(parts[0]) {
-		return fail(2, "dest must be drive_folder/host/name")
+		return fail(exitUsage, "dest must be drive_folder/host/name")
 	}
 	fmt.Fprintf(a.Out, "artifact-move source=%s dest=%s files=%d apply=%t\n", src, target, len(rows), apply)
 	if !apply {
@@ -236,7 +236,7 @@ func (a *App) moveInventory(ctx context.Context, src, target, root string, rows 
 	batchFiles := integer(a.Config.Artifacts, "batch_files", 2000)
 	batchBytes := integer(a.Config.Artifacts, "batch_bytes", 3<<30)
 	if batchFiles <= 0 || batchBytes <= 0 {
-		return fail(70, "invalid artifact batch limits")
+		return fail(exitConfig, "invalid artifact batch limits")
 	}
 	for i := 0; i < len(rows); {
 		end := i
@@ -303,7 +303,7 @@ func (a *App) moveInventory(ctx context.Context, src, target, root string, rows 
 		}
 		for _, path := range paths {
 			if !evicted[path] {
-				return fail(4, "Drive copy eviction unconfirmed; originals retained")
+				return fail(exitEvictionUnconfirmed, "Drive copy eviction unconfirmed; originals retained")
 			}
 		}
 		if scratch != "" {
@@ -348,12 +348,12 @@ func copyVerified(src, dest string, row Content) error {
 		return e
 	}
 	if n != row.Bytes || hash != row.SHA {
-		return fail(75, "source changed during copy")
+		return fail(exitStateConflict, "source changed during copy")
 	}
 	if _, e = os.Lstat(dest); e == nil {
 		n, h, e := hashFile(dest)
 		if e != nil || n != row.Bytes || h != row.SHA {
-			return fail(75, "destination conflict")
+			return fail(exitStateConflict, "destination conflict")
 		}
 		return nil
 	} else if !os.IsNotExist(e) {
@@ -381,7 +381,7 @@ func copyVerified(src, dest string, row Content) error {
 		return e
 	}
 	if n != row.Bytes || h != row.SHA {
-		return fail(75, "copied file hash mismatch")
+		return fail(exitStateConflict, "copied file hash mismatch")
 	}
 	return nil
 }
@@ -389,16 +389,16 @@ func (a *App) confirmUpload(ctx context.Context, paths []string) error {
 	helper := expand(str(a.Config.Artifacts, "fpbulk"))
 	logs := expand(str(a.Config.Artifacts, "drivefs_log_dir"))
 	if helper == "" || logs == "" {
-		return fail(70, "upload confirmation needs fpbulk and drivefs_log_dir")
+		return fail(exitConfig, "upload confirmation needs fpbulk and drivefs_log_dir")
 	}
 	gap := time.Duration(integer(a.Config.Artifacts, "confirm_gap_seconds", 120)) * time.Second
 	if gap < 120*time.Second {
-		return fail(70, "confirmation gap must be at least 120 seconds")
+		return fail(exitConfig, "confirmation gap must be at least 120 seconds")
 	}
 	timeout := time.Duration(integer(a.Config.Artifacts, "confirm_timeout_seconds", 21600)) * time.Second
 	poll := time.Duration(integer(a.Config.Artifacts, "poll_seconds", 30)) * time.Second
 	if poll <= 0 || timeout < gap {
-		return fail(70, "invalid confirmation timing")
+		return fail(exitConfig, "invalid confirmation timing")
 	}
 	stale := time.Duration(integer(a.Config.Artifacts, "stale_minutes", 10)) * time.Minute
 	deadline := a.Now().Add(timeout)
@@ -439,7 +439,7 @@ func (a *App) confirmUpload(ctx context.Context, paths []string) error {
 			first = time.Time{}
 		}
 		if !a.Now().Before(deadline) {
-			return fail(3, "upload confirmation timed out; copies retained")
+			return fail(exitUploadTimeout, "upload confirmation timed out; copies retained")
 		}
 		if e := a.Sleep(ctx, poll); e != nil {
 			return e
@@ -468,7 +468,7 @@ func (a *App) putRecord(ctx context.Context, key string, record any) error {
 func (a *App) remoteArtifactMove(ctx context.Context, src, dest, host string, apply bool) error {
 	h, ok := a.Config.Hosts[host]
 	if !ok || str(h, "ssh") == "" || !filepath.IsAbs(src) {
-		return fail(70, "remote source needs configured SSH host and absolute source")
+		return fail(exitConfig, "remote source needs configured SSH host and absolute source")
 	}
 	request := struct {
 		Root    string
@@ -485,7 +485,7 @@ func (a *App) remoteArtifactMove(ctx context.Context, src, dest, host string, ap
 	}
 	for _, row := range rows {
 		if !within(src, filepath.Join(src, row.Path)) || row.Bytes < 0 || len(row.SHA) != 64 || excluded(row.Path, request.Exclude) {
-			return fail(70, "invalid remote artifact inventory")
+			return fail(exitConfig, "invalid remote artifact inventory")
 		}
 	}
 	return a.moveInventory(ctx, src, dest, expand(str(a.Config.Artifacts, "drive_folder")), rows, apply, host)
@@ -503,7 +503,7 @@ func (a *App) artifactInventory() error {
 		return e
 	}
 	if !filepath.IsAbs(request.Root) {
-		return fail(2, "inventory root must be absolute")
+		return fail(exitUsage, "inventory root must be absolute")
 	}
 	if e = noSymlinks(request.Root); e != nil {
 		return e
@@ -532,7 +532,7 @@ func (a *App) pullBatch(ctx context.Context, host, src string, rows []Content, s
 	free := uint64(stat.Bavail) * uint64(stat.Bsize)
 	floor := integer(a.Config.Artifacts, "free_floor_bytes", 20<<30)
 	if floor < 0 || free < uint64(size)+uint64(floor) {
-		return "", fail(75, "artifact scratch free-space floor would be crossed")
+		return "", fail(exitStateConflict, "artifact scratch free-space floor would be crossed")
 	}
 	scratch, e := os.MkdirTemp(base, "runtug-pull-*")
 	if e != nil {
@@ -570,14 +570,14 @@ func (a *App) artifactSweep(ctx context.Context, args []string) error {
 	policyPath := f.String("policy", "", "")
 	apply := f.Bool("apply", false, "")
 	if e := f.Parse(args); e != nil {
-		return fail(2, "%v", e)
+		return fail(exitUsage, "%v", e)
 	}
 	if f.NArg() > 0 {
-		return fail(2, "unexpected sweep arguments")
+		return fail(exitUsage, "unexpected sweep arguments")
 	}
 	age, e := duration(*ageArg)
 	if e != nil || age < 0 {
-		return fail(2, "invalid sweep age")
+		return fail(exitUsage, "invalid sweep age")
 	}
 	b := defaultArtifactPolicy
 	if *policyPath != "" {
@@ -588,14 +588,14 @@ func (a *App) artifactSweep(ctx context.Context, args []string) error {
 	}
 	var pol ArtifactPolicy
 	if e = decode(b, &pol); e != nil || pol.Schema != "fleet.artifact-policy.v1" {
-		return fail(70, "invalid artifact policy")
+		return fail(exitConfig, "invalid artifact policy")
 	}
 	hatch := str(a.Config.Artifacts, "local_delete_at")
 	if hatch == "" {
 		hatch = "drive_confirmed"
 	}
 	if hatch != "drive_confirmed" && hatch != "uploaded" {
-		return fail(70, "invalid local_delete_at")
+		return fail(exitConfig, "invalid local_delete_at")
 	}
 	agents, e := a.agents(ctx)
 	if e != nil {
@@ -643,7 +643,7 @@ func (a *App) artifactSweep(ctx context.Context, args []string) error {
 		}
 		var docs []struct{ Key string }
 		if json.Unmarshal([]byte(r.Out), &docs) != nil {
-			return fail(70, "invalid artifact doc listing")
+			return fail(exitConfig, "invalid artifact doc listing")
 		}
 		for _, doc := range docs {
 			if doc.Key != prefix && !strings.HasPrefix(doc.Key, prefix+"/") {
@@ -690,12 +690,12 @@ func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRe
 			var root struct{ Path, Kind string }
 			raw, ok := pol.Roots[rule.Root]
 			if !ok {
-				return fail(70, "unknown artifact policy root")
+				return fail(exitConfig, "unknown artifact policy root")
 			}
 			if json.Unmarshal(raw, &root) != nil {
 				var rel string
 				if json.Unmarshal(raw, &rel) != nil {
-					return fail(70, "invalid artifact policy root")
+					return fail(exitConfig, "invalid artifact policy root")
 				}
 				root.Path = rel
 				root.Kind = "per-job"
@@ -703,7 +703,7 @@ func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRe
 			workRoot := filepath.Dir(filepath.Dir(a.Jobs))
 			base := filepath.Join(workRoot, root.Path)
 			if !within(workRoot, base) {
-				return fail(70, "artifact root escapes work root")
+				return fail(exitConfig, "artifact root escapes work root")
 			}
 			if root.Kind == "per-job" {
 				base = filepath.Join(base, j.ID)
@@ -754,11 +754,11 @@ func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRe
 			return e
 		}
 		if !latest.Terminal || latest.Keep {
-			return fail(75, "job changed during artifact sweep")
+			return fail(exitStateConflict, "job changed during artifact sweep")
 		}
 		n, h, e = hashFile(path)
 		if e != nil || n != row.Bytes || h != row.SHA {
-			return fail(75, "artifact changed before deletion")
+			return fail(exitStateConflict, "artifact changed before deletion")
 		}
 		rec.Deleted = append(rec.Deleted, row)
 		if e = a.putRecord(ctx, key, rec); e != nil {
@@ -772,7 +772,7 @@ func (a *App) sweepRecord(ctx context.Context, j Job, key string, rec ArtifactRe
 		}
 		n, h, e = hashFile(path)
 		if e != nil || n != row.Bytes || h != row.SHA {
-			return fail(75, "artifact changed while recording deletion")
+			return fail(exitStateConflict, "artifact changed while recording deletion")
 		}
 		if e = os.Remove(path); e != nil {
 			return e
@@ -799,7 +799,7 @@ func (a *App) sweepStillSafe(ctx context.Context, j Job) error {
 		return e
 	}
 	if !latest.Terminal || latest.Keep || a.watchActive(j.ID) {
-		return fail(75, "job or watcher changed during sweep")
+		return fail(exitStateConflict, "job or watcher changed during sweep")
 	}
 	agents, e := a.agents(ctx)
 	if e != nil {
@@ -807,7 +807,7 @@ func (a *App) sweepStillSafe(ctx context.Context, j Job) error {
 	}
 	for _, ag := range agents {
 		if ag.Pane == latest.Pane {
-			return fail(75, "pane present during sweep")
+			return fail(exitStateConflict, "pane present during sweep")
 		}
 	}
 	r := a.call(ctx, "handoffkeep", "tasks", "show", j.Task)
@@ -816,7 +816,7 @@ func (a *App) sweepStillSafe(ctx context.Context, j Job) error {
 	}
 	var t struct{ State string }
 	if json.Unmarshal([]byte(r.Out), &t) != nil || !slices.Contains([]string{"merged", "dropped"}, t.State) {
-		return fail(75, "task reopened during sweep")
+		return fail(exitStateConflict, "task reopened during sweep")
 	}
 	return nil
 }

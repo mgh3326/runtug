@@ -20,7 +20,7 @@ func (a *App) workspaceTrust(ctx context.Context, s Spawn, seat Seat, env []stri
 		return e
 	}
 	if cwd == a.Home || cwd == "/" {
-		return fail(70, "refusing broad workspace trust")
+		return fail(exitConfig, "refusing broad workspace trust")
 	}
 	switch seat.Kind {
 	case "claude":
@@ -29,7 +29,7 @@ func (a *App) workspaceTrust(ctx context.Context, s Spawn, seat Seat, env []stri
 		return a.mergeStore(ctx, path, false, func(data map[string]any) error {
 			projects, ok := data["projects"].(map[string]any)
 			if data["projects"] != nil && !ok {
-				return fail(70, "Claude projects is not an object")
+				return fail(exitConfig, "Claude projects is not an object")
 			}
 			if projects == nil {
 				projects = map[string]any{}
@@ -37,7 +37,7 @@ func (a *App) workspaceTrust(ctx context.Context, s Spawn, seat Seat, env []stri
 			}
 			entry, ok := projects[cwd].(map[string]any)
 			if projects[cwd] != nil && !ok {
-				return fail(70, "Claude project is not an object")
+				return fail(exitConfig, "Claude project is not an object")
 			}
 			if entry == nil {
 				entry = map[string]any{}
@@ -52,12 +52,12 @@ func (a *App) workspaceTrust(ctx context.Context, s Spawn, seat Seat, env []stri
 		return a.mergeStore(ctx, path, true, func(data map[string]any) error {
 			paths, ok := data["trusted_paths"].([]any)
 			if !ok {
-				return fail(70, "Devin trusted_paths is not a list")
+				return fail(exitConfig, "Devin trusted_paths is not a list")
 			}
 			for _, path := range paths {
 				base, ok := path.(string)
 				if !ok {
-					return fail(70, "invalid Devin trusted path")
+					return fail(exitConfig, "invalid Devin trusted path")
 				}
 				if base == cwd || within(base, cwd) {
 					return nil
@@ -134,7 +134,7 @@ func (a *App) waitLock(ctx context.Context, f *os.File) error {
 	deadline := a.Now().Add(10 * time.Second)
 	for !tryLock(f) {
 		if !a.Now().Before(deadline) {
-			return fail(75, "workspace trust lock timed out")
+			return fail(exitStateConflict, "workspace trust lock timed out")
 		}
 		if e := a.Sleep(ctx, 50*time.Millisecond); e != nil {
 			return e
@@ -167,7 +167,7 @@ func (a *App) mergeStore(ctx context.Context, path string, required bool, mutate
 			return e
 		}
 		if e = json.Unmarshal(raw, &data); e != nil || data == nil {
-			return fail(70, "malformed workspace trust store")
+			return fail(exitConfig, "malformed workspace trust store")
 		}
 	}
 	if e = mutate(data); e != nil {

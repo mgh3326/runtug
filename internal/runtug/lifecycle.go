@@ -8,24 +8,25 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func (a *App) lifecycle(ctx context.Context, kind string, args []string) error {
 	if len(args) == 0 || !validID(args[0]) {
-		return fail(2, "%s requires a job id", kind)
+		return fail(exitUsage, "%s requires a job id", kind)
 	}
 	id := args[0]
 	f := flags(kind)
 	report := f.String("report", "", "")
 	question := f.String("question", "", "")
 	if e := f.Parse(args[1:]); e != nil {
-		return fail(2, "%v", e)
+		return fail(exitUsage, "%v", e)
 	}
 	if f.NArg() > 0 {
-		return fail(2, "unexpected arguments")
+		return fail(exitUsage, "unexpected arguments")
 	}
 	j, e := a.job(id)
 	if e != nil {
@@ -33,26 +34,18 @@ func (a *App) lifecycle(ctx context.Context, kind string, args []string) error {
 	}
 	if kind == "restore" {
 		if *report != "" || *question != "" {
-			return fail(2, "restore accepts only JOB")
+			return fail(exitUsage, "restore accepts only JOB")
 		}
 		return a.restore(ctx, j)
 	}
 	if kind == "escalate" && (*question == "" || j.Parent == "") {
-		return fail(2, "escalate requires --question and a recorded parent lane")
+		return fail(exitUsage, "escalate requires --question and a recorded parent lane")
 	}
 	if *report == "" && kind == "done" {
-		matches, _ := filepath.Glob(filepath.Join(a.Jobs, id, "report*.md"))
-		sort.Slice(matches, func(i, j int) bool {
-			x, _ := os.Stat(matches[i])
-			y, _ := os.Stat(matches[j])
-			return x.ModTime().After(y.ModTime())
-		})
-		if len(matches) > 0 {
-			*report = matches[0]
-		}
+		*report = newestReport(filepath.Join(a.Jobs, id))
 	}
 	if kind == "done" && *report == "" {
-		return fail(2, "done requires an existing report")
+		return fail(exitUsage, "done requires an existing report")
 	}
 	body := []byte{}
 	if *report != "" {
@@ -194,7 +187,7 @@ func (a *App) releaseQuota(ctx context.Context, j Job) error {
 	}
 	for _, record := range status.Records {
 		if record.Pool == "" {
-			return fail(75, "invalid quota record")
+			return fail(exitStateConflict, "invalid quota record")
 		}
 		if e := a.must(ctx, "arbiter", "release", "--job", j.ID, "--resource", record.Pool, "--kind", "quota_pool"); e != nil {
 			return e
@@ -208,7 +201,7 @@ func (a *App) restore(ctx context.Context, j Job) error {
 		return e
 	}
 	if d.State != "released" {
-		return fail(2, "restore requires released job")
+		return fail(exitUsage, "restore requires released job")
 	}
 	agents, e := a.agents(ctx)
 	if e != nil {
@@ -218,13 +211,13 @@ func (a *App) restore(ctx context.Context, j Job) error {
 	for _, ag := range agents {
 		if ag.Pane == j.Pane {
 			if ag.Tab != j.Tab || ag.Name != j.Label || !liveStatus(ag.Status) {
-				return fail(2, "restore pane identity or liveness mismatch")
+				return fail(exitUsage, "restore pane identity or liveness mismatch")
 			}
 			found++
 		}
 	}
 	if found != 1 || j.Pane == "" || j.Tab == "" {
-		return fail(2, "restore requires one verified existing pane")
+		return fail(exitUsage, "restore requires one verified existing pane")
 	}
 	role := "worker"
 	if j.Role == "builder" || j.Role == "captain" {
@@ -238,7 +231,7 @@ func (a *App) restore(ctx context.Context, j Job) error {
 		return e
 	}
 	if e = a.event(ctx, j.ID, "job.spawned", j.Receipt); e != nil {
-		return fail(1, "job reclaimed; restoring receipt failed: %v", e)
+		return fail(exitFailure, "job reclaimed; restoring receipt failed: %v", e)
 	}
 	if e = a.startWatch(j.ID); e != nil {
 		return e
@@ -247,3 +240,30 @@ func (a *App) restore(ctx context.Context, j Job) error {
 	return nil
 }
 func liveStatus(s string) bool { return s == "working" || s == "idle" || s == "done" }
+
+// newestReport picks the most recently modified report*.md in dir. Equal
+// modification times fall back to lexical name order so the choice is stable;
+// files that vanish between the glob and the stat are skipped.
+func newestReport(dir string) string {
+	type candidate struct {
+		path string
+		mod  time.Time
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "report*.md"))
+	var found []candidate
+	for _, m := range matches {
+		if st, e := os.Stat(m); e == nil {
+			found = append(found, candidate{m, st.ModTime()})
+		}
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	slices.SortStableFunc(found, func(x, y candidate) int {
+		if c := y.mod.Compare(x.mod); c != 0 {
+			return c
+		}
+		return strings.Compare(x.path, y.path)
+	})
+	return found[0].path
+}

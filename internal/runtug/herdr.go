@@ -53,7 +53,7 @@ func (a *App) launchArgs(s Seat, l Launch) ([]string, []string, error) {
 		}
 		c, err := readThinking(home)
 		if err != nil || c != e {
-			return nil, nil, fail(70, "Kimi clone must attest thinking effort %s", e)
+			return nil, nil, fail(exitConfig, "Kimi clone must attest thinking effort %s", e)
 		}
 		return []string{"--auto", "-m", m}, []string{"KIMI_CODE_HOME=" + home}, nil
 	case "kiro":
@@ -63,7 +63,7 @@ func (a *App) launchArgs(s Seat, l Launch) ([]string, []string, error) {
 	case "agy":
 		return []string{"--model", m, "--dangerously-skip-permissions"}, env, nil
 	default:
-		return nil, nil, fail(70, "unsupported agent kind %s", s.Kind)
+		return nil, nil, fail(exitConfig, "unsupported agent kind %s", s.Kind)
 	}
 }
 
@@ -95,7 +95,7 @@ func (a *App) routeEnv(s Seat) ([]string, error) {
 	b, err := os.ReadFile(keyFile)
 	key := strings.TrimSpace(string(b))
 	if err != nil || key == "" {
-		return nil, fail(70, "%s route key file is missing or empty", s.Route)
+		return nil, fail(exitConfig, "%s route key file is missing or empty", s.Route)
 	}
 	env := []string{"ANTHROPIC_BASE_URL=" + firstNonempty(os.Getenv(r.baseURLEnv), r.defaultURL), "ANTHROPIC_AUTH_TOKEN=" + key}
 	if s.ContextTokens > 0 {
@@ -144,7 +144,7 @@ func (a *App) agents(ctx context.Context) ([]Agent, error) {
 	}
 	v, ok := m["agents"]
 	if !ok {
-		return nil, fail(70, "agent list missing agents")
+		return nil, fail(exitConfig, "agent list missing agents")
 	}
 	var agents []Agent
 	e := json.Unmarshal(v, &agents)
@@ -160,7 +160,7 @@ func (a *App) status(ctx context.Context, pane string) (string, error) {
 			return ag.Status, nil
 		}
 	}
-	return "", fail(70, "pane absent from agent list")
+	return "", fail(exitConfig, "pane absent from agent list")
 }
 
 var ansi = regexp.MustCompile("\x1b\\[[0-?]*[ -/]*[@-~]")
@@ -272,7 +272,7 @@ func (a *App) modelProof(ctx context.Context, s Seat, l Launch, cwd, pane, brief
 		ok = PiProof(screen, l.ModelID, l.Effort, cwd, a.Home, brief)
 	}
 	if !ok {
-		return fail(70, "%s model/effort not proven by visible session", s.Kind)
+		return fail(exitConfig, "%s model/effort not proven by visible session", s.Kind)
 	}
 	return nil
 }
@@ -303,13 +303,13 @@ func (a *App) pinfo(ctx context.Context, pane string) (processInfo, error) {
 	}
 	v, ok := m["process_info"]
 	if !ok {
-		return p, fail(70, "missing process_info")
+		return p, fail(exitConfig, "missing process_info")
 	}
 	if e := json.Unmarshal(v, &p); e != nil {
 		return p, e
 	}
 	if p.Processes == nil {
-		return p, fail(70, "missing foreground_processes")
+		return p, fail(exitConfig, "missing foreground_processes")
 	}
 	return p, nil
 }
@@ -328,7 +328,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		}
 	}
 	if !ready {
-		return fail(70, "shell not ready")
+		return fail(exitConfig, "shell not ready")
 	}
 	// Exact output-line proof avoids typing launch argv into an rc-file read.
 	var nonce [12]byte
@@ -355,7 +355,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		}
 	}
 	if !ready {
-		return fail(70, "shell command execution not proven")
+		return fail(exitConfig, "shell command execution not proven")
 	}
 	var args []string
 	if seat.Kind == "devin" || seat.Kind == "cmd" {
@@ -394,7 +394,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		}
 	}
 	if !foreground {
-		return fail(70, "agent not in foreground; brief withheld")
+		return fail(exitConfig, "agent not in foreground; brief withheld")
 	}
 	if seat.Kind == "devin" {
 		r := a.call(ctx, "herdr", "agent", "explain", pane)
@@ -402,7 +402,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			return e
 		}
 		if !strings.Contains(r.Out, "welcome_prompt_footer") {
-			return fail(70, "Devin identity not proven")
+			return fail(exitConfig, "Devin identity not proven")
 		}
 	}
 	if seat.Kind == "pi" || seat.Kind == "cmd" {
@@ -432,7 +432,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			}
 		}
 		if !proven {
-			return fail(70, "Codex model/effort footer not proven")
+			return fail(exitConfig, "Codex model/effort footer not proven")
 		}
 	}
 	return a.waitAgentIdle(ctx, pane, timeout)
@@ -500,7 +500,7 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 		return e
 	}
 	if before != "idle" && before != "done" {
-		return fail(76, "agent must be idle before initial brief")
+		return fail(exitSubmitUnconfirmed, "agent must be idle before initial brief")
 	}
 	if kind == "cmd" {
 		if e = a.must(ctx, "herdr", "pane", "send-text", pane, brief); e != nil {
@@ -544,11 +544,11 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 			}
 		}
 	}
-	return fail(76, "brief submission unconfirmed after one submit retry")
+	return fail(exitSubmitUnconfirmed, "brief submission unconfirmed after one submit retry")
 }
 func (a *App) registerLane(ctx context.Context, lane, parent, pane, role, machine string) error {
 	if str(a.Config.Hub, "hub_url") == "" {
-		return fail(70, "hub lane config missing")
+		return fail(exitConfig, "hub lane config missing")
 	}
 	args := []string{"lanes", "add", lane, "--machine", machine, "--pane", pane, "--parent", parent}
 	args = append(args, a.Config.hubArgs(role)...)
@@ -565,7 +565,7 @@ func (a *App) hubGate(ctx context.Context, cwd, gate string) error {
 		}
 	}
 	if !validID(pool) {
-		return fail(70, "quota gate response lacks pool")
+		return fail(exitConfig, "quota gate response lacks pool")
 	}
 	args := []string{"place", "--class", "worker", "--cwd", cwd, "--pool", pool, "--hub-url", str(a.Config.Hub, "hub_url"), "--hub-token-env", str(a.Config.Hub, "hub_token_env")}
 	if v := str(a.Config.Hub, "hub_cf_env"); v != "" {
@@ -581,6 +581,6 @@ func (a *App) hubGate(ctx context.Context, cwd, gate string) error {
 	case 2, 5, 6, 70:
 		return check(r, "hub quota policy")
 	default:
-		return fail(70, "hub quota policy failed closed")
+		return fail(exitConfig, "hub quota policy failed closed")
 	}
 }

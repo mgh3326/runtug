@@ -51,11 +51,42 @@ func (r ExecRunner) Run(ctx context.Context, c Command) Result {
 			fmt.Fprintln(&err, e)
 		}
 		if ctx.Err() != nil {
-			code = 124
+			code = exitTimeout
 		}
 	}
 	return Result{out.String(), err.String(), code}
 }
+
+// Exit statuses are part of the CLI contract; docs/config.md lists them and
+// TestExitCodesDocumented keeps the two in step. Always pass one of these to
+// fail rather than a literal number.
+const (
+	exitFailure             = 1   // generic failure (find/name-sync selection, restore receipt)
+	exitUsage               = 2   // usage, task or policy target refusal
+	exitUploadTimeout       = 3   // artifact upload confirmation timed out
+	exitEvictionUnconfirmed = 4   // artifact Drive eviction unconfirmed
+	exitConfig              = 70  // configuration, trust or unverified admission evidence
+	exitDuplicate           = 74  // active job duplicate
+	exitStateConflict       = 75  // unreadable/changed durable state or heavy wait cap
+	exitSubmitUnconfirmed   = 76  // initial brief submission unconfirmed
+	exitSeatRefused         = 77  // role/seat/grade/family/E6 refusal
+	exitHeavyConfig         = 78  // heavy configuration refusal
+	exitMockRefused         = 79  // mock isolation refusal
+	exitLocalDisabled       = 80  // local spawning disabled without a remote fallback
+	exitPlacement           = 81  // wake/capacity placement failure
+	exitLaneUnregistered    = 82  // builder pane committed but lane unregistered
+	exitWaitEscalated       = 83  // spawn --wait: the job escalated
+	exitWaitLost            = 84  // spawn --wait: the job was lost or revoked
+	exitWaitTimeout         = 85  // spawn --wait: the wait deadline expired
+	exitTimeout             = 124 // a time-bounded CLI call hit its deadline
+	exitUnreachable         = 255 // SSH could not reach the host (ssh's own status)
+)
+
+// Exit statuses of dependency CLIs that runtug interprets.
+const (
+	arbiterDuplicateClaim = 4 // arbiter claim: a live claim already holds the job
+	quotaGateRoleDenied   = 5 // quota gate: the role may not use the seat
+)
 
 type ExitError struct {
 	Code    int

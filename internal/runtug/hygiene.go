@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -30,18 +31,18 @@ func (a *App) hygiene(ctx context.Context, kind string, args []string) error {
 	_ = f.String("heavy-age", "24h", "")
 	_ = f.String("policy", "", "")
 	if e := f.Parse(args); e != nil {
-		return fail(2, "%v", e)
+		return fail(exitUsage, "%v", e)
 	}
 	if f.NArg() != 0 {
-		return fail(2, "unexpected hygiene argument")
+		return fail(exitUsage, "unexpected hygiene argument")
 	}
 	age, e := duration(*grace)
 	if e != nil || age < 0 {
-		return fail(2, "invalid grace")
+		return fail(exitUsage, "invalid grace")
 	}
 	staleAge, e := duration(*stale)
 	if e != nil || staleAge < 0 {
-		return fail(2, "invalid stale-age")
+		return fail(exitUsage, "invalid stale-age")
 	}
 	agents, e := a.agents(ctx)
 	if e != nil {
@@ -123,7 +124,7 @@ func (a *App) hygiene(ctx context.Context, kind string, args []string) error {
 		for _, ag := range fresh {
 			if ag.Pane == j.Pane {
 				if ag.Status == "working" || ag.Name != j.Label || j.Tab != "" && ag.Tab != j.Tab {
-					return fail(75, "pane changed during reap")
+					return fail(exitStateConflict, "pane changed during reap")
 				}
 				present = true
 			}
@@ -164,7 +165,7 @@ func (a *App) removeLane(ctx context.Context, j Job) error {
 func (a *App) reapWorktree(ctx context.Context, j Job) error {
 	cwd := str(j.Receipt, "cwd")
 	if cwd == "" {
-		return fail(2, "missing worktree path")
+		return fail(exitUsage, "missing worktree path")
 	}
 	if e := noSymlinks(cwd); e != nil {
 		return e
@@ -175,14 +176,14 @@ func (a *App) reapWorktree(ctx context.Context, j Job) error {
 	}
 	lines := strings.Fields(r.Out)
 	if len(lines) != 2 || lines[0] == lines[1] || lines[0] == ".git" {
-		return fail(2, "canonical checkout protected")
+		return fail(exitUsage, "canonical checkout protected")
 	}
 	r = a.call(ctx, "git", "-C", cwd, "status", "--porcelain")
 	if r.Code != 0 || r.Out != "" {
-		return fail(2, "dirty worktree protected")
+		return fail(exitUsage, "dirty worktree protected")
 	}
 	if e := a.must(ctx, "git", "-C", cwd, "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"); e != nil {
-		return fail(2, "unmerged worktree protected")
+		return fail(exitUsage, "unmerged worktree protected")
 	}
 	return a.must(ctx, "git", "-C", cwd, "worktree", "remove", cwd)
 }
@@ -204,7 +205,7 @@ func (a *App) tabs(ctx context.Context) ([]Tab, error) {
 	b, _ := encode(unwrap(m)["tabs"])
 	var tabs []Tab
 	if string(b) == "null" {
-		return nil, fail(70, "tab list missing tabs")
+		return nil, fail(exitConfig, "tab list missing tabs")
 	}
 	e := json.Unmarshal(b, &tabs)
 	return tabs, e
@@ -212,31 +213,27 @@ func (a *App) tabs(ctx context.Context) ([]Tab, error) {
 func (a *App) diagnostics(ctx context.Context, kind string, args []string) error {
 	if kind == "hosts" {
 		if len(args) > 0 {
-			return fail(2, "hosts accepts no arguments")
+			return fail(exitUsage, "hosts accepts no arguments")
 		}
 		fmt.Fprintf(a.Out, "config=%s\nlocal spawn=%t heavy_max=%d heavy_load_wait=%t\n", configPath(), boolean(a.Config.Local, "spawn", true), integer(a.Config.Local, "heavy_max", 1), boolean(a.Config.Local, "heavy_load_wait", true))
-		for host, h := range a.Config.Hosts {
+		for _, host := range slices.Sorted(maps.Keys(a.Config.Hosts)) {
+			h := a.Config.Hosts[host]
 			fmt.Fprintf(a.Out, "host=%s via=%s capacity=%d\n", host, str(h, "via"), integer(h, "capacity", 0))
 		}
 		return nil
 	}
 	if kind == "profiles" {
 		if len(args) > 0 {
-			return fail(2, "profiles accepts no arguments")
+			return fail(exitUsage, "profiles accepts no arguments")
 		}
-		var names []string
-		for name := range a.Policy.Profiles {
-			names = append(names, name)
-		}
-		slices.Sort(names)
-		for _, name := range names {
+		for _, name := range slices.Sorted(maps.Keys(a.Policy.Profiles)) {
 			fmt.Fprintln(a.Out, name)
 		}
 		return nil
 	}
 	if kind == "lanes-missing" {
 		if len(args) > 0 {
-			return fail(2, "lanes-missing accepts no arguments")
+			return fail(exitUsage, "lanes-missing accepts no arguments")
 		}
 		return a.lanesMissing(ctx)
 	}
@@ -256,14 +253,14 @@ func (a *App) diagnostics(ctx context.Context, kind string, args []string) error
 			if v == "--pane-only" {
 				paneOnly = true
 			} else if strings.HasPrefix(v, "-") || target != "" {
-				return fail(2, "find requires one name or label")
+				return fail(exitUsage, "find requires one name or label")
 			} else {
 				target = v
 			}
 		}
 		_ = f
 		if target == "" {
-			return fail(2, "find requires a name or label")
+			return fail(exitUsage, "find requires a name or label")
 		}
 		var matches []Agent
 		for _, ag := range agents {
@@ -283,11 +280,11 @@ func (a *App) diagnostics(ctx context.Context, kind string, args []string) error
 			}
 		}
 		if len(matches) == 0 {
-			return fail(1, "no exact name or label match")
+			return fail(exitFailure, "no exact name or label match")
 		}
 		if paneOnly {
 			if len(matches) != 1 {
-				return fail(1, "ambiguous pane selection")
+				return fail(exitFailure, "ambiguous pane selection")
 			}
 			fmt.Fprintln(a.Out, matches[0].Pane)
 			return nil
@@ -301,7 +298,7 @@ func (a *App) diagnostics(ctx context.Context, kind string, args []string) error
 			fmt.Fprintln(a.Out, r.Out)
 		}
 		if len(matches) > 1 {
-			return fail(1, "multiple panes matched")
+			return fail(exitFailure, "multiple panes matched")
 		}
 		return nil
 	}
@@ -311,7 +308,7 @@ func (a *App) diagnostics(ctx context.Context, kind string, args []string) error
 		if arg == "--apply" {
 			apply = true
 		} else if strings.HasPrefix(arg, "-") {
-			return fail(2, "invalid name-sync flag")
+			return fail(exitUsage, "invalid name-sync flag")
 		} else {
 			labels = append(labels, arg)
 		}
@@ -345,7 +342,7 @@ func (a *App) diagnostics(ctx context.Context, kind string, args []string) error
 }
 func (a *App) lanesMissing(ctx context.Context) error {
 	if str(a.Config.Hub, "hub_url") == "" {
-		return fail(70, "lanes audit needs hub config")
+		return fail(exitConfig, "lanes audit needs hub config")
 	}
 	args := append([]string{"lanes", "ls"}, a.Config.hubArgs("builder")...)
 	r := a.call(ctx, "panewire", args...)
@@ -356,7 +353,7 @@ func (a *App) lanesMissing(ctx context.Context) error {
 		Lanes []struct{ Lane, Parent string } `json:"lanes"`
 	}
 	if e := json.Unmarshal([]byte(r.Out), &doc); e != nil || doc.Lanes == nil {
-		return fail(70, "invalid lanes response")
+		return fail(exitConfig, "invalid lanes response")
 	}
 	lanes := map[string]string{}
 	for _, lane := range doc.Lanes {

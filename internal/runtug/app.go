@@ -147,7 +147,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	case "_spawn-stdin":
 		return a.spawnStdin(ctx)
 	default:
-		return fail(2, "unknown command %q", args[0])
+		return fail(exitUsage, "unknown command %q", args[0])
 	}
 }
 func (a *App) help(cmd string) error {
