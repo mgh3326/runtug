@@ -180,8 +180,23 @@ Automatic model selection (`spawn` with `-m` omitted or `-m auto`) reads the
 live bench catalog and pool status from the quota CLI, then orders candidates
 under the versioned pool-order policy (`[local].pool_policy` or
 `RUNTUG_POOL_POLICY`, else the embedded copy): free pool/model sets first,
-then subscription pools the quota status flags WASTE, then named credit
-pools, then ranked spend pools. Non-free candidates additionally need a
+then WASTE subscription pools, then named credit pools, then ranked spend
+pools. Inside a tier the lowest catalog grade that satisfies the task wins,
+then the pool with the lower projected use at reset (the used percentage when
+a pool cannot be paced yet), then the smaller effort, then the catalog score.
+
+The projection is pacelever's pace: for each account-scope bucket in the
+quota status, used percentage ÷ elapsed share of its window, paced at the
+status document's `generated_at`; a bucket past its reset or under 5% into its
+window has none, and a pool's projection is its highest bucket's. Two policy
+keys use it, both defaulting to 100:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `waste_below_projected_pct` | `100` | A non-credit subscription pool projected below this at reset is WASTE: the rest is lost at reset, so it is spent before credit and ranked pools. Without a projection the quota status `verdict.waste` flag decides. |
+| `exclude_at_projected_pct` | `100` | A pool (free pools included) projected at or above this is dropped as `projected_exhaust`, whatever its tier. Must not be below `waste_below_projected_pct`. |
+
+Non-free candidates additionally need a
 readable `ok` nonstale spend status; every candidate needs fresh
 host-presence evidence for its quota account on a spawn-eligible host and a
 passing quota gate. Any unknown,
@@ -193,20 +208,19 @@ overrides require `--override-reason`, which is recorded; escalation and
 consult-only gates stay excluded unless `--allow-escalation` is given, and
 quota admission still applies to overrides.
 
-Selection is urgency-aware. `spawn --urgency normal|urgent` sets it; when the
+Selection records urgency. `spawn --urgency normal|urgent` sets it; when the
 flag is omitted the bound hk task's `priority` is read from the existing task
 precheck (priority 1 or 2 resolves to urgent, anything else or unreadable to
-normal), and an explicit flag always wins. The policy `order` is used as
-written for normal work. For urgent work the `free` tier moves to the end and
-the other tiers keep their policy order (default `waste`, `credit`, `ranked`,
-`free`); within `ranked` the highest catalog grade is tried first, then the
-lowest used quota percentage. Grade, gate, role, family and capability
-filters, host presence and the quota gate are unchanged, unknown or stale
-quota still drops the candidate, and an urgent spawn whose paid candidates are
-all refused falls back to free. The `job.placement` selection record gains
-`urgency`, `urgency_source` (`flag`, `task-priority` or `default`), the
-`tiers` order actually used and a one-line `decision`; `--dry-run` prints
-`urgency=<v> source=<s> tiers=<a>><b>...` before the full record.
+normal), and an explicit flag always wins. Urgency does not change the
+order: the policy `order` and the grade-fit rule apply to every task
+(policy/quota-stop: free first, always), and urgent work reaches a paid pool
+when the free rung is refused or excluded. The `job.placement` selection
+record carries `urgency`, `urgency_source` (`flag`, `task-priority` or
+`default`), the `tiers` order used, a one-line `decision`, the ordering
+`rule` with both thresholds, `projected_pct` and `used_pct` per candidate,
+and on `chosen` its `tier`, `grade`, `projected_pct` and a one-line `why`;
+`--dry-run` prints `urgency=<v> source=<s> tiers=<a>><b>...` before the full
+record.
 
 ## `[artifacts]`
 

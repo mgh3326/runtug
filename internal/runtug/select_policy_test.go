@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -149,5 +150,91 @@ func TestSelectionPolicyScenarios(t *testing.T) {
 				t.Fatalf("tier order must be the policy order %v whatever the urgency: %s", policy.Order, tiers)
 			}
 		})
+	}
+}
+
+func TestPoolsProjectAtReset(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
+	doc := fmt.Sprintf(`{"schema":"scopefuel.v1","generated_at":%q,"providers":[
+	  {"id":"half","status":"ok","pool_class":"spend","buckets":[
+	    {"window":"7d","used_pct":8,"resets_at":%q,"scope":{"kind":"account"}},
+	    {"window":"5h","used_pct":90,"resets_at":%q,"scope":{"kind":"model"}}]},
+	  {"id":"hot","status":"ok","pool_class":"spend","buckets":[
+	    {"window":"7d","used_pct":10,"resets_at":%q,"scope":{"kind":"account"}},
+	    {"window":"5h","used_pct":60,"resets_at":%q,"scope":{"kind":"account"}}]},
+	  {"id":"fresh","status":"ok","pool_class":"spend","buckets":[
+	    {"window":"7d","used_pct":1,"resets_at":%q,"scope":{"kind":"account"}}]}
+	]}`, at(0), at(84*time.Hour), at(time.Hour), at(84*time.Hour), at(150*time.Minute), at(7*24*time.Hour-time.Hour))
+	pools, e := CLIQuota{Runner: &fakeRunner{Do: func(Command) Result { return Result{Out: doc} }}, Binary: "quota"}.Pools(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if p := pools["half"].Projected; p == nil || *p != 16 {
+		t.Fatalf("8%% used half way through 7d projects 16%% (model-scope buckets ignored): %v", p)
+	}
+	if p := pools["hot"].Projected; p == nil || *p != 120 {
+		t.Fatalf("the highest account bucket projection wins: %v", p)
+	}
+	if pools["fresh"].Projected != nil {
+		t.Fatal("a window under 5% elapsed has no projection")
+	}
+}
+
+func TestPoolPolicyProjectionThresholds(t *testing.T) {
+	p, e := LoadPoolPolicy("")
+	if e != nil || p.WasteBelow != 100 || p.ExcludeAt != 100 {
+		t.Fatalf("shipped thresholds: %+v %v", p, e)
+	}
+	dir := t.TempDir()
+	for body, ok := range map[string]bool{
+		`{"version":1,"order":["free","waste","credit","ranked"]}`:                                                                true,
+		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":80,"exclude_at_projected_pct":100}`:  true,
+		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":110,"exclude_at_projected_pct":100}`: false,
+	} {
+		path := dir + "/p.json"
+		if e := os.WriteFile(path, []byte(body), 0600); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := LoadPoolPolicy(path); (e == nil) != ok {
+			t.Fatalf("%s: %v", body, e)
+		}
+	}
+}
+
+func TestSelectionRecordExplainsChoice(t *testing.T) {
+	waste := true
+	rows := []CatalogRow{
+		{Profile: "sonnet", Effort: "medium", Grade: "B", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "codex-sol", Effort: "high", Grade: "A", Pool: "codex", Gate: "default", ModelID: "m"},
+		{Profile: "opus", Effort: "high", Grade: "S", Pool: "hot", Gate: "default", ModelID: "m"},
+	}
+	pools := map[string]PoolView{
+		"claude": {Status: "ok", Class: "spend", Blocking: ptrF(8), Projected: ptrF(16)},
+		"codex":  {Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(21), Projected: ptrF(42)},
+		"hot":    {Status: "ok", Class: "spend", Blocking: ptrF(60), Projected: ptrF(120)},
+	}
+	a, s, q := selFixture(t, "B", rows, pools, []string{"claude", "codex", "hot"})
+	q.GateDo = gatePools(map[string]string{"sonnet": "claude", "codex-sol": "codex", "opus": "hot"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	rec := sel.record()
+	chosen := rec["chosen"].(map[string]any)
+	if chosen["seat"] != "sonnet" || chosen["tier"] != "waste" || chosen["grade"] != "B" || chosen["projected_pct"] != 16.0 {
+		t.Fatalf("chosen: %v", chosen)
+	}
+	if chosen["why"] != "tier=waste grade=B for task B projected=16%" {
+		t.Fatalf("why: %v", chosen["why"])
+	}
+	if !strings.Contains(rec["rule"].(string), "lowest grade >= B") {
+		t.Fatalf("rule: %v", rec["rule"])
+	}
+	if got := candOutcome(rec, "opus", "high"); got["outcome"] != "dropped:projected_exhaust" || got["projected_pct"] != 120.0 {
+		t.Fatalf("a pool projected past reset must be excluded and say so: %v", got)
+	}
+	if got := candOutcome(rec, "codex-sol", "high"); got["outcome"] != "below_choice" || got["tier"] != "waste" {
+		t.Fatalf("codex: %v", got)
 	}
 }

@@ -17,22 +17,25 @@ Omit `-m` (or pass `-m auto`) and runtug selects the profile mechanically:
 the quota catalog's live rungs are filtered by the task's declared grade,
 admission gate, role and capability tags, ordered by the versioned pool-order
 policy (free pools, then WASTE subscription pools, the credit pool, then
-ranked spend), and admitted in order — each must have fresh host-presence
+ranked spend; inside a tier the lowest grade that fits the task, then the pool
+with the lower projected use at reset), and admitted in order — each must have fresh host-presence
 evidence for its quota account and pass the quota gate. Unknown, stale or
 degraded evidence is never guessed admissible: selection fails closed.
 Every considered rung and its drop reason is recorded on the placement event;
 `--dry-run` prints the record and executes nothing.
 
-Urgency changes only the tier order. Normal work keeps the free pool (SWE-2)
-first. Urgent work must not queue behind it, so the free tier moves last:
-WASTE subscription pools, the credit pool, ranked spend (highest grade first,
-then quota headroom), then free. Pass `--urgency normal|urgent`; when it is
-omitted the bound hk task's priority decides (1–2 is urgent) and otherwise the
-default is normal. An explicit flag always wins. Grade, gate, role and family
-filters, presence and the quota gate apply unchanged, unknown quota still
-fails closed, and an urgent spawn whose paid rungs are all refused falls back
-to free. The record and the `--dry-run` output carry
-`urgency=<v> source=<flag|task-priority|default>` and the tier order used.
+A subscription pool is WASTE when its use projected to reset (pacelever's
+pace: used ÷ elapsed share of the window) stays below the policy's
+`waste_below_projected_pct`; a pool projected at or above
+`exclude_at_projected_pct` is never selected. Urgency is resolved and recorded
+but does not reorder anything: the free pool (SWE-2) stays first for every
+task, and urgent work reaches a paid pool only when the free rung is refused
+(a live hold or an exhausted window). Pass `--urgency normal|urgent`; when it
+is omitted the bound hk task's priority decides (1–2 is urgent) and otherwise
+the default is normal. An explicit flag always wins. The record and the
+`--dry-run` output carry `urgency=<v> source=<flag|task-priority|default>`,
+the tier order used, the ordering rule and, for the chosen rung, its tier,
+grade and projected use at reset.
 
 ```sh
 runtug spawn -c ~/work/project.task42 -m cmd-dsflash41 \
