@@ -367,7 +367,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		return e
 	}
 	if seat.Kind == "devin" || seat.Kind == "cmd" {
-		if e := a.must(ctx, "herdr", "agent", "wait", pane, "--until", "idle", "--timeout", fmt.Sprint(timeout.Milliseconds())); e != nil {
+		if e := a.waitAgentIdle(ctx, pane, timeout); e != nil {
 			return e
 		}
 		if e := a.must(ctx, "herdr", "agent", "rename", pane, s.Label); e != nil {
@@ -419,7 +419,28 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			return fail(70, "Codex model/effort footer not proven")
 		}
 	}
-	return a.must(ctx, "herdr", "agent", "wait", pane, "--until", "idle", "--timeout", fmt.Sprint(timeout.Milliseconds()))
+	return a.waitAgentIdle(ctx, pane, timeout)
+}
+
+// waitAgentIdle waits for the pane's agent to go idle. herdr answers
+// agent_not_found at once for a pane whose agent it has not detected yet
+// (a CLI started with pane run is recognised a moment later), so that one
+// answer is retried until the deadline instead of failing the spawn.
+func (a *App) waitAgentIdle(ctx context.Context, pane string, timeout time.Duration) error {
+	deadline := a.Now().Add(timeout)
+	for {
+		left := deadline.Sub(a.Now())
+		if left < time.Second {
+			left = time.Second
+		}
+		r := a.call(ctx, "herdr", "agent", "wait", pane, "--until", "idle", "--timeout", fmt.Sprint(left.Milliseconds()))
+		if r.Code == 0 || !strings.Contains(r.Out+r.Err, "agent_not_found") || !a.Now().Before(deadline) {
+			return check(r, "herdr")
+		}
+		if e := a.Sleep(ctx, time.Second); e != nil {
+			return e
+		}
+	}
 }
 func CodexFooterProof(screen, model, effort, cwd, home string) bool {
 	lines := cleanScreen(screen)
