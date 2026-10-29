@@ -996,7 +996,10 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	for _, w := range targets {
 		c := p.candidate(w)
 		if c == nil {
-			c = &placeCandidate{name: w, cfg: a.Config.Hosts[w], wakeable: true}
+			// Wake targets must come from this plan so every gate attempt has
+			// a candidate in the placement record.
+			lastNote = "wake target missing from placement plan"
+			continue
 		}
 		p.wake = map[string]any{"host": w, "reasons": reasons, "ok": false}
 		h := c.cfg
@@ -1075,8 +1078,11 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 		}
 	}
 	c := placeCandidate{name: s.Host, cfg: h, wakeable: str(h, "wake") == "panewire", awake: true, eligible: true}
+	qr, ok := a.quotaRequest(s)
+	if !ok {
+		return true, nil, fail(70, "quota_request_unavailable")
+	}
 	pool := a.quotaPool(ctx, s)
-	qr, _ := a.quotaRequest(s)
 	spawn := func() candResult {
 		key, acc := a.remoteAccount(ctx, pool, c.name, c.cfg)
 		j, err := a.judgeHost(ctx, qr, pool, c.name, false, key, acc)

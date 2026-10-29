@@ -351,9 +351,7 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *s
 				h.eligible = false
 			}
 		}
-		if s.Host == "" || s.Host == "auto" || local && (s.Host == "local" || s.Host == machine) || !local && s.Host == name {
-			sp.hosts = append(sp.hosts, h)
-		}
+		sp.hosts = append(sp.hosts, h)
 	}
 	add(machine, a.Config.Local, true)
 	names := slices.Clone(a.Config.HostOrder)
@@ -406,17 +404,20 @@ func (sp *selPresence) present(ctx context.Context, seat *Seat, pool string) boo
 
 // admit tries this rung on each eligible host. A remote attempt always names
 // that host's current account, even when the spawner has a different login.
-func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, pool string) ([]quotaJudgment, error) {
+func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, pool, host string) ([]quotaJudgment, error) {
 	var judgments []quotaJudgment
 	var last error
 	for _, h := range sp.hosts {
+		if host != "" && host != "auto" && host != h.name && !(h.local && host == "local") {
+			continue
+		}
 		if !h.eligible || h.excluded || !h.awake && !h.wakeable || seat.Capability != "standard" && !boolean(h.cfg, seat.Capability, false) {
 			continue
 		}
 		key := hostAccount(sp.presence, pool, h.presence, sp.now, sp.presTTL)
-		if h.local && sp.a.candidateLogin(sp.presence, sp.accounts, neededAccounts(sp.a.Config.Quota, pool, sp.presence), h.presence, sp.now, sp.presTTL) != loginPresent {
-			continue
-		}
+		// Preserve the selector's existing pool-level presence prerequisite.
+		// Local admission itself uses the local gate without requiring that
+		// this host also publish readable shared evidence.
 		j, err := sp.a.judgeHost(ctx, qr, pool, h.name, h.local, key, sp.accounts[key])
 		judgments = append(judgments, j)
 		if err == nil {
@@ -573,7 +574,7 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 			continue
 		}
 		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
-		c.judgments, e = pres.admit(ctx, qr, c.seat, c.row.Pool)
+		c.judgments, e = pres.admit(ctx, qr, c.seat, c.row.Pool, s.Host)
 		if e != nil {
 			c.reason = fmt.Sprintf("gate_refused:%d", exitCode(e))
 			c.outcome = "dropped:gate_refused"

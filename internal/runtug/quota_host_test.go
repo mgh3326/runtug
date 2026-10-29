@@ -305,3 +305,100 @@ func TestPlacementRechecksAccountAfterWake(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectLocalGateDoesNotRequireLocalSharedEvidence(t *testing.T) {
+	for _, host := range []string{"auto", "local"} {
+		for _, mode := range []string{"missing local presence", "degraded local observation"} {
+			t.Run(host+"/"+mode, func(t *testing.T) {
+				rows := []CatalogRow{{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "model-a"}}
+				a, s, q := selFixture(t, "B", rows, map[string]PoolView{"claude": {Status: "ok", Class: "spend"}}, []string{"claude"})
+				s.Host = host
+				src := a.Source.(*fakePlacementSource)
+				if mode == "missing local presence" {
+					src.presence = nil
+				} else {
+					key := src.presence[0].AccountKey
+					src.accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true, Degraded: true}
+				}
+				const remote = "claude:fedcba9876543210"
+				src.presence = append(src.presence, PresenceRecord{HostID: "host-b", AccountKey: remote, LastSeen: a.Now()})
+				src.accounts[remote] = SharedAccount{Key: remote, Observed: true, Fresh: true}
+				a.Config.Hosts = map[string]map[string]any{"host-b": {}}
+				a.Config.HostOrder = []string{"host-b"}
+				q.GateDo = func(r QuotaRequest) (string, error) {
+					if r.AccountKey != "" {
+						t.Fatalf("local admission unexpectedly selected a shared account: %+v", r)
+					}
+					return "pool=claude\n", nil
+				}
+				sel, err := a.selectProfile(context.Background(), s)
+				if err != nil || sel.chosen == nil {
+					t.Fatalf("local gate was not selectable: %v", err)
+				}
+				if len(sel.chosen.judgments) != 1 || sel.chosen.judgments[0].Source != "local" {
+					t.Fatalf("unexpected judgements: %+v", sel.chosen.judgments)
+				}
+			})
+		}
+	}
+}
+
+func TestPlacementForcedRequiresQuotaRequest(t *testing.T) {
+	a, s, f := remoteFixture(t, &fakePlacementSource{}, &fakeWaker{}, "2026-01-01T00:00:00Z", func(string) Result { t.Error("invalid quota request reached SSH"); return Result{} })
+	s.Host, s.Profile = "host-a", "unknown-profile"
+	a.Config.Hosts = map[string]map[string]any{"host-a": {}}
+	if _, _, err := a.placeForced(context.Background(), s, "brief"); code(err) != 70 || !strings.Contains(err.Error(), "quota_request_unavailable") {
+		t.Fatalf("invalid quota request: %v", err)
+	}
+	if len(a.Quota.(*fakeQuota).Calls) != 0 {
+		t.Fatal("invalid request reached the quota CLI")
+	}
+	for _, c := range f.Calls {
+		if c.Name == "ssh" || c.Name == "git" {
+			t.Fatalf("invalid request prepared a remote checkout: %+v", c)
+		}
+	}
+}
+
+func TestPlacementDegradedAccountTriesNextHost(t *testing.T) {
+	a, s, _ := remoteFixture(t, &fakePlacementSource{}, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
+		if strings.Contains(args, "_spawn-stdin") {
+			return Result{Out: "OK pane=w:p1 job=job-a\n"}
+		}
+		return Result{}
+	})
+	const bad = "claude:0123456789abcdef"
+	const good = "claude:fedcba9876543210"
+	a.Config.Hosts = map[string]map[string]any{"host-a": {}, "host-b": {}}
+	a.Config.HostOrder = []string{"host-a", "host-b"}
+	a.Source = &fakePlacementSource{
+		hosts:    []HostView{{Name: "host-a", Connected: true, LoadRatio: ptrF(.1)}, {Name: "host-b", Connected: true, LoadRatio: ptrF(.2)}},
+		presence: []PresenceRecord{{HostID: "host-a", AccountKey: bad, LastSeen: a.Now()}, {HostID: "host-b", AccountKey: good, LastSeen: a.Now()}},
+		accounts: map[string]SharedAccount{bad: {Key: bad, Observed: true, Fresh: true, Degraded: true}, good: {Key: good, Observed: true, Fresh: true}},
+	}
+	// Saturate the healthy host so placement first refuses the degraded
+	// candidate, then tries this last resort with its own account.
+	src := a.Source.(*fakePlacementSource)
+	src.hosts[0].LoadRatio = nil
+	src.hosts[1].LoadRatio = ptrF(1.1)
+	q := a.Quota.(*fakeQuota)
+	q.GateDo = func(r QuotaRequest) (string, error) {
+		if r.AccountKey != good {
+			t.Fatalf("degraded account reached gate: %q", r.AccountKey)
+		}
+		return "pool=claude\n", nil
+	}
+	_, rec, err := a.placeAuto(context.Background(), s, "brief")
+	if err != nil || rec["chose"] != "host-b" {
+		t.Fatalf("record=%v err=%v", rec, err)
+	}
+	for _, v := range rec["candidates"].([]any) {
+		row := v.(map[string]any)
+		if row["host"] == "host-a" {
+			j, ok := row["quota_gate"].(quotaJudgment)
+			if !ok || j.Reason != "degraded" || j.AccountKey != bad || j.Outcome != "unknown" {
+				t.Fatalf("degraded reason missing: %+v", row)
+			}
+		}
+	}
+}

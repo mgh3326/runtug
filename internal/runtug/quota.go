@@ -137,14 +137,27 @@ type quotaJudgment struct {
 	Source     string `json:"source"`
 	Outcome    string `json:"outcome"`
 	ExitCode   int    `json:"exit_code"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
 	j := quotaJudgment{Host: host, Source: "local", Outcome: "unknown", ExitCode: 4}
 	if !local {
 		j.Source, j.AccountKey = "shared", key
-		if key == "" || acc.Key != key || !acc.Observed || !acc.Fresh || acc.Degraded {
-			return j, fail(4, "target account quota unavailable")
+		switch {
+		case key == "":
+			j.Reason = "no_usable_presence"
+		case acc.Key != key:
+			j.Reason = "account_mismatch"
+		case acc.Degraded:
+			j.Reason = "degraded"
+		case !acc.Observed:
+			j.Reason = "not_observed"
+		case !acc.Fresh:
+			j.Reason = "stale"
+		}
+		if j.Reason != "" {
+			return j, fail(4, "target account quota unavailable: %s", j.Reason)
 		}
 		r.AccountKey = key
 	}
