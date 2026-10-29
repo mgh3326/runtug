@@ -297,7 +297,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	} else if !bypassed {
 		return fail(77, "task title lacks (grade X, Tn marker")
 	}
-	qr := QuotaRequest{Profile: seat.Canon, Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
+	qr := QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
 	launch, e := a.Quota.Launch(ctx, qr)
 	if e != nil {
 		// Preserve the gate's role/quota refusal even when the catalog also
@@ -318,6 +318,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	if e = seat.Check(launch, s.Role, grade, builderFamily, os.Getenv("SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
 		return e
+	}
+	// A gate alias is the pool gate for a whole family of spellings, so it
+	// cannot tell an escalation rung from a default one; the launch row can.
+	if seat.Gate != "" && launch.Gate != "default" && !s.AllowEscalation {
+		return fail(77, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
 	}
 	qr.Effort = launch.Effort
 	gate, e := a.Quota.Gate(ctx, qr)
@@ -405,7 +410,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e = gateFile.Close(); e != nil {
 		return e
 	}
-	r = a.call(ctx, "arbiter", "lease", "--job", s.Job, "--kind", "quota_pool", "--profile", seat.Canon, "--launch-profile", seat.Canon+"@"+launch.Effort, "--gate-output", gateFile.Name(), "--json")
+	r = a.call(ctx, "arbiter", "lease", "--job", s.Job, "--kind", "quota_pool", "--profile", seat.gateName(), "--launch-profile", launchProfile(seat.Canon, launch.Effort), "--gate-output", gateFile.Name(), "--json")
 	if e = check(r, "arbiter lease"); e != nil {
 		return e
 	}
@@ -433,7 +438,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		}
 	}
 	env = append(env, mockEnv...)
-	env = append(env, "ARBITER_JOB="+s.Job, "ARBITER_RESOURCE="+pool, "ARBITER_KIND=quota_pool", "ARBITER_PROFILE="+seat.Canon, "HK_TASK_ID="+s.Task)
+	env = append(env, "ARBITER_JOB="+s.Job, "ARBITER_RESOURCE="+pool, "ARBITER_KIND=quota_pool", "ARBITER_PROFILE="+seat.gateName(), "HK_TASK_ID="+s.Task)
 	if seat.Kind == "claude" && s.Purpose != "director" {
 		env = append(env, "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false")
 	}
@@ -481,7 +486,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	machine := a.machine()
 	laneOK := s.LaneDefer == "" && a.registerLane(ctx, lane, parent, pane, s.Role, machine) == nil
-	receipt := map[string]any{"pane_id": pane, "tab_id": tab, "label": s.Label, "profile": s.Profile, "launch_profile": seat.Canon + "@" + launch.Effort, "model_id": launch.ModelID, "effort": launch.Effort, "family": seat.Family, "role": s.Role, "lane_role": s.Role, "owner_lane": owner, "parent_lane": s.Parent, "task_id": s.Task, "report": s.Report, "cwd": s.CWD, "keep": s.Keep, "pool": pool, "host": machine}
+	receipt := map[string]any{"pane_id": pane, "tab_id": tab, "label": s.Label, "profile": s.Profile, "launch_profile": launchProfile(seat.Canon, launch.Effort), "model_id": launch.ModelID, "effort": launch.Effort, "family": seat.Family, "role": s.Role, "lane_role": s.Role, "owner_lane": owner, "parent_lane": s.Parent, "task_id": s.Task, "report": s.Report, "cwd": s.CWD, "keep": s.Keep, "pool": pool, "host": machine}
 	if laneOK {
 		receipt["hub_lane"] = lane
 		receipt["hub_lane_machine"] = machine

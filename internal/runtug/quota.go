@@ -20,7 +20,10 @@ type Launch struct {
 	Pool    string `json:"pool"`
 	Family  string `json:"family"`
 }
-type QuotaRequest struct{ Profile, Effort, Role, OperatorRequest, RequestedBy, Purpose string }
+
+// QuotaRequest asks the quota CLI about one launch. Profile is the launch
+// canon; GateProfile, when set, is the name its gate knows the profile by.
+type QuotaRequest struct{ Profile, Effort, Role, OperatorRequest, RequestedBy, Purpose, GateProfile string }
 
 // CatalogRow is one bench catalog rung: profile@effort with its operator-set
 // grade, admission gate and quota pool. Retired rows are excluded by the
@@ -89,7 +92,11 @@ func quotaArgs(a []string, r QuotaRequest) []string {
 	return a
 }
 func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
-	x := q.Runner.Run(ctx, Command{Name: q.Binary, Args: quotaArgs([]string{"gate", "-m", r.Profile}, r)})
+	name := r.Profile
+	if r.GateProfile != "" {
+		name = r.GateProfile
+	}
+	x := q.Runner.Run(ctx, Command{Name: q.Binary, Args: quotaArgs([]string{"gate", "-m", name}, r)})
 	if x.Code == 5 {
 		return "", fail(77, "quota role-denied (gate exit 5 → runtug exit 77): %s", x.Err)
 	}

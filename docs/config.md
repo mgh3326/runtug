@@ -18,6 +18,7 @@ heavy_load_wait = true
 shell_ready_timeout_ms = 120000
 pi_anthropic = false
 cmd_dsflash41 = false
+clinepass = false
 
 [hub]
 hub_url = "https://hub.example.invalid"
@@ -71,6 +72,7 @@ local_delete_at = "drive_confirmed"
 | `shell_ready_timeout_ms` | `120000` | Startup readiness window, integer 30000–300000. |
 | `pi_anthropic` | `false` | Literal capability opt-in required by pi policy rows. |
 | `cmd_dsflash41` | `false` | Literal capability opt-in required by cmd policy rows. The provisioned cmd account must have no persisted MCP servers. |
+| `clinepass` | `false` | Literal capability opt-in required by the `cc-*` seats, which route the Claude Code harness through the host's local ClinePass proxy (`CLINEPASS_GATE_URL`, key read at spawn time from `CLINEPASS_GATE_KEY_FILE`; defaults are a loopback URL and `~/.config/cliproxyapi-key.txt`). |
 | `tags` | unset | Capability tags offered by this host for job placement (`spawn --tags`). Lowercase tag names. |
 | `presence_id` | `machine_id` | Identity this host uses in pacelever host-presence records. |
 | `brief_policy` | embedded policy | Path to the versioned brief-policy JSON; leading `~/` expands. |

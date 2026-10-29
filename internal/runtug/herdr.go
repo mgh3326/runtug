@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,7 +20,15 @@ func (a *App) launchArgs(s Seat, l Launch) ([]string, []string, error) {
 	var env []string
 	switch s.Kind {
 	case "claude":
-		return []string{"--model", m, "--dangerously-skip-permissions", "--effort", e}, env, nil
+		argv := []string{"--model", m, "--dangerously-skip-permissions"}
+		if e != "" {
+			argv = append(argv, "--effort", e)
+		}
+		if s.Route != "" {
+			env, err := a.routeEnv(s)
+			return argv, env, err
+		}
+		return argv, env, nil
 	case "codex":
 		return []string{"--yolo", "-m", m, "-c", "model_reasoning_effort=" + e}, env, nil
 	case "devin":
@@ -56,6 +65,41 @@ func (a *App) launchArgs(s Seat, l Launch) ([]string, []string, error) {
 	default:
 		return nil, nil, fail(70, "unsupported agent kind %s", s.Kind)
 	}
+}
+
+// launchProfile names the launched rung; a rung-less launch has no @effort.
+func launchProfile(canon, effort string) string {
+	if effort == "" {
+		return canon
+	}
+	return canon + "@" + effort
+}
+
+// route describes where a routed claude harness sends its model traffic. The
+// endpoint and the key file come from the environment; the key is read at
+// spawn time and handed only to the spawned pane.
+type route struct{ baseURLEnv, defaultURL, keyFileEnv, defaultKeyFile string }
+
+var routes = map[string]route{
+	"clinepass": {"CLINEPASS_GATE_URL", "http://127.0.0.1:8317", "CLINEPASS_GATE_KEY_FILE", ".config/cliproxyapi-key.txt"},
+}
+
+func (a *App) routeEnv(s Seat) ([]string, error) {
+	r := routes[s.Route]
+	keyFile := os.Getenv(r.keyFileEnv)
+	if keyFile == "" {
+		keyFile = filepath.Join(a.Home, r.defaultKeyFile)
+	}
+	b, err := os.ReadFile(keyFile)
+	key := strings.TrimSpace(string(b))
+	if err != nil || key == "" {
+		return nil, fail(70, "%s route key file is missing or empty", s.Route)
+	}
+	env := []string{"ANTHROPIC_BASE_URL=" + firstNonempty(os.Getenv(r.baseURLEnv), r.defaultURL), "ANTHROPIC_AUTH_TOKEN=" + key}
+	if s.ContextTokens > 0 {
+		env = append(env, "CLAUDE_CODE_MAX_CONTEXT_TOKENS="+strconv.Itoa(s.ContextTokens))
+	}
+	return env, nil
 }
 func readThinking(home string) (string, error) {
 	b, e := os.ReadFile(filepath.Join(home, "config.toml"))

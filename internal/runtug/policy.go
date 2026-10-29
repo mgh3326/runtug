@@ -29,10 +29,40 @@ type Seat struct {
 	E6         bool            `json:"e6,omitempty"`
 	Roles      []string        `json:"roles"`
 	Rungs      map[string]Rung `json:"rungs,omitempty"`
+	// Gate names the quota gate profile when it differs from the launch
+	// canon (several agy spellings share the one agy pool gate).
+	Gate string `json:"gate,omitempty"`
+	// Route redirects a claude-kind harness through a named model route;
+	// such a seat has no effort rung and its launcher passes no effort flag.
+	Route string `json:"route,omitempty"`
+	// ContextTokens caps CLAUDE_CODE_MAX_CONTEXT_TOKENS for a routed seat.
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 type Rung struct {
 	Roles []string `json:"roles"`
 	E6    *bool    `json:"e6,omitempty"`
+}
+
+// gateName is the profile the quota gate and arbiter lease know this seat by.
+func (s Seat) gateName() string {
+	if s.Gate != "" {
+		return s.Gate
+	}
+	return s.Canon
+}
+
+// needsEffort reports whether the seat's launcher has to be told an effort.
+// An empty catalog effort is the profile's default rung; only launchers that
+// pass the effort to the harness refuse it. devin, opencode and agy launch by
+// model id alone, and a routed claude harness runs at its own default.
+func (s Seat) needsEffort() bool {
+	switch s.Kind {
+	case "claude":
+		return s.Route == ""
+	case "codex", "grok", "pi", "cmd", "kimi", "kiro":
+		return true
+	}
+	return false
 }
 
 func LoadPolicy(path string) (Policy, error) {
@@ -55,6 +85,12 @@ func LoadPolicy(path string) (Policy, error) {
 		if s.Canon == "" || s.Kind == "" || s.Family == "" || s.Capability == "" || len(s.Roles) == 0 {
 			return p, fail(70, "missing seat data for %s", name)
 		}
+		if s.Gate != "" && !validID(s.Gate) {
+			return p, fail(70, "invalid gate alias for %s", name)
+		}
+		if s.Route != "" && (s.Kind != "claude" || routes[s.Route].baseURLEnv == "") {
+			return p, fail(70, "invalid route for %s", name)
+		}
 	}
 	return p, nil
 }
@@ -66,7 +102,7 @@ var gradeOrder = map[string]int{"C": 0, "B": 1, "A": 2, "A+": 3, "S": 4, "S+": 5
 var taskMarker = regexp.MustCompile(`(?i)(?:\(|\b)grade (S\+|S|A\+|A|B|C),\s*(T[0-3])\b`)
 
 func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[string]any) error {
-	if _, ok := gradeOrder[l.Grade]; !ok || l.ModelID == "" || l.Effort == "" || l.Gate == "" {
+	if _, ok := gradeOrder[l.Grade]; !ok || l.ModelID == "" || (l.Effort == "" && s.needsEffort()) || l.Gate == "" {
 		return fail(70, "canon launch data incomplete")
 	}
 	if !boolean(host, s.Capability, false) { // Standard harnesses predate capability flags; only their explicit policy sentinel is implicit.

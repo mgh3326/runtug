@@ -161,6 +161,11 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 		return "", nil, "no_seat"
 	}
 	slices.Sort(names)
+	if exact, ok := a.Policy.Profiles[row.Profile]; ok && row.Effort == "" && exact.Canon == row.Profile && (exact.needsEffort() || exact.Effort != "") {
+		// The profile's own seat launches it at a declared rung, so an alias
+		// seat cannot stand in for the rung-less default row.
+		return "", nil, "effort_empty"
+	}
 	if i := slices.Index(names, row.Profile); i > 0 {
 		names = append([]string{row.Profile}, slices.Concat(names[:i], names[i+1:])...)
 	}
@@ -168,7 +173,12 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 	for _, name := range names {
 		seat := a.Policy.Profiles[name]
 		reason := ""
-		if seat.Pin && seat.Effort != row.Effort {
+		if row.Effort == "" && (seat.needsEffort() || seat.Effort != "") {
+			// A rung-less row is the profile's default rung. A seat whose
+			// launcher needs an effort, or that launches at its own default
+			// rung, cannot represent it.
+			reason = "effort_empty"
+		} else if seat.Pin && seat.Effort != row.Effort {
 			reason = "effort_mismatch"
 		} else if roles, ok := seat.seatRoles(row.Effort); !ok {
 			reason = "seat_rung"
@@ -439,10 +449,6 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 			c.reason = "retired"
 		case row.Profile == "" || row.ModelID == "" || row.Pool == "":
 			c.reason = "catalog_incomplete"
-		case row.Effort == "":
-			// Rung-less rows exist for quota accounting; their launch
-			// resolves to an empty effort that Seat.Check always refuses.
-			c.reason = "effort_empty"
 		case !validGrade:
 			c.reason = "grade_invalid"
 		case gradeOrder[row.Grade] < gradeOrder[req.grade]:
@@ -531,7 +537,7 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 			c.outcome = "dropped:no_presence"
 			continue
 		}
-		qr := QuotaRequest{Profile: c.seat.Canon, Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
+		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
 		gate, e := a.Quota.Gate(ctx, qr)
 		if e != nil {
 			c.reason = fmt.Sprintf("gate_refused:%d", exitCode(e))

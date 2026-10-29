@@ -39,11 +39,12 @@ func selFixture(t *testing.T, grade string, rows []CatalogRow, pools map[string]
 
 func gatePools(pools map[string]string) func(QuotaRequest) (string, error) {
 	return func(r QuotaRequest) (string, error) {
-		pool, ok := pools[r.Profile]
+		name := firstNonempty(r.GateProfile, r.Profile)
+		pool, ok := pools[name]
 		if !ok {
-			return "", fail(4, "quota refused for %s", r.Profile)
+			return "", fail(4, "quota refused for %s", name)
 		}
-		return fmt.Sprintf("pool=%s profile=%s\n", pool, r.Profile), nil
+		return fmt.Sprintf("pool=%s profile=%s\n", pool, name), nil
 	}
 }
 
