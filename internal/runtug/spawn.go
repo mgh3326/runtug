@@ -14,7 +14,7 @@ import (
 
 type Spawn struct {
 	CWD, Profile, Prompt, Workspace, Label, T, Job, Owner, Effort, Role, Lane, Parent, Task, ParentJob, Host, Report, ExecutionLane, OperatorRequest, RequestedBy, Purpose, LaneDefer, ReportRelative string
-	OverrideReason, WaitTimeout                                                                                                                                                                       string
+	OverrideReason, WaitTimeout, Urgency                                                                                                                                                              string
 	Keep, DupOK, Bypass, DryRun, Wait, AllowEscalation                                                                                                                                                bool
 	Inherited, ParentFamily                                                                                                                                                                           string
 	// Tags lists the capability tags a host must carry. Delegated marks a
@@ -32,7 +32,7 @@ func parseSpawn(args []string) (Spawn, error) {
 	for _, p := range []struct {
 		k string
 		v *string
-	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}} {
+	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}, {"urgency", &s.Urgency}} {
 		f.StringVar(p.v, p.k, *p.v, "")
 	}
 	f.BoolVar(&s.Keep, "keep", false, "")
@@ -63,6 +63,7 @@ type Task struct {
 	ClaimedBy string         `json:"claimed_by"`
 	Refs      map[string]any `json:"refs"`
 	CreatedAt string         `json:"created_at"`
+	Priority  any            `json:"priority"`
 }
 
 func (a *App) taskPrecheck(ctx context.Context, s Spawn) (Task, bool, error) {
@@ -136,6 +137,9 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if !s.Delegated && (!autoSel || s.Host != "auto") && strings.TrimSpace(s.OverrideReason) == "" {
 		return fail(2, "explicit -m or --host requires --override-reason")
 	}
+	if s.Urgency != "" && !slices.Contains([]string{"normal", "urgent"}, s.Urgency) {
+		return fail(2, "--urgency must be normal or urgent")
+	}
 	if s.Wait && s.DryRun {
 		return fail(2, "--wait needs a real spawn")
 	}
@@ -196,6 +200,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		}
 		if s.DryRun && s.Sel != nil {
 			b, _ := encode(s.Sel)
+			fmt.Fprintf(a.Out, "urgency=%s source=%s tiers=%s\n", sel.req.urgency, sel.req.urgencySource, strings.Join(sel.order, ">"))
 			fmt.Fprintf(a.Out, "selection=%s\n", b)
 		}
 		if e != nil {
