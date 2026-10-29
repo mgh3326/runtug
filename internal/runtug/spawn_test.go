@@ -81,7 +81,7 @@ func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 	}
 	s := Spawn{CWD: cwd, Profile: "cmd-dsflash41", Prompt: prompt, Workspace: "workspace", Label: "worker-a", Job: "job-a", T: "T1", Task: "42", Role: "worker", Host: "local", OverrideReason: "fixture"}
 	a.Quota = &fakeQuota{LaunchValue: Launch{Profile: "cmd-dsflash41", ModelID: "provider/example-model", Effort: "high", Grade: "A+", Gate: "default"}}
-	launched := false
+	launched, detected := false, false
 	submitted := false
 	returns := 0
 	token := ""
@@ -121,6 +121,11 @@ func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 		case strings.HasPrefix(args, "pane run"):
 			launched = true
 			return Result{}
+		case strings.HasPrefix(args, "agent wait") && launched && !detected:
+			// Real herdr: the agent of a CLI started with pane run is detected a
+			// moment later; until then agent wait answers agent_not_found at once.
+			detected = true
+			return Result{Code: 1, Out: `{"error":{"code":"agent_not_found"}}`}
 		case strings.HasPrefix(args, "pane send-keys"):
 			returns++
 			if returns == 2 {
