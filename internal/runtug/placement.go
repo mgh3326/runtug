@@ -261,7 +261,13 @@ func (a *App) candidateLogin(presence []PresenceRecord, accounts map[string]Shar
 		if age < -time.Minute || age > ttl {
 			continue
 		}
-		if acc := accounts[rec.AccountKey]; acc.Observed && acc.Fresh && !acc.Degraded {
+		// Login evidence needs a readable shared observation, not a fresh one:
+		// quota freshness is the quota gate's job (it re-measures a stale
+		// account). Requiring Fresh here made every host "no_presence" once
+		// nothing polled the shared store between spawns.
+		acc := accounts[rec.AccountKey]
+		mAge := now.Sub(acc.MeasuredAt)
+		if acc.Observed && !acc.Degraded && (acc.Fresh || mAge >= -time.Minute && mAge <= ttl) {
 			return loginPresent
 		}
 	}
