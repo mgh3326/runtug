@@ -38,11 +38,35 @@ func secureOpen(path string, create bool) (*os.File, error) {
 		return nil, e
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || st.Uid != uint32(os.Getuid()) || st.Nlink != 1 || info.Mode().Perm()&0022 != 0 {
+	// Our own lock must be 0600-style (no group/other write). A root:root lock
+	// is also trusted: a host-wide shared lock under /tmp must be root-owned to
+	// be opened by other users under Linux protected_regular, and is shared via
+	// group/ACL write. Other-write and symlinks/hard links are always refused.
+	if !ok || !info.Mode().IsRegular() || st.Nlink != 1 || !lockOwnerOK(st.Uid, st.Gid, info.Mode().Perm(), uint32(os.Getuid())) {
 		f.Close()
-		return nil, fail(70, "insecure lock file %s", path)
+		return nil, fail(70, "insecure lock file %s (a lock shared by several users must be pre-created root:root without other-write, e.g. a tmpfiles.d rule)", path)
 	}
 	return f, nil
+}
+
+// heavyLockPath is the host-wide heavy lock. It is /tmp, never os.TempDir():
+// on macOS TMPDIR is a per-user /var/folders path, so lanes and CI runners
+// on one host would hold different locks and never exclude each other. The
+// path matches wrk heavy's default so both tools share one lock.
+func heavyLockPath(host string) string {
+	if v := os.Getenv("WRK_HEAVY_LOCK"); v != "" {
+		return v
+	}
+	return filepath.Join("/tmp", "wrk-heavy-"+host+".lock")
+}
+
+// lockOwnerOK accepts our own lock without group/other write, or a root:root
+// shared lock without other write.
+func lockOwnerOK(uid, gid uint32, perm os.FileMode, self uint32) bool {
+	if uid == self && perm&0022 == 0 {
+		return true
+	}
+	return uid == 0 && gid == 0 && perm&0002 == 0
 }
 func envInt(key string, def int) (int, error) {
 	v := os.Getenv(key)
@@ -79,10 +103,7 @@ func (a *App) loadRatio(ctx context.Context) (float64, error) {
 }
 func (a *App) heavy(ctx context.Context, args []string) error {
 	host, _ := os.Hostname()
-	base := os.Getenv("WRK_HEAVY_LOCK")
-	if base == "" {
-		base = filepath.Join(os.TempDir(), "wrk-heavy-"+host+".lock")
-	}
+	base := heavyLockPath(host)
 	limit, e := envInt("WRK_HEAVY_MAX", int(integer(a.Config.Local, "heavy_max", 1)))
 	if e != nil {
 		return e

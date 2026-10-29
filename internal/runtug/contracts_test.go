@@ -286,3 +286,37 @@ func TestTrustGuardRejectsWritableBinary(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestHeavyLockOwnerRule(t *testing.T) {
+	const me = 1000
+	for _, c := range []struct {
+		uid, gid uint32
+		perm     os.FileMode
+		ok       bool
+	}{
+		{me, me, 0600, true},
+		{me, me, 0660, false},
+		{me, me, 0606, false},
+		{0, 0, 0660, true}, // PA desktop shared lock (tmpfiles + ACL)
+		{0, 0, 0600, true},
+		{0, 0, 0666, false}, // other-writable
+		{0, 5, 0660, false}, // root-owned but foreign group
+		{2000, 2000, 0600, false},
+	} {
+		if got := lockOwnerOK(c.uid, c.gid, c.perm, me); got != c.ok {
+			t.Fatalf("uid=%d gid=%d perm=%o: got %v want %v", c.uid, c.gid, c.perm, got, c.ok)
+		}
+	}
+}
+
+func TestHeavyLockPathIsHostWide(t *testing.T) {
+	t.Setenv("TMPDIR", "/var/folders/xx/T")
+	t.Setenv("WRK_HEAVY_LOCK", "")
+	if got := heavyLockPath("box"); got != "/tmp/wrk-heavy-box.lock" {
+		t.Fatalf("default lock must be host-wide /tmp (wrk-compatible), got %q", got)
+	}
+	t.Setenv("WRK_HEAVY_LOCK", "/tmp/custom.lock")
+	if got := heavyLockPath("box"); got != "/tmp/custom.lock" {
+		t.Fatalf("WRK_HEAVY_LOCK must override: %q", got)
+	}
+}
