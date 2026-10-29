@@ -383,9 +383,11 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 
 // projectAtReset is pacelever's Pace expressed as a percentage: the used
 // share divided by the elapsed share of the window. A bucket that is past its
-// reset, less than 5% into its window, or unreadable has no projection.
+// reset, less than 5% into its window, or unreadable has no projection. Unlike
+// Pace, an over-consumed reading above 100% still projects, so the pool is
+// excluded rather than treated as unpaceable.
 func projectAtReset(used *float64, window, resetsAt string, now time.Time) *float64 {
-	if used == nil || math.IsNaN(*used) || math.IsInf(*used, 0) || *used < 0 || *used > 100 {
+	if used == nil || math.IsNaN(*used) || math.IsInf(*used, 0) || *used < 0 {
 		return nil
 	}
 	w, e := windowDuration(window)

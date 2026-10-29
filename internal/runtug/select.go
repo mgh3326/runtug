@@ -22,15 +22,16 @@ var defaultPoolOrder []byte
 // "credit_pools" names spend pools drawn on credit, and a subscription pool
 // whose projected use at reset stays below "waste_below_projected_pct" is
 // promoted to waste because the rest is lost at reset. A pool projected at or
-// above "exclude_at_projected_pct" is never selected. Both default to 100.
+// above "exclude_at_projected_pct" is never selected. Both default to 100
+// when absent; an explicit 0 waste threshold disables projected waste.
 type PoolPolicy struct {
 	Version     int       `json:"version"`
 	SourceDoc   string    `json:"source_doc"`
 	Order       []string  `json:"order"`
 	Free        []FreeSet `json:"free"`
 	CreditPools []string  `json:"credit_pools"`
-	WasteBelow  float64   `json:"waste_below_projected_pct"`
-	ExcludeAt   float64   `json:"exclude_at_projected_pct"`
+	WasteBelow  *float64  `json:"waste_below_projected_pct"`
+	ExcludeAt   *float64  `json:"exclude_at_projected_pct"`
 }
 type FreeSet struct {
 	Pool   string   `json:"pool"`
@@ -78,13 +79,13 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 			return p, fail(70, "invalid credit pool name %q", pool)
 		}
 	}
-	if p.WasteBelow == 0 {
-		p.WasteBelow = 100
+	for _, x := range []**float64{&p.WasteBelow, &p.ExcludeAt} {
+		if *x == nil {
+			v := 100.0
+			*x = &v
+		}
 	}
-	if p.ExcludeAt == 0 {
-		p.ExcludeAt = 100
-	}
-	if p.WasteBelow < 0 || p.ExcludeAt < 0 || p.WasteBelow > p.ExcludeAt {
+	if *p.WasteBelow < 0 || *p.ExcludeAt <= 0 || *p.WasteBelow > *p.ExcludeAt {
 		return p, fail(70, "invalid projected-at-reset thresholds")
 	}
 	return p, nil
@@ -243,7 +244,7 @@ func (p PoolPolicy) tierOf(row CatalogRow, order []string, pools map[string]Pool
 		return "", -1
 	}
 	tier := "ranked"
-	if v.Projected != nil && *v.Projected < p.WasteBelow || v.Projected == nil && v.Waste != nil && *v.Waste {
+	if v.Projected != nil && *v.Projected < *p.WasteBelow || v.Projected == nil && v.Waste != nil && *v.Waste {
 		tier = "waste"
 	}
 	if slices.Contains(p.CreditPools, row.Pool) {
@@ -509,9 +510,9 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 				c.seatName = name
 			}
 		}
-		if v, ok := pools[row.Pool]; ok && c.reason == "" {
+		if v, ok := pools[row.Pool]; ok {
 			c.blocking, c.projected = v.Blocking, v.Projected
-			if v.Projected != nil && *v.Projected >= policy.ExcludeAt {
+			if c.reason == "" && v.Projected != nil && *v.Projected >= *policy.ExcludeAt {
 				c.reason = "projected_exhaust"
 			}
 		}
@@ -661,7 +662,7 @@ func (p *selPlan) record() map[string]any {
 	rec := map[string]any{
 		"mode":           "auto",
 		"decision":       fmt.Sprintf("urgency=%s source=%s tiers=%s", p.req.urgency, p.req.urgencySource, strings.Join(p.order, ">")),
-		"rule":           fmt.Sprintf("tier, then lowest grade >= %s, then lower projected-at-reset, then smaller effort; waste < %g%%, excluded >= %g%% projected", p.req.grade, p.policy.WasteBelow, p.policy.ExcludeAt),
+		"rule":           fmt.Sprintf("tier, then lowest grade >= %s, then lower projected-at-reset, then smaller effort; waste < %g%%, excluded >= %g%% projected", p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
 		"policy_version": p.policy.Version,
 		"policy_source":  p.policy.SourceDoc,
 		"requested":      map[string]any{"grade": p.req.grade, "t": p.req.t, "role": p.req.role, "tags": tags, "effort": p.req.effort, "allow_escalation": p.req.allowEscalation},

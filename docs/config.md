@@ -193,8 +193,8 @@ keys use it, both defaulting to 100:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `waste_below_projected_pct` | `100` | A non-credit subscription pool projected below this at reset is WASTE: the rest is lost at reset, so it is spent before credit and ranked pools. Without a projection the quota status `verdict.waste` flag decides. |
-| `exclude_at_projected_pct` | `100` | A pool (free pools included) projected at or above this is dropped as `projected_exhaust`, whatever its tier. Must not be below `waste_below_projected_pct`. |
+| `waste_below_projected_pct` | `100` | A non-credit subscription pool projected below this at reset is WASTE: the rest is lost at reset, so it is spent before credit and ranked pools. Without a projection the quota status `verdict.waste` flag decides. An explicit `0` disables projected waste. |
+| `exclude_at_projected_pct` | `100` | A pool (free pools included) projected at or above this is dropped as `projected_exhaust`, whatever its tier. Must be above 0 and not below `waste_below_projected_pct`. An over-consumed reading (used above 100%) still projects, so it is excluded. |
 
 Non-free candidates additionally need a
 readable `ok` nonstale spend status; every candidate needs fresh
