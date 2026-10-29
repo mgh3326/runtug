@@ -173,7 +173,10 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 	for _, name := range names {
 		seat := a.Policy.Profiles[name]
 		reason := ""
-		if row.Effort == "" && (seat.needsEffort() || seat.Effort != "") {
+		if row.Effort != "" && seat.Route != "" {
+			// A routed harness runs at its own default; it has no named rung.
+			reason = "seat_rung"
+		} else if row.Effort == "" && (seat.needsEffort() || seat.Effort != "") {
 			// A rung-less row is the profile's default rung. A seat whose
 			// launcher needs an effort, or that launches at its own default
 			// rung, cannot represent it.

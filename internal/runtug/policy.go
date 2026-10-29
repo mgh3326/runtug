@@ -91,6 +91,9 @@ func LoadPolicy(path string) (Policy, error) {
 		if s.Route != "" && (s.Kind != "claude" || routes[s.Route].baseURLEnv == "") {
 			return p, fail(70, "invalid route for %s", name)
 		}
+		if s.Route != "" && (s.Effort != "" || s.Pin || len(s.Rungs) > 0) {
+			return p, fail(70, "routed seat %s has no effort rung", name)
+		}
 	}
 	return p, nil
 }
@@ -109,6 +112,9 @@ func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[s
 		if s.Capability != "standard" {
 			return fail(70, "host lacks capability %s", s.Capability)
 		}
+	}
+	if s.Route != "" && l.Effort != "" {
+		return fail(70, "routed seat %s takes no effort rung", s.Canon)
 	}
 	roles := s.Roles
 	e6 := s.E6

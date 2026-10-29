@@ -71,6 +71,7 @@ func TestLoadPolicyRejectsBadAliasAndRoute(t *testing.T) {
 		"gate":  `"kind":"agy","gate":"../x"`,
 		"route": `"kind":"agy","route":"clinepass"`,
 		"nope":  `"kind":"claude","route":"nowhere"`,
+		"rung":  `"kind":"claude","route":"clinepass","effort":"high"`,
 	} {
 		path := filepath.Join(dir, name+".json")
 		doc := `{"version":1,"profiles":{"x":{"canon":"x","family":"f","capability":"standard","roles":["worker"],` + seat + `}}}`
@@ -224,5 +225,47 @@ func TestSpawnAliasedEscalationSeatRefusesWithoutFlag(t *testing.T) {
 	last := q.Calls[len(q.Calls)-1]
 	if last.GateProfile != "agy-flash" || last.Effort != "" {
 		t.Fatalf("an allowed spawn gates by the alias with no effort: %+v", last)
+	}
+}
+
+func TestRoutedSeatTakesNoEffort(t *testing.T) {
+	a := testApp(t)
+	p, _ := LoadPolicy("")
+	seat := p.Profiles["cc-glm"]
+	// Check refuses a launch that resolved a rung for a routed seat.
+	l := Launch{Profile: "cc-glm", ModelID: "glm-5.2", Effort: "high", Grade: "B", Gate: "default"}
+	if got := code(seat.Check(l, "worker", "B", "", "", map[string]any{"clinepass": true})); got != 70 {
+		t.Fatalf("a routed seat with a rung must refuse 70, got %d", got)
+	}
+	// Even if one reached the launcher, no --effort flag is passed.
+	keyFile := filepath.Join(a.Home, "gate-key")
+	t.Setenv("CLINEPASS_GATE_KEY_FILE", keyFile)
+	if e := os.WriteFile(keyFile, []byte("k\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	argv, _, e := a.launchArgs(seat, l)
+	if e != nil || slices.Contains(argv, "--effort") {
+		t.Fatalf("%v %v", argv, e)
+	}
+	// Auto selection keeps a routed seat off a runged catalog row.
+	rows := []CatalogRow{{Profile: "cc-glm", Effort: "high", Grade: "B", Pool: "clinepass", Gate: "default", ModelID: "glm-5.2"}}
+	a2, s, q := selFixture(t, "B", rows, map[string]PoolView{"clinepass": {Status: "ok", Class: "spend"}}, []string{"clinepass"})
+	q.GateDo = gatePools(map[string]string{"cc-glm": "clinepass"})
+	sel, e := a2.selectProfile(context.Background(), s)
+	if code(e) != 77 || candOutcome(sel.record(), "cc-glm", "high")["outcome"] != "dropped:seat_rung" {
+		t.Fatalf("%v", e)
+	}
+}
+
+func TestRouteKeyFileExpandsHome(t *testing.T) {
+	a := testApp(t)
+	p, _ := LoadPolicy("")
+	if e := os.WriteFile(filepath.Join(a.Home, "key"), []byte("k\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("CLINEPASS_GATE_KEY_FILE", "~/key")
+	_, env, e := a.launchArgs(p.Profiles["cc-glm"], Launch{ModelID: "glm-5.2"})
+	if e != nil || !slices.Contains(env, "ANTHROPIC_AUTH_TOKEN=k") {
+		t.Fatalf("a leading ~/ must expand against the home dir: %v %v", env, e)
 	}
 }

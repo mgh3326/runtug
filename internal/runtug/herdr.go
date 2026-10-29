@@ -21,7 +21,7 @@ func (a *App) launchArgs(s Seat, l Launch) ([]string, []string, error) {
 	switch s.Kind {
 	case "claude":
 		argv := []string{"--model", m, "--dangerously-skip-permissions"}
-		if e != "" {
+		if e != "" && s.Route == "" {
 			argv = append(argv, "--effort", e)
 		}
 		if s.Route != "" {
@@ -89,6 +89,8 @@ func (a *App) routeEnv(s Seat) ([]string, error) {
 	keyFile := os.Getenv(r.keyFileEnv)
 	if keyFile == "" {
 		keyFile = filepath.Join(a.Home, r.defaultKeyFile)
+	} else if keyFile == "~" || strings.HasPrefix(keyFile, "~/") {
+		keyFile = filepath.Join(a.Home, strings.TrimPrefix(keyFile, "~"))
 	}
 	b, err := os.ReadFile(keyFile)
 	key := strings.TrimSpace(string(b))
