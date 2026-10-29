@@ -429,7 +429,11 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 func (a *App) waitAgentIdle(ctx context.Context, pane string, timeout time.Duration) error {
 	deadline := a.Now().Add(timeout)
 	for {
-		r := a.call(ctx, "herdr", "agent", "wait", pane, "--until", "idle", "--timeout", fmt.Sprint(timeout.Milliseconds()))
+		left := deadline.Sub(a.Now())
+		if left < time.Second {
+			left = time.Second
+		}
+		r := a.call(ctx, "herdr", "agent", "wait", pane, "--until", "idle", "--timeout", fmt.Sprint(left.Milliseconds()))
 		if r.Code == 0 || !strings.Contains(r.Out+r.Err, "agent_not_found") || !a.Now().Before(deadline) {
 			return check(r, "herdr")
 		}
