@@ -115,7 +115,7 @@ func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 				return Result{Out: `{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":1,"argv0":"zsh"}]}}}`}
 			}
 			return Result{Out: `{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":2,"argv0":"cmd"}]}}}`}
-		case strings.HasPrefix(args, "pane run") && len(c.Args) > 3 && c.Args[3] == "printf":
+		case strings.HasPrefix(args, "pane run") && len(c.Args) > 3 && c.Args[3] == "echo":
 			token = c.Args[len(c.Args)-1]
 			return Result{}
 		case strings.HasPrefix(args, "pane run"):
@@ -133,7 +133,10 @@ func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 				status = "working"
 			}
 			return Result{Out: fmt.Sprintf(`{"result":{"agents":[{"pane_id":"w:p1","tab_id":"w:t1","name":"worker-a","agent":"cmd","agent_status":%q}]}}`, status)}
-		case strings.HasPrefix(args, "agent read"):
+		case strings.HasPrefix(args, "agent read") && !launched:
+			// Real herdr: a shell-only pane has no agent yet (agent_not_found).
+			return Result{Code: 1, Out: `{"error":{"code":"agent_not_found"}}`}
+		case strings.HasPrefix(args, "agent read"), strings.HasPrefix(args, "pane read"):
 			if !launched {
 				return Result{Out: token + "\n"}
 			}
