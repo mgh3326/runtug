@@ -235,6 +235,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return e
 	}
 	if s.DryRun {
+		// The local preview must still refuse what Seat.Check would refuse:
+		// a capability-bound seat on a host that lacks the flag.
+		if seat := a.Policy.Profiles[s.Profile]; seat.Capability != "standard" && !boolean(a.Config.Local, seat.Capability, false) {
+			return fail(70, "host %s lacks capability %s", a.machine(), seat.Capability)
+		}
 		fmt.Fprintf(a.Out, "dry-run host=%s profile=%s role=%s job=%s\n%s\n", a.machine(), s.Profile, s.Role, s.Job, payload)
 		return nil
 	}

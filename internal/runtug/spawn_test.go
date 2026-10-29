@@ -231,6 +231,19 @@ func TestSeatDefaultEffortResolvesBareProfile(t *testing.T) {
 	}
 }
 
+func TestSpawnDryRunLocalRefusesMissingCapability(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
+	s.Profile = "pi-sonnet55" // a.Config.Local carries cmd_dsflash41 but not pi_anthropic
+	s.DryRun = true
+	e := a.Spawn(context.Background(), s)
+	if code(e) != 70 {
+		t.Fatalf("a local dry-run on a host without the capability must refuse 70: %v", e)
+	}
+	if strings.Contains(a.Out.(*bytes.Buffer).String(), "dry-run host=") {
+		t.Fatal("the preview must not promise a spawn Seat.Check would refuse")
+	}
+}
+
 func TestSpawnExplicitProfileWithoutSeatRefusesBeforePlacement(t *testing.T) {
 	a, s, f, _ := cmdFixture(t)
 	s.Profile = "agy-flash38-high" // a catalog profile with no seat policy
