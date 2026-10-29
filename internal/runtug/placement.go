@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -78,6 +79,21 @@ var (
 	// are refused because they can execute local commands.
 	cloneURL = regexp.MustCompile(`^(https|ssh|git)://[^\s]+$|^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[^\s]+$`)
 )
+
+// credentialedURL reports whether a clone URL embeds credentials: an https
+// userinfo (token-as-username or basic auth) or any scheme carrying a
+// password. A bare ssh user (git@host) is not a credential.
+func credentialedURL(url string) bool {
+	u, e := neturl.Parse(url)
+	if e != nil || u.User == nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	_, hasPass := u.User.Password()
+	return hasPass
+}
 
 func parseTags(raw string) ([]string, error) {
 	var out []string
@@ -240,7 +256,7 @@ func (a *App) candidateLogin(presence []PresenceRecord, accounts map[string]Shar
 		if age < -time.Minute || age > ttl {
 			continue
 		}
-		if acc := accounts[rec.AccountKey]; acc.Observed && !acc.Degraded {
+		if acc := accounts[rec.AccountKey]; acc.Observed && acc.Fresh && !acc.Degraded {
 			return loginPresent
 		}
 	}
@@ -633,7 +649,7 @@ func (a *App) localRepo(ctx context.Context, cwd string) *repoResolution {
 	url := ""
 	if g := a.call(ctx, "git", "-C", cwd, "remote", "get-url", "origin"); g.Code == 0 {
 		url = strings.TrimSpace(g.Out)
-		if !cloneURL.MatchString(url) {
+		if !cloneURL.MatchString(url) || credentialedURL(url) {
 			url = ""
 		}
 	}
@@ -673,7 +689,7 @@ func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, rep
 			return fail(255, "repo origin check unreachable")
 		}
 		if got := strings.TrimSpace(o.Out); o.Code != 0 || got != repo.url {
-			return fail(70, "repo %s on %s has origin %q, want %q", repo.name, host, got, repo.url)
+			return fail(70, "repo %s on %s has an origin that does not match the local checkout", repo.name, host)
 		}
 		return nil
 	}
@@ -766,6 +782,9 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	fmt.Fprint(a.Err, r.Err)
 	if strings.Contains(r.Out, "OK pane=") {
 		fmt.Fprint(a.Out, strings.TrimRight(r.Out, "\n")+" host="+c.name+"\n")
+		if e := check(r, "remote spawn"); e != nil {
+			return candResult{stop: e, res: r}
+		}
 		return candResult{ok: true, res: r}
 	}
 	if r.Code == 0 {
@@ -830,6 +849,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	}
 	var unreachable []string
 	var deferredLocal *placeCandidate
+	var localRefusal error
 	for _, c := range p.ordered {
 		if c.local {
 			// An over-threshold local is a last resort: when the job has
@@ -846,6 +866,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 				if qr, ok := a.quotaRequest(s); ok {
 					if _, e := a.Quota.Launch(ctx, qr); e != nil {
 						c.outcome = "admission_refused"
+						localRefusal = e
 						continue
 					}
 				}
@@ -875,12 +896,15 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		h := c.cfg
 		req := WakeRequest{HoldMinutes: int(integer(h, "wake_hold", 10)), WaitSeconds: int(integer(h, "wake_wait", 90)), Reason: "runtug placement: " + strings.Join(reasons, ",")}
 		var wakeErr error
-		if a.Wake != nil {
+		switch {
+		case s.DryRun:
+			fmt.Fprintf(a.Out, "dry-run wake host=%s reasons=%s\n", w, strings.Join(reasons, ","))
+		case a.Wake != nil:
 			wakeErr = a.Wake.Wake(ctx, w, req)
-		} else {
+		default:
 			wakeErr = fail(81, "no waker configured")
 		}
-		if wakeErr == nil {
+		if wakeErr == nil && !s.DryRun {
 			wakeErr = a.waitForNode(ctx, w, h, req.WaitSeconds)
 		}
 		if wakeErr != nil {
@@ -910,6 +934,9 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	}
 	if !boolean(a.Config.Local, "spawn", true) {
 		return true, nil, fail(80, "local spawns are disabled on this host; no remote candidate completed")
+	}
+	if localRefusal != nil {
+		return true, nil, localRefusal
 	}
 	return true, nil, fail(81, "no placement candidate accepted spawn; no local fallback")
 }
