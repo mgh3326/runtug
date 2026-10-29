@@ -121,6 +121,11 @@ func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 		case strings.HasPrefix(args, "pane run"):
 			launched = true
 			return Result{}
+		case strings.HasPrefix(args, "agent wait") && strings.Contains(args, "--until idle"):
+			// Real herdr: a CLI that reports "done" right after start never
+			// becomes "idle"; waiting only for idle blocks until the timeout.
+			t.Fatalf("agent wait must accept idle, done or blocked (no --until idle): %s", args)
+			return Result{}
 		case strings.HasPrefix(args, "agent wait") && launched && !detected:
 			// Real herdr: the agent of a CLI started with pane run is detected a
 			// moment later; until then agent wait answers agent_not_found at once.
