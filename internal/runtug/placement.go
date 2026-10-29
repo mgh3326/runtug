@@ -1058,7 +1058,7 @@ func (a *App) quotaRequest(s Spawn) (QuotaRequest, bool) {
 	if effort == "" {
 		effort = seat.Effort
 	}
-	return QuotaRequest{Profile: seat.Canon, Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}, true
+	return QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}, true
 }
 
 func (a *App) quotaPool(ctx context.Context, s Spawn) string {

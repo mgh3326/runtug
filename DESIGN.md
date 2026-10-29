@@ -51,9 +51,21 @@ builder seats are allowed on default rungs; consult_only and escalation rungs
 remain leaf seats. The upstream quota gate can still impose a stricter refusal;
 runtug never hides a role denial to open a seat.
 
+A catalog rung with an empty effort is the profile's default rung. A seat whose
+launcher does not pass an effort (agy, devin, opencode, and a routed `cc-*`
+claude harness) may launch it: the launcher adds no effort flag and the quota
+gate is called without `--effort`. A seat that declares an `effort`, or whose
+launcher passes one (claude, codex, grok, pi, cmd, kimi, kiro), refuses it, so
+those rows stay out of auto selection. A seat's optional `gate` names the quota
+gate profile when it differs from the launch canon (every agy spelling is gated
+by the one `agy-flash` pool gate); because that gate cannot see an escalation
+rung, an aliased seat on a non-default launch row needs `--allow-escalation`.
+A seat's `route` (`clinepass`) with `context_tokens` redirects a claude-kind
+harness; the key file is read at spawn time and handed only to the pane.
+
 `standard` is the policy sentinel for harnesses with no special host capability.
 API-backed pi and cmd seats require literal `pi_anthropic=true` or
-`cmd_dsflash41=true`. Unknown capabilities are denied. E6 aliases require the
+`cmd_dsflash41=true`; routed `cc-*` seats require `clinepass=true`. Unknown capabilities are denied. E6 aliases require the
 exact `SCOPEFUEL_E6_ARM=CANON@EFFORT` marker unless their policy row says otherwise.
 
 ## Standard brief preamble: the single source of fleet rules

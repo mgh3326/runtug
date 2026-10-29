@@ -246,7 +246,7 @@ func TestSpawnDryRunLocalRefusesMissingCapability(t *testing.T) {
 
 func TestSpawnExplicitProfileWithoutSeatRefusesBeforePlacement(t *testing.T) {
 	a, s, f, _ := cmdFixture(t)
-	s.Profile = "agy-flash38-high" // a catalog profile with no seat policy
+	s.Profile = "cc-dsflash" // a wrk spelling with no seat policy
 	s.DryRun = true
 	e := a.Spawn(context.Background(), s)
 	if code(e) != 70 {
