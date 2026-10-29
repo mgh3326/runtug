@@ -308,3 +308,15 @@ func TestHeavyLockOwnerRule(t *testing.T) {
 		}
 	}
 }
+
+func TestHeavyLockPathIsHostWide(t *testing.T) {
+	t.Setenv("TMPDIR", "/var/folders/xx/T")
+	t.Setenv("WRK_HEAVY_LOCK", "")
+	if got := heavyLockPath("box"); got != "/tmp/wrk-heavy-box.lock" {
+		t.Fatalf("default lock must be host-wide /tmp (wrk-compatible), got %q", got)
+	}
+	t.Setenv("WRK_HEAVY_LOCK", "/tmp/custom.lock")
+	if got := heavyLockPath("box"); got != "/tmp/custom.lock" {
+		t.Fatalf("WRK_HEAVY_LOCK must override: %q", got)
+	}
+}

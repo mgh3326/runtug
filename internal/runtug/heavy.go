@@ -49,6 +49,17 @@ func secureOpen(path string, create bool) (*os.File, error) {
 	return f, nil
 }
 
+// heavyLockPath is the host-wide heavy lock. It is /tmp, never os.TempDir():
+// on macOS TMPDIR is a per-user /var/folders path, so lanes and CI runners
+// on one host would hold different locks and never exclude each other. The
+// path matches wrk heavy's default so both tools share one lock.
+func heavyLockPath(host string) string {
+	if v := os.Getenv("WRK_HEAVY_LOCK"); v != "" {
+		return v
+	}
+	return filepath.Join("/tmp", "wrk-heavy-"+host+".lock")
+}
+
 // lockOwnerOK accepts our own lock without group/other write, or a root:root
 // shared lock without other write.
 func lockOwnerOK(uid, gid uint32, perm os.FileMode, self uint32) bool {
@@ -92,10 +103,7 @@ func (a *App) loadRatio(ctx context.Context) (float64, error) {
 }
 func (a *App) heavy(ctx context.Context, args []string) error {
 	host, _ := os.Hostname()
-	base := os.Getenv("WRK_HEAVY_LOCK")
-	if base == "" {
-		base = filepath.Join(os.TempDir(), "wrk-heavy-"+host+".lock")
-	}
+	base := heavyLockPath(host)
 	limit, e := envInt("WRK_HEAVY_MAX", int(integer(a.Config.Local, "heavy_max", 1)))
 	if e != nil {
 		return e
