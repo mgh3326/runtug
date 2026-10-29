@@ -1,0 +1,235 @@
+package runtug
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// fleetSource is the production PlacementSource. Host connectivity and load
+// come from the hub's placement endpoint via panewire; host presence and the
+// shared quota cache are read from handoffkeep over HTTPS.
+type fleetSource struct{ a *App }
+
+func (s fleetSource) Hosts(ctx context.Context, cwd string) ([]HostView, error) {
+	if str(s.a.Config.Hub, "hub_url") == "" || str(s.a.Config.Hub, "hub_token_env") == "" {
+		return nil, fail(70, "hub placement unavailable")
+	}
+	args := append([]string{"place", "--class", "worker", "--cwd", cwd}, s.a.controlHubArgs(false)...)
+	r := s.a.call(ctx, "panewire", args...)
+	if e := check(r, "hub placement"); e != nil {
+		return nil, e
+	}
+	return parseHubHosts(r.Out)
+}
+
+func (s fleetSource) Presence(ctx context.Context) ([]PresenceRecord, error) {
+	c, e := s.a.quotaClient()
+	if e != nil {
+		return nil, e
+	}
+	return c.presence(ctx)
+}
+
+func (s fleetSource) SharedAccount(ctx context.Context, key string) (SharedAccount, error) {
+	c, e := s.a.quotaClient()
+	if e != nil {
+		return SharedAccount{Key: key, Degraded: true}, e
+	}
+	return c.sharedAccount(ctx, key)
+}
+
+// cliWaker drives the in-flight `panewire node wake` contract: request the
+// node, hold it awake for a bounded window and let the caller wait for the
+// connect.
+type cliWaker struct{ a *App }
+
+func (w cliWaker) Wake(ctx context.Context, host string, req WakeRequest) error {
+	hold := req.HoldMinutes
+	if hold <= 0 {
+		hold = 10
+	}
+	wait := req.WaitSeconds
+	if wait <= 0 {
+		wait = 90
+	}
+	args := []string{"node", "wake", "--target", host,
+		"--hold", fmt.Sprintf("%dm", hold),
+		"--timeout", fmt.Sprintf("%ds", wait),
+		"--reason", req.Reason}
+	args = append(args, w.a.controlHubArgs(true)...)
+	r := w.a.call(ctx, "panewire", args...)
+	if e := check(r, "node wake"); e != nil {
+		return e
+	}
+	return nil
+}
+
+// quotaClient resolves the shared-quota read endpoint. The URL and bearer
+// credential follow the same convention as pacelever: HANDOFFKEEP_URL /
+// HANDOFFKEEP_TOKEN in the environment or ~/.config/handoffkeep/config.env,
+// with hosts.toml [quota] url / credential_env as explicit overrides. Errors
+// never echo URLs or credentials.
+func (a *App) quotaClient() (*hkQuota, error) {
+	q := a.Config.Quota
+	envFile := map[string]string{}
+	path := os.Getenv("HANDOFFKEEP_CONFIG")
+	if path == "" {
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			path = filepath.Join(xdg, "handoffkeep", "config.env")
+		} else {
+			path = expand("~/.config/handoffkeep/config.env")
+		}
+	}
+	if data, e := os.ReadFile(path); e == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export "))
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			k, v, ok := strings.Cut(line, "=")
+			if ok {
+				envFile[strings.TrimSpace(k)] = strings.Trim(strings.TrimSpace(v), "\"'")
+			}
+		}
+	}
+	read := func(k string) string {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+		return envFile[k]
+	}
+	u := str(q, "url")
+	if u == "" {
+		u = read("HANDOFFKEEP_URL")
+	}
+	tokenEnv := str(q, "credential_env")
+	if tokenEnv == "" {
+		tokenEnv = "HANDOFFKEEP_TOKEN"
+	}
+	token := strings.TrimSpace(os.Getenv(tokenEnv))
+	if token == "" {
+		token = envFile[tokenEnv]
+	}
+	if u == "" || token == "" {
+		return nil, fail(70, "shared quota cache unavailable")
+	}
+	parsed, e := url.Parse(u)
+	if e != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fail(70, "invalid shared quota endpoint")
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return nil, fail(70, "invalid shared quota endpoint scheme")
+	}
+	if parsed.Scheme == "http" && !strings.HasPrefix(parsed.Host, "127.") && parsed.Host != "localhost" {
+		return nil, fail(70, "shared quota cache requires HTTPS")
+	}
+	c := &hkQuota{base: strings.TrimRight(u, "/"), token: token, cfID: read("HANDOFFKEEP_CF_ACCESS_CLIENT_ID"), cfSecret: read("HANDOFFKEEP_CF_ACCESS_CLIENT_SECRET"), now: a.Now, freshTTL: a.placementTTL("fresh_ttl_s", 300)}
+	if (c.cfID == "") != (c.cfSecret == "") {
+		return nil, fail(70, "CF Access credential pair incomplete")
+	}
+	return c, nil
+}
+
+// hkQuota reads the shared quota cache and pacelever host presence from the
+// handoffkeep HTTP API. Redirects are refused so authentication never follows
+// another origin; response bodies and transport details stay out of errors.
+type hkQuota struct {
+	base, token, cfID, cfSecret string
+	now                         func() time.Time
+	freshTTL                    time.Duration
+	client                      *http.Client
+}
+
+func (c *hkQuota) get(ctx context.Context, path string, out any) error {
+	client := c.client
+	if client == nil {
+		client = &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	}
+	req, e := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if e != nil {
+		return fmt.Errorf("invalid backend request")
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	if c.cfID != "" {
+		req.Header.Set("CF-Access-Client-Id", c.cfID)
+		req.Header.Set("CF-Access-Client-Secret", c.cfSecret)
+	}
+	resp, e := client.Do(req)
+	if e != nil {
+		return fmt.Errorf("handoffkeep request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &BackendError{Status: resp.StatusCode}
+	}
+	if out != nil {
+		if e := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out); e != nil {
+			return fmt.Errorf("handoffkeep response is not valid JSON")
+		}
+	}
+	return nil
+}
+
+// BackendError reports an HTTP failure without response details.
+type BackendError struct{ Status int }
+
+func (e *BackendError) Error() string {
+	return fmt.Sprintf("handoffkeep HTTP %d (response withheld)", e.Status)
+}
+
+// presence reads the host-presence records pacelever publishes. The endpoint
+// is delivered with pacelever v0.3.0's presence contract; the decoder accepts
+// the documented record list under any of the plausible envelope keys.
+func (c *hkQuota) presence(ctx context.Context) ([]PresenceRecord, error) {
+	var body json.RawMessage
+	if e := c.get(ctx, "/v1/quota/presence", &body); e != nil {
+		return nil, e
+	}
+	var rows []PresenceRecord
+	if json.Unmarshal(body, &rows) == nil {
+		return rows, nil
+	}
+	var env map[string]json.RawMessage
+	if e := json.Unmarshal(body, &env); e != nil {
+		return nil, fmt.Errorf("handoffkeep presence response invalid")
+	}
+	for _, k := range []string{"records", "presence", "rows"} {
+		if v, ok := env[k]; ok && json.Unmarshal(v, &rows) == nil {
+			return rows, nil
+		}
+	}
+	return nil, fmt.Errorf("handoffkeep presence response invalid")
+}
+
+// sharedAccount reads the latest shared observation for one account key and
+// classes its freshness; an unreadable answer is degraded, not absent.
+func (c *hkQuota) sharedAccount(ctx context.Context, key string) (SharedAccount, error) {
+	var body struct {
+		Observation *struct {
+			Kind       string    `json:"kind"`
+			MeasuredAt time.Time `json:"measured_at"`
+			Buckets    any       `json:"buckets"`
+		} `json:"observation"`
+	}
+	if e := c.get(ctx, "/v1/quota/accounts/"+key+"/latest", &body); e != nil {
+		return SharedAccount{Key: key, Degraded: true}, e
+	}
+	acc := SharedAccount{Key: key}
+	if o := body.Observation; o != nil && o.Kind == "auto" {
+		acc.Observed = true
+		acc.MeasuredAt = o.MeasuredAt
+		if age := c.now().Sub(o.MeasuredAt); age >= -time.Minute && age <= c.freshTTL {
+			acc.Fresh = true
+		}
+	}
+	return acc, nil
+}

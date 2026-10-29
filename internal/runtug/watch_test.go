@@ -60,12 +60,21 @@ func TestMalformedCatalogNeverUsesFallbackModel(t *testing.T) {
 }
 func TestFallbackHostOrderAndLocalClosure(t *testing.T) {
 	a := testApp(t)
+	a.Source = &fakePlacementSource{}
+	a.LoadRatio = func(context.Context) (float64, error) { return 0.1, nil }
 	a.Config.Local = map[string]any{"spawn": false}
 	a.Config.Hosts = map[string]map[string]any{"host-a": {}, "host-b": {}}
 	a.Config.HostOrder = []string{"host-b", "host-a"}
-	hosts, e := a.fallbackHosts(context.Background())
-	if e != nil || strings.Join(hosts, ",") != "host-b,host-a" {
-		t.Fatalf("%v %v", hosts, e)
+	p, e := a.plan(context.Background(), Spawn{Tags: ""}, "", 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var names []string
+	for _, c := range p.ordered {
+		names = append(names, c.name)
+	}
+	if strings.Join(names, ",") != "host-b,host-a" {
+		t.Fatalf("%v", names)
 	}
 }
 func TestCodexFooterRequiresLastContextRow(t *testing.T) {

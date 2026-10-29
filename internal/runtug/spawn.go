@@ -16,6 +16,11 @@ type Spawn struct {
 	CWD, Profile, Prompt, Workspace, Label, T, Job, Owner, Effort, Role, Lane, Parent, Task, ParentJob, Host, Report, ExecutionLane, OperatorRequest, RequestedBy, Purpose, LaneDefer, ReportRelative string
 	Keep, DupOK, Bypass, DryRun                                                                                                                                                                       bool
 	Inherited, ParentFamily                                                                                                                                                                           string
+	// Tags lists the capability tags a host must carry. Delegated marks a
+	// spawn delivered by another initiator; both are initiator-local and
+	// never cross the delegation wire.
+	Tags      string `json:"-"`
+	Delegated bool   `json:"-"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -24,7 +29,7 @@ func parseSpawn(args []string) (Spawn, error) {
 	for _, p := range []struct {
 		k string
 		v *string
-	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}} {
+	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}} {
 		f.StringVar(p.v, p.k, *p.v, "")
 	}
 	f.BoolVar(&s.Keep, "keep", false, "")
@@ -52,6 +57,7 @@ type Task struct {
 	State     string         `json:"state"`
 	ClaimedBy string         `json:"claimed_by"`
 	Refs      map[string]any `json:"refs"`
+	CreatedAt string         `json:"created_at"`
 }
 
 func (a *App) taskPrecheck(ctx context.Context, s Spawn) (Task, bool, error) {
@@ -152,6 +158,9 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if !regexp.MustCompile(`^[0-9]+$`).MatchString(s.Task) {
 		return fail(2, "spawn requires a numeric task binding")
 	}
+	if _, e := parseTags(s.Tags); e != nil {
+		return e
+	}
 	brief, e := os.ReadFile(expand(s.Prompt))
 	if e != nil {
 		return e
@@ -159,11 +168,13 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if len(strings.TrimSpace(string(brief))) == 0 {
 		return fail(2, "brief is empty")
 	}
+	var placementRec map[string]any
 	if s.Host != "local" {
-		handled, e := a.place(ctx, s, string(brief))
+		handled, rec, e := a.place(ctx, s, string(brief))
 		if handled || e != nil {
 			return e
 		}
+		placementRec = rec
 	}
 	payload, e := a.prepareBrief(s, string(brief))
 	if e != nil {
@@ -293,6 +304,15 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	if e = check(r, "arbiter claim"); e != nil {
 		return e
+	}
+	if !s.Delegated {
+		if placementRec == nil {
+			tags, _ := parseTags(s.Tags)
+			placementRec = map[string]any{"source": "forced", "tags": tags, "profile": s.Profile, "host": a.machine()}
+		}
+		if e = a.event(ctx, s.Job, "job.placement", placementRec); e != nil {
+			return e
+		}
 	}
 	committed := false
 	pane := ""
