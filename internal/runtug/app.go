@@ -63,6 +63,11 @@ func New(out, errout io.Writer) (*App, error) {
 			a.Bins[bin] = v
 		}
 	}
+	// The quota CLI is pacelever; scopefuel is retired. SCOPEFUEL_BIN and
+	// RUNTUG_QUOTA_BIN stay as explicit overrides.
+	if os.Getenv("SCOPEFUEL_BIN") == "" {
+		a.Bins["scopefuel"] = "pacelever"
+	}
 	if v := os.Getenv("RUNTUG_QUOTA_BIN"); v != "" {
 		a.Bins["scopefuel"] = v
 	}
