@@ -8,5 +8,7 @@
       "models": ["swe-2", "swe-2-medium", "swe-2-max"]
     }
   ],
-  "credit_pools": ["anthropic-api"]
+  "credit_pools": ["anthropic-api"],
+  "waste_below_projected_pct": 100,
+  "exclude_at_projected_pct": 100
 }

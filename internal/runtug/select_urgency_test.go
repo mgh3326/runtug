@@ -61,16 +61,19 @@ func TestSelectNormalKeepsFreeFirst(t *testing.T) {
 	}
 }
 
-func TestSelectUrgentPrefersPaidOverFree(t *testing.T) {
+// Urgency is recorded but never reorders the tiers (policy/quota-stop: free
+// first, always) or prefers a stronger model than the task needs.
+func TestSelectUrgentKeepsPolicyOrder(t *testing.T) {
 	cases := []struct {
 		name  string
 		drop  []string // profiles removed from the catalog
 		want  string
 		tiers string
 	}{
-		{"waste first", nil, "sonnet", "waste"},
-		{"credit after waste", []string{"sonnet"}, "opus", "credit"},
-		{"ranked highest grade before headroom", []string{"sonnet", "opus"}, "grok-hi", "ranked"},
+		{"free first", nil, "devin-swe2", "free"},
+		{"waste after free", []string{"devin-swe2"}, "sonnet", "waste"},
+		{"credit after waste", []string{"devin-swe2", "sonnet"}, "opus", "credit"},
+		{"ranked lowest sufficient grade", []string{"devin-swe2", "sonnet", "opus"}, "codex-luna", "ranked"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,11 +98,8 @@ func TestSelectUrgentPrefersPaidOverFree(t *testing.T) {
 			if rec["urgency"] != "urgent" || rec["urgency_source"] != "flag" {
 				t.Fatalf("urgency record: %v %v", rec["urgency"], rec["urgency_source"])
 			}
-			if got := strings.Join(rec["tiers"].([]string), ","); got != "waste,credit,ranked,free" {
+			if got := strings.Join(rec["tiers"].([]string), ","); got != "free,waste,credit,ranked" {
 				t.Fatalf("urgent tier order: %s", got)
-			}
-			if got := candOutcome(rec, "devin-swe2", "high")["outcome"]; got != "below_choice" {
-				t.Fatalf("free must rank below the paid choice: %v", got)
 			}
 		})
 	}
@@ -124,20 +124,21 @@ func TestSelectUrgentRankedFallsToHeadroomOnEqualGrade(t *testing.T) {
 	}
 }
 
-func TestSelectUrgentFallsBackToFreeWhenPaidRefused(t *testing.T) {
+func TestSelectUrgentMovesToPaidWhenFreeRefused(t *testing.T) {
 	rows, pools, present, gate := urgencyRows()
+	delete(gate, "devin-swe2") // a live SWE-2 hold: the gate refuses free
 	a, s, q := urgencyFixture(t, "3", rows, pools, present)
-	q.GateDo = gatePools(map[string]string{"devin-swe2": gate["devin-swe2"]})
+	q.GateDo = gatePools(gate)
 	s.Urgency = "urgent"
 	sel, e := a.selectProfile(context.Background(), s)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if sel.chosen.seatName != "devin-swe2" || sel.chosen.tierName != "free" {
-		t.Fatalf("urgent with every paid rung refused must fall back to free: %s", sel.chosen.seatName)
+	if sel.chosen.seatName != "sonnet" || sel.chosen.tierName != "waste" {
+		t.Fatalf("a refused free rung must fall through to the waste pool: %s", sel.chosen.seatName)
 	}
-	if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:gate_refused" {
-		t.Fatalf("paid rung must be recorded as refused: %v", got)
+	if got := candOutcome(sel.record(), "devin-swe2", "high")["outcome"]; got != "dropped:gate_refused" {
+		t.Fatalf("free rung must be recorded as refused: %v", got)
 	}
 }
 
@@ -174,9 +175,8 @@ func TestSelectTaskPriorityDerivesUrgency(t *testing.T) {
 			if rec["urgency"] != tt.want || rec["urgency_source"] != tt.source {
 				t.Fatalf("got urgency=%v source=%v", rec["urgency"], rec["urgency_source"])
 			}
-			free := sel.chosen.tierName == "free"
-			if free != (tt.want == "normal") {
-				t.Fatalf("free chosen=%v for %s", free, tt.want)
+			if sel.chosen.tierName != "free" {
+				t.Fatalf("free must be chosen for %s work: %s", tt.want, sel.chosen.tierName)
 			}
 		})
 	}

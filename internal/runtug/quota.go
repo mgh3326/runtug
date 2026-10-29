@@ -3,9 +3,11 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Launch struct {
@@ -47,12 +49,16 @@ type CatalogRow struct {
 // status document. Waste carries the subscription use-it-or-lose-it flag when
 // the adapter reports verdicts; Blocking is the constraining used percentage
 // (verdict.blocking_pct, else the highest account-scope bucket reading).
+// Projected is the highest account-scope bucket's used percentage projected
+// to its reset at the current pace (pacelever's Pace: used / elapsed window
+// fraction); nil when no bucket can be paced yet.
 type PoolView struct {
-	Status   string
-	Stale    bool
-	Class    string
-	Waste    *bool
-	Blocking *float64
+	Status    string
+	Stale     bool
+	Class     string
+	Waste     *bool
+	Blocking  *float64
+	Projected *float64
 }
 
 // QuotaGate is deliberately independent of the scopefuel executable name.
@@ -293,8 +299,9 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 		return nil, e
 	}
 	var doc struct {
-		Schema    string `json:"schema"`
-		Providers []struct {
+		Schema      string `json:"schema"`
+		GeneratedAt string `json:"generated_at"`
+		Providers   []struct {
 			ID        string `json:"id"`
 			Status    string `json:"status"`
 			Stale     bool   `json:"stale"`
@@ -304,8 +311,10 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 				Blocking *float64 `json:"blocking_pct"`
 			} `json:"verdict"`
 			Buckets []struct {
-				UsedPct *float64 `json:"used_pct"`
-				Scope   struct {
+				Window   string   `json:"window"`
+				UsedPct  *float64 `json:"used_pct"`
+				ResetsAt string   `json:"resets_at"`
+				Scope    struct {
 					Kind string `json:"kind"`
 				} `json:"scope"`
 			} `json:"buckets"`
@@ -313,6 +322,11 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 	}
 	if e := json.Unmarshal([]byte(r.Out), &doc); e != nil || doc.Schema == "" {
 		return nil, fail(70, "invalid quota status JSON")
+	}
+	// Projections are paced at the document's own measurement time.
+	now, e := time.Parse(time.RFC3339Nano, doc.GeneratedAt)
+	if e != nil {
+		now = time.Now()
 	}
 	// The status document can repeat a provider id (a stale cached row plus a
 	// fresh measurement); usable rows win, and among them the strictest
@@ -351,12 +365,73 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 				}
 			}
 			for _, b := range p.Buckets {
-				if b.Scope.Kind == "account" && b.UsedPct != nil && (v.Blocking == nil || *b.UsedPct > *v.Blocking) {
+				if b.Scope.Kind != "account" {
+					continue
+				}
+				if b.UsedPct != nil && (v.Blocking == nil || *b.UsedPct > *v.Blocking) {
 					v.Blocking = b.UsedPct
+				}
+				if x := projectAtReset(b.UsedPct, b.Window, b.ResetsAt, now); x != nil && (v.Projected == nil || *x > *v.Projected) {
+					v.Projected = x
 				}
 			}
 		}
 		pools[id] = v
 	}
 	return pools, nil
+}
+
+// projectAtReset is pacelever's Pace expressed as a percentage: the used
+// share divided by the elapsed share of the window. A bucket that is past its
+// reset, less than 5% into its window, or unreadable has no projection. Unlike
+// Pace, an over-consumed reading above 100% still projects, so the pool is
+// excluded rather than treated as unpaceable.
+func projectAtReset(used *float64, window, resetsAt string, now time.Time) *float64 {
+	if used == nil || math.IsNaN(*used) || math.IsInf(*used, 0) || *used < 0 {
+		return nil
+	}
+	w, e := windowDuration(window)
+	if e != nil || w <= 0 {
+		return nil
+	}
+	reset, e := time.Parse(time.RFC3339Nano, resetsAt)
+	if e != nil {
+		return nil
+	}
+	left := reset.Sub(now)
+	fraction := 1 - float64(left)/float64(w)
+	if left <= 0 || fraction < 0.05 || fraction > 1 {
+		return nil
+	}
+	x := *used / fraction
+	return &x
+}
+
+// windowDuration parses a quota window ("5h", "7d", "1w", "1d12h") with the
+// same grammar as pacelever's Duration.
+func windowDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fail(70, "empty duration")
+	}
+	var total time.Duration
+	for len(s) > 0 {
+		i := 0
+		for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.') {
+			i++
+		}
+		if i == 0 || i == len(s) {
+			return 0, fail(70, "invalid duration")
+		}
+		n, e := strconv.ParseFloat(s[:i], 64)
+		if e != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, fail(70, "invalid duration")
+		}
+		unit := map[byte]time.Duration{'s': time.Second, 'm': time.Minute, 'h': time.Hour, 'd': 24 * time.Hour, 'w': 168 * time.Hour}[s[i]]
+		if unit == 0 || n < 0 || n > 1e6 {
+			return 0, fail(70, "invalid duration")
+		}
+		total += time.Duration(n * float64(unit))
+		s = strings.TrimSpace(s[i+1:])
+	}
+	return total, nil
 }
