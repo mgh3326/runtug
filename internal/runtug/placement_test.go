@@ -195,11 +195,16 @@ func remoteFixture(t *testing.T, src *fakePlacementSource, w *fakeWaker, taskCre
 			return Result{}
 		case c.Name == "herdr" && strings.HasPrefix(args, "agent list"):
 			return Result{Out: `{"agents":[]}`}
-		case c.Name == "git" && strings.Contains(args, "rev-parse"):
+		case c.Name == "git" && strings.Contains(args, "rev-parse --show-toplevel"):
 			return Result{Out: a.Home + "/work/repo-a\n"}
+		case c.Name == "git" && strings.Contains(args, "rev-parse --show-prefix"):
+			return Result{Out: "\n"}
 		case c.Name == "git" && strings.Contains(args, "get-url"):
 			return Result{Out: "git@git.invalid:org/repo-a.git\n"}
 		case c.Name == "ssh":
+			if strings.Contains(args, "remote get-url origin") {
+				return Result{Out: "git@git.invalid:org/repo-a.git\n"}
+			}
 			return ssh(args)
 		}
 		return Result{}
@@ -218,7 +223,7 @@ func TestPlacementRoundRefusalMovesToNextCandidate(t *testing.T) {
 	a, s, _ := remoteFixture(t, src, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
 		if strings.Contains(args, "_spawn-stdin") {
 			if strings.Contains(args, "first") {
-				return Result{Code: 4, Err: "quota refused"}
+				return Result{Code: 77, Err: "quota role-denied"}
 			}
 			spawns = append(spawns, args)
 			return Result{Out: "OK pane=w:p1 job=job-a\n"}
@@ -616,5 +621,56 @@ func TestPlacementLocalAdmissionRefusalMovesOn(t *testing.T) {
 	}
 	if rec["chose"] != "remote-1" {
 		t.Fatalf("a refused local must move to the next candidate: %v", rec["chose"])
+	}
+}
+
+func TestEnsureRepoOriginMismatchRefused(t *testing.T) {
+	a := placementApp(t, &fakePlacementSource{})
+	a.Runner = &fakeRunner{Do: func(c Command) Result {
+		args := strings.Join(c.Args, " ")
+		switch {
+		case strings.Contains(args, "test -d"):
+			return Result{Code: 0}
+		case strings.Contains(args, "remote get-url origin"):
+			return Result{Out: "git@git.invalid:org/other.git\n"}
+		}
+		return Result{}
+	}}
+	e := a.ensureRepo(context.Background(), map[string]any{}, "h1", &repoResolution{name: "repo-a", url: "git@git.invalid:org/repo-a.git"})
+	if code(e) != 70 {
+		t.Fatalf("a foreign checkout at the convention path must refuse, got %v", e)
+	}
+}
+
+func TestPlacementRepoSubdirectoryMapping(t *testing.T) {
+	src := &fakePlacementSource{hosts: []HostView{{Name: "h1", Connected: true}}}
+	a, s, f := remoteFixture(t, src, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
+		if strings.Contains(args, "_spawn-stdin") {
+			return Result{Out: "OK pane=w:p1\n"}
+		}
+		return Result{}
+	})
+	inner := f.Do
+	f.Do = func(c Command) Result {
+		if c.Name == "git" && strings.Contains(strings.Join(c.Args, " "), "rev-parse --show-prefix") {
+			return Result{Out: "pkg/x/\n"}
+		}
+		return inner(c)
+	}
+	a.Config.Hosts = map[string]map[string]any{"h1": {}}
+	a.Config.HostOrder = []string{"h1"}
+	s.CWD = a.Home + "/work/repo-a/pkg/x"
+	handled, _, e := a.placeAuto(context.Background(), s, "brief")
+	if e != nil || !handled {
+		t.Fatalf("%v", e)
+	}
+	var stdinCmd *Command
+	for i, c := range f.Calls {
+		if c.Name == "ssh" && strings.Contains(strings.Join(c.Args, " "), "_spawn-stdin") {
+			stdinCmd = &f.Calls[i]
+		}
+	}
+	if stdinCmd == nil || !strings.Contains(stdinCmd.Input, `"~/work/repo-a/pkg/x"`) {
+		t.Fatal("a subdirectory job must land in the matching remote subdirectory")
 	}
 }

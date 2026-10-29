@@ -624,13 +624,11 @@ func (a *App) localRepo(ctx context.Context, cwd string) *repoResolution {
 	if !validID(name) {
 		return nil
 	}
-	rel := "."
-	if absTop, e1 := filepath.Abs(top); e1 == nil {
-		if abs, e2 := filepath.Abs(cwd); e2 == nil {
-			if v, e3 := filepath.Rel(absTop, abs); e3 == nil && v != ".." && !strings.HasPrefix(v, ".."+string(os.PathSeparator)) {
-				rel = v
-			}
-		}
+	// --show-prefix comes from git itself, so symlinked checkout roots
+	// (/var vs /private/var) still map onto the right subdirectory.
+	rel := ""
+	if g := a.call(ctx, "git", "-C", cwd, "rev-parse", "--show-prefix"); g.Code == 0 {
+		rel = strings.TrimSuffix(strings.TrimSpace(g.Out), "/")
 	}
 	url := ""
 	if g := a.call(ctx, "git", "-C", cwd, "remote", "get-url", "origin"); g.Code == 0 {
@@ -653,7 +651,7 @@ func remoteDir(h map[string]any, cwd string, repo *repoResolution) (string, *rep
 		return "", nil
 	}
 	dir := "~/work/" + repo.name
-	if repo.rel != "." && repo.rel != "" {
+	if repo.rel != "" {
 		dir += "/" + repo.rel
 	}
 	return dir, repo
@@ -667,6 +665,16 @@ func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, rep
 	dir := `"$HOME/work/` + repo.name + `"`
 	r := a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "test -d "+dir)
 	if r.Code == 0 {
+		if repo.url == "" {
+			return nil
+		}
+		o := a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "git -C "+dir+" remote get-url origin")
+		if o.Code == 255 {
+			return fail(255, "repo origin check unreachable")
+		}
+		if got := strings.TrimSpace(o.Out); o.Code != 0 || got != repo.url {
+			return fail(70, "repo %s on %s has origin %q, want %q", repo.name, host, got, repo.url)
+		}
 		return nil
 	}
 	if r.Code == 255 {
@@ -675,7 +683,7 @@ func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, rep
 	if repo.url == "" {
 		return fail(70, "repo %s missing on %s and no origin URL to clone", repo.name, host)
 	}
-	r = a.call(ctx, "ssh", "-o", "BatchMode=yes", "--", target, `mkdir -p "$HOME/work" && git clone -- `+shellQuote(repo.url)+" "+dir)
+	r = a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "--", target, `mkdir -p "$HOME/work" && git clone -- `+shellQuote(repo.url)+" "+dir)
 	if r.Code == 255 {
 		return fail(255, "repo clone unreachable")
 	}
@@ -766,7 +774,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	if r.Code == 255 {
 		return candResult{unreachable: true, rc: r.Code, note: "unreachable", res: r}
 	}
-	if forced || slices.Contains([]int{2, 70, 74, 75, 76, 77, 79, 82}, r.Code) {
+	if forced || slices.Contains([]int{2, 70, 74, 75, 76, 79, 82}, r.Code) {
 		return candResult{stop: check(r, "remote spawn"), res: r}
 	}
 	return candResult{rc: r.Code, note: fmt.Sprintf("refused rc=%d", r.Code), res: r}
