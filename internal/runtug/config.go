@@ -233,6 +233,16 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// isTailnetHost reports a literal Tailscale CGNAT address (100.64.0.0/10).
+// Plain HTTP to it is allowed only with the explicit [quota]
+// allow_plaintext_tailnet opt-in, mirroring pacelever's
+// allow_plaintext_quota_share: the tailnet already encrypts the hop.
+func isTailnetHost(h string) bool {
+	ip := net.ParseIP(h)
+	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
+	return ip != nil && ip.To4() != nil && cgnat.Contains(ip)
+}
+
 func validTags(v any, key string) error {
 	if v == nil {
 		return nil

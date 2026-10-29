@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -726,5 +727,51 @@ func TestPlacementRepoSubdirectoryMapping(t *testing.T) {
 	}
 	if stdinCmd == nil || !strings.Contains(stdinCmd.Input, `"~/work/repo-a/pkg/x"`) {
 		t.Fatal("a subdirectory job must land in the matching remote subdirectory")
+	}
+}
+
+func TestCandidateLoginAcceptsStaleButReadableObservation(t *testing.T) {
+	a := &App{}
+	now := time.Now()
+	key := "pool-a:0123456789abcdef"
+	pres := []PresenceRecord{{HostID: "h1", AccountKey: key, LastSeen: now.Add(-time.Minute)}}
+	stale := map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: false, MeasuredAt: now.Add(-77 * time.Minute)}}
+	if got := a.candidateLogin(pres, stale, []string{key}, "h1", now, 24*time.Hour); got != loginPresent {
+		t.Fatalf("a readable observation older than the fresh TTL still proves login: %q", got)
+	}
+	old := map[string]SharedAccount{key: {Key: key, Observed: true, MeasuredAt: now.Add(-48 * time.Hour)}}
+	if got := a.candidateLogin(pres, old, []string{key}, "h1", now, 24*time.Hour); got != loginUnknown {
+		t.Fatalf("an observation older than the presence TTL proves nothing: %q", got)
+	}
+	degraded := map[string]SharedAccount{key: {Key: key, Observed: true, Degraded: true, MeasuredAt: now}}
+	if got := a.candidateLogin(pres, degraded, []string{key}, "h1", now, 24*time.Hour); got != loginUnknown {
+		t.Fatalf("a degraded read stays unknown: %q", got)
+	}
+}
+
+func TestQuotaClientPlaintextOnlyForOptedInTailnet(t *testing.T) {
+	t.Setenv("HANDOFFKEEP_CONFIG", filepath.Join(t.TempDir(), "absent.env"))
+	t.Setenv("HANDOFFKEEP_TOKEN", "test-token")
+	for _, tc := range []struct {
+		url   string
+		optIn bool
+		ok    bool
+	}{
+		{"http://100.100.1.2:8800", false, false},
+		{"http://100.100.1.2:8800", true, true},
+		{"http://192.168.1.2:8800", true, false},
+		{"http://example.invalid:8800", true, false},
+		{"http://127.0.0.1:8800", false, true},
+		{"https://example.invalid", false, true},
+	} {
+		a := &App{Now: time.Now}
+		a.Config.Quota = map[string]any{"url": tc.url}
+		if tc.optIn {
+			a.Config.Quota["allow_plaintext_tailnet"] = true
+		}
+		_, e := a.quotaClient()
+		if (e == nil) != tc.ok {
+			t.Fatalf("%s optIn=%v: got err=%v want ok=%v", tc.url, tc.optIn, e, tc.ok)
+		}
 	}
 }

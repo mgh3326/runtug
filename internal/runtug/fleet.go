@@ -19,10 +19,11 @@ import (
 type fleetSource struct{ a *App }
 
 func (s fleetSource) Hosts(ctx context.Context, cwd string) ([]HostView, error) {
-	if str(s.a.Config.Hub, "hub_url") == "" || str(s.a.Config.Hub, "hub_token_env") == "" {
+	// panewire place is an operator call: it rejects a node token.
+	if str(s.a.Config.Hub, "hub_url") == "" || firstNonempty(str(s.a.Config.Hub, "operator_token_env"), str(s.a.Config.Hub, "hub_token_env")) == "" {
 		return nil, fail(70, "hub placement unavailable")
 	}
-	args := append([]string{"place", "--class", "worker", "--cwd", cwd}, s.a.controlHubArgs(false)...)
+	args := append([]string{"place", "--class", "worker", "--cwd", cwd}, s.a.controlHubArgs(true)...)
 	r := s.a.call(ctx, "panewire", args...)
 	if e := check(r, "hub placement"); e != nil {
 		return nil, e
@@ -128,7 +129,7 @@ func (a *App) quotaClient() (*hkQuota, error) {
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
 		return nil, fail(70, "invalid shared quota endpoint scheme")
 	}
-	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) {
+	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) && !(boolean(q, "allow_plaintext_tailnet", false) && isTailnetHost(parsed.Hostname())) {
 		return nil, fail(70, "shared quota cache requires HTTPS")
 	}
 	c := &hkQuota{base: strings.TrimRight(u, "/"), token: token, cfID: read("HANDOFFKEEP_CF_ACCESS_CLIENT_ID"), cfSecret: read("HANDOFFKEEP_CF_ACCESS_CLIENT_SECRET"), now: a.Now, freshTTL: a.placementTTL("fresh_ttl_s", 300)}
