@@ -784,6 +784,7 @@
       "kind": "devin",
       "family": "cognition",
       "capability": "standard",
+      "effort": "high",
       "roles": [
         "worker",
         "tester",
@@ -1138,6 +1139,7 @@
       "kind": "pi",
       "family": "anthropic",
       "capability": "pi_anthropic",
+      "effort": "high",
       "roles": [
         "worker",
         "tester",
@@ -1214,6 +1216,7 @@
       "kind": "pi",
       "family": "anthropic",
       "capability": "pi_anthropic",
+      "effort": "high",
       "roles": [
         "worker",
         "tester",
@@ -1290,6 +1293,7 @@
       "kind": "pi",
       "family": "anthropic",
       "capability": "pi_anthropic",
+      "effort": "high",
       "roles": [
         "worker",
         "tester",
@@ -1366,6 +1370,7 @@
       "kind": "cmd",
       "family": "deepseek",
       "capability": "cmd_dsflash41",
+      "effort": "high",
       "roles": [
         "worker",
         "tester",

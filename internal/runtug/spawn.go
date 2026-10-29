@@ -214,6 +214,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	} else if !s.Delegated {
 		s.Sel = map[string]any{"mode": "override", "profile": s.Profile}
 	}
+	// An unknown -m seat can never admit anywhere: refuse before placement
+	// burns a remote round on hosts that must all answer rc70.
+	if _, ok := a.Policy.Profiles[s.Profile]; !ok {
+		return fail(70, "missing seat policy for %s", s.Profile)
+	}
 	var placementRec map[string]any
 	if s.Host != "local" {
 		handled, rec, e := a.place(ctx, s, string(brief))

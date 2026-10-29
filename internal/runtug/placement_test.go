@@ -101,6 +101,60 @@ func TestPlacementTagFiltering(t *testing.T) {
 	}
 }
 
+func TestPlacementCapabilityEligibility(t *testing.T) {
+	a := placementApp(t, &fakePlacementSource{hosts: []HostView{
+		{Name: "no-pi", Connected: true, LoadRatio: ptrF(0.1)},
+		{Name: "has-pi", Connected: true, LoadRatio: ptrF(0.9)},
+	}})
+	a.Config.Local = map[string]any{"spawn": false}
+	a.Config.Hosts = map[string]map[string]any{"no-pi": {}, "has-pi": {"pi_anthropic": true}}
+	a.Config.HostOrder = []string{"no-pi", "has-pi"}
+	p, e := a.plan(context.Background(), Spawn{Profile: "pi-sonnet55"}, "", 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got := strings.Join(orderNames(p), ","); got != "has-pi" {
+		t.Fatalf("a host without the seat capability can only refuse: %v", got)
+	}
+	var noPi *placeCandidate
+	for i := range p.candidates {
+		if p.candidates[i].name == "no-pi" {
+			noPi = &p.candidates[i]
+		}
+	}
+	if noPi == nil || noPi.outcome != "missing_capability:pi_anthropic" {
+		t.Fatalf("the gap must be recorded on the candidate: %+v", noPi)
+	}
+	// A standard-capability seat keeps every host eligible.
+	p, e = a.plan(context.Background(), Spawn{Profile: "sonnet"}, "", 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got := strings.Join(orderNames(p), ","); got != "no-pi,has-pi" {
+		t.Fatalf("standard seats are unaffected: %v", got)
+	}
+}
+
+func TestPlacementForcedHostMissingCapabilityRefuses(t *testing.T) {
+	a, s, f := remoteFixture(t, &fakePlacementSource{}, &fakeWaker{}, "2026-01-01T00:00:00Z", func(string) Result {
+		return Result{Out: "OK pane=w:p1\n"}
+	})
+	a.Config.Hosts = map[string]map[string]any{"desk-1": {}}
+	a.Config.HostOrder = []string{"desk-1"}
+	s.Host = "desk-1"
+	s.Profile = "pi-sonnet55"
+	s.DryRun = true
+	_, _, e := a.place(context.Background(), s, "brief")
+	if code(e) != 70 {
+		t.Fatalf("a forced host without the capability must refuse 70: %v", e)
+	}
+	for _, c := range f.Calls {
+		if c.Name == "ssh" && strings.Contains(strings.Join(c.Args, " "), "_spawn-stdin") {
+			t.Fatal("the refused host must never receive a delegation")
+		}
+	}
+}
+
 func TestPlacementLoadOrderingAndThreshold(t *testing.T) {
 	a := placementApp(t, &fakePlacementSource{hosts: []HostView{
 		{Name: "busy", Connected: true, LoadRatio: ptrF(2.4)},
@@ -210,7 +264,7 @@ func remoteFixture(t *testing.T, src *fakePlacementSource, w *fakeWaker, taskCre
 		return Result{}
 	}
 	a.Runner = f
-	s := Spawn{CWD: cwd, Profile: "cmd-dsflash41", Job: "job-a", Task: "42", Role: "worker", Host: "auto"}
+	s := Spawn{CWD: cwd, Profile: "sonnet", Job: "job-a", Task: "42", Role: "worker", Host: "auto"}
 	return a, s, f
 }
 
