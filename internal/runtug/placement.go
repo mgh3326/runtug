@@ -73,6 +73,10 @@ const (
 var (
 	tagPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	accountFP  = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	// cloneURL whitelists git clone transports: https, ssh and git schemes
+	// plus scp-style user@host:path. ext/fd/file and other helper transports
+	// are refused because they can execute local commands.
+	cloneURL = regexp.MustCompile(`^(https|ssh|git)://[^\s]+$|^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[^\s]+$`)
 )
 
 func parseTags(raw string) ([]string, error) {
@@ -140,6 +144,10 @@ type placePlan struct {
 	sleepers   []*placeCandidate
 	wake       map[string]any
 	degraded   []string
+	// hostsDegraded marks a failed hub host-list read: unlisted wakeable
+	// machines are then treated as awake so SSH proves them, and no wake
+	// reason may fire off a missing reading.
+	hostsDegraded bool
 }
 
 type candResult struct {
@@ -204,7 +212,7 @@ func neededAccounts(quota map[string]any, pool string, presence []PresenceRecord
 	}
 	if accounts, ok := quota["accounts"].(map[string]any); ok {
 		if fp := str(accounts, pool); accountFP.MatchString(fp) {
-			out = append(out, pool+":"+fp)
+			return []string{pool + ":" + fp}
 		}
 	}
 	for _, rec := range presence {
@@ -337,7 +345,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 			}
 			c.load = hv.LoadRatio
 		} else {
-			c.awake = !c.wakeable
+			c.awake = !c.wakeable || hub == nil
 		}
 		c.login = a.candidateLogin(presence, accounts, keys, firstNonempty(str(h, "presence_id"), name), now, presTTL)
 		if presencesDegraded && c.login == "" {
@@ -345,7 +353,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		}
 		enum = append(enum, c)
 	}
-	p := &placePlan{tags: required, profile: s.Profile, pool: pool, waited: waited, threshold: threshold, at: now, degraded: degraded}
+	p := &placePlan{tags: required, profile: s.Profile, pool: pool, waited: waited, threshold: threshold, at: now, degraded: degraded, hostsDegraded: hub == nil}
 	for i := range enum {
 		c := &enum[i]
 		for _, t := range required {
@@ -464,6 +472,20 @@ func (p *placePlan) record(chosen string) map[string]any {
 	return rec
 }
 
+// allOver reports whether every awake ordered candidate sits at or above
+// the load threshold — the precondition for the waited-long-enough wake rule.
+func (p *placePlan) allOver() bool {
+	if len(p.ordered) == 0 {
+		return false
+	}
+	for _, c := range p.ordered {
+		if !c.over {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *placePlan) sleeper(name string) *placeCandidate {
 	for _, c := range p.sleepers {
 		if c.name == name {
@@ -492,18 +514,10 @@ func (a *App) wakeTargets(s Spawn, p *placePlan, unreachable []string) ([]string
 			add(c.name)
 		}
 	}
-	if len(p.ordered) > 0 && p.waited >= a.wakeAfter() {
-		allOver := true
-		for _, c := range p.ordered {
-			if !c.over {
-				allOver = false
-			}
-		}
-		if allOver {
-			reasons = append(reasons, "all_awake_over_threshold")
-			for _, c := range p.sleepers {
-				add(c.name)
-			}
+	if p.waited >= a.wakeAfter() && p.allOver() {
+		reasons = append(reasons, "all_awake_over_threshold")
+		for _, c := range p.sleepers {
+			add(c.name)
 		}
 	}
 	if s.OperatorRequest != "" || s.Purpose == "predeploy" {
@@ -621,7 +635,7 @@ func (a *App) localRepo(ctx context.Context, cwd string) *repoResolution {
 	url := ""
 	if g := a.call(ctx, "git", "-C", cwd, "remote", "get-url", "origin"); g.Code == 0 {
 		url = strings.TrimSpace(g.Out)
-		if strings.ContainsAny(url, "\r\n") || strings.HasPrefix(url, "-") {
+		if !cloneURL.MatchString(url) {
 			url = ""
 		}
 	}
@@ -676,6 +690,13 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	if s.ExecutionLane == "mock" {
 		return candResult{stop: fail(79, "remote mock spawns refused")}
 	}
+	if str(h, "via") == "hub" {
+		return candResult{stop: fail(70, "hub spawn transport still targets wrk; use an SSH target running runtug")}
+	}
+	cwd, clone := remoteDir(h, s.CWD, repo)
+	if cwd == "" {
+		return candResult{note: "repo_unmappable"}
+	}
 	if s.DryRun {
 		payload, e := a.prepareBriefForHost(s, c.name, brief)
 		if e != nil {
@@ -683,13 +704,6 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 		}
 		fmt.Fprintf(a.Out, "dry-run host=%s profile=%s role=%s job=%s\n%s\n", c.name, s.Profile, s.Role, s.Job, payload)
 		return candResult{ok: true}
-	}
-	if str(h, "via") == "hub" {
-		return candResult{stop: fail(70, "hub spawn transport still targets wrk; use an SSH target running runtug")}
-	}
-	cwd, clone := remoteDir(h, s.CWD, repo)
-	if cwd == "" {
-		return candResult{note: "repo_unmappable"}
 	}
 	if clone != nil {
 		if e := a.ensureRepo(ctx, h, c.name, clone); e != nil {
@@ -807,8 +821,27 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		return rec
 	}
 	var unreachable []string
+	var deferredLocal *placeCandidate
 	for _, c := range p.ordered {
 		if c.local {
+			// An over-threshold local is a last resort: when the job has
+			// waited long enough and every awake candidate is saturated the
+			// policy wakes a sleeper before committing here.
+			if c.over && len(p.sleepers) > 0 && p.waited >= a.wakeAfter() && p.allOver() {
+				c.outcome = "deferred_over_threshold"
+				deferredLocal = c
+				continue
+			}
+			// Verify the catalog admits this launch so a refusal can move
+			// on to the next candidate instead of committing to local.
+			if a.Quota != nil {
+				if qr, ok := a.quotaRequest(s); ok {
+					if _, e := a.Quota.Launch(ctx, qr); e != nil {
+						c.outcome = "admission_refused"
+						continue
+					}
+				}
+			}
 			return false, p.record(c.name), nil
 		}
 		res := spawn(c)
@@ -857,6 +890,9 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 			return true, nil, res.stop
 		}
 		lastNote = res.note
+	}
+	if deferredLocal != nil {
+		return false, p.record(deferredLocal.name), nil
 	}
 	if len(targets) > 0 {
 		if lastNote != "" {
@@ -944,19 +980,27 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 // placement can prefer hosts that measured the account. A catalog failure is
 // not a placement failure: the spawn-time gate on the chosen host is the
 // final admission check.
-func (a *App) quotaPool(ctx context.Context, s Spawn) string {
-	if a.Quota == nil {
-		return ""
-	}
+func (a *App) quotaRequest(s Spawn) (QuotaRequest, bool) {
 	seat, ok := a.Policy.Profiles[s.Profile]
 	if !ok {
-		return ""
+		return QuotaRequest{}, false
 	}
 	effort := s.Effort
 	if effort == "" {
 		effort = seat.Effort
 	}
-	l, e := a.Quota.Launch(ctx, QuotaRequest{Profile: seat.Canon, Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose})
+	return QuotaRequest{Profile: seat.Canon, Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}, true
+}
+
+func (a *App) quotaPool(ctx context.Context, s Spawn) string {
+	if a.Quota == nil {
+		return ""
+	}
+	qr, ok := a.quotaRequest(s)
+	if !ok {
+		return ""
+	}
+	l, e := a.Quota.Launch(ctx, qr)
 	if e != nil {
 		return ""
 	}

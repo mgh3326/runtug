@@ -193,6 +193,8 @@ func remoteFixture(t *testing.T, src *fakePlacementSource, w *fakeWaker, taskCre
 			}
 			putEvent(t, a, c.Args[2], c.Args[4], p)
 			return Result{}
+		case c.Name == "herdr" && strings.HasPrefix(args, "agent list"):
+			return Result{Out: `{"agents":[]}`}
 		case c.Name == "git" && strings.Contains(args, "rev-parse"):
 			return Result{Out: a.Home + "/work/repo-a\n"}
 		case c.Name == "git" && strings.Contains(args, "get-url"):
@@ -501,5 +503,118 @@ func TestPlacementForcedHostUnreachableWakesOnce(t *testing.T) {
 	}
 	if len(w.calls) != 1 || w.calls[0] != "desk-1" {
 		t.Fatalf("forced host unreachable must wake once: %v", w.calls)
+	}
+}
+
+func TestPlacementDegradedHostListDoesNotClassifyAsleep(t *testing.T) {
+	// A failed host-list read must not mark wakeable hosts asleep: they are
+	// tried like awake candidates and never woken off a missing reading.
+	src := &fakePlacementSource{hostsErr: errString("hub down")}
+	w := &fakeWaker{}
+	a, s, _ := remoteFixture(t, src, w, "2026-01-01T00:00:00Z", func(args string) Result {
+		if strings.Contains(args, "_spawn-stdin") {
+			return Result{Out: "OK pane=w:p5\n"}
+		}
+		return Result{}
+	})
+	a.Config.Hosts = map[string]map[string]any{"desk-1": {"wake": "panewire"}}
+	a.Config.HostOrder = []string{"desk-1"}
+	handled, rec, e := a.placeAuto(context.Background(), s, "brief")
+	if e != nil || !handled {
+		t.Fatalf("%v", e)
+	}
+	if rec["chose"] != "desk-1" {
+		t.Fatalf("a wakeable host unlisted under a degraded read is still a candidate: %v", rec["chose"])
+	}
+	if len(w.calls) != 0 {
+		t.Fatalf("no wake off a missing host-list read: %v", w.calls)
+	}
+	degraded, _ := rec["degraded"].([]string)
+	if !slices.Contains(degraded, "hosts_degraded") {
+		t.Fatalf("the outage must be recorded as degraded input: %v", rec["degraded"])
+	}
+}
+
+func TestPlacementDegradedHostListUnreachableNoWake(t *testing.T) {
+	src := &fakePlacementSource{hostsErr: errString("hub down")}
+	w := &fakeWaker{}
+	a, s, _ := remoteFixture(t, src, w, "2026-01-01T00:00:00Z", func(args string) Result {
+		return Result{Code: 255, Err: "no route"}
+	})
+	a.Config.Hosts = map[string]map[string]any{"desk-1": {"wake": "panewire"}}
+	a.Config.HostOrder = []string{"desk-1"}
+	_, _, e := a.placeAuto(context.Background(), s, "brief")
+	if e == nil {
+		t.Fatal("unreachable candidates must fail placement")
+	}
+	if len(w.calls) != 0 {
+		t.Fatalf("an unreachable reading under a degraded host list must not wake: %v", w.calls)
+	}
+}
+
+func TestPlacementOverThresholdLocalDefersToWake(t *testing.T) {
+	src := &fakePlacementSource{hosts: []HostView{{Name: "desk-1", Connected: false}}}
+	w := &fakeWaker{}
+	w.onWake = func(host string) {
+		for i := range src.hosts {
+			if src.hosts[i].Name == host {
+				src.hosts[i].Connected = true
+			}
+		}
+	}
+	a, s, _ := remoteFixture(t, src, w, "2025-12-31T23:30:00Z", func(args string) Result {
+		if strings.Contains(args, "_spawn-stdin") {
+			return Result{Out: "OK pane=w:p7\n"}
+		}
+		return Result{}
+	})
+	a.Config.Local = map[string]any{"spawn": true, "max_active": int64(0)}
+	a.Config.Hosts = map[string]map[string]any{"desk-1": {"wake": "panewire"}}
+	a.Config.HostOrder = []string{"desk-1"}
+	handled, rec, e := a.placeAuto(context.Background(), s, "brief")
+	if e != nil || !handled {
+		t.Fatalf("%v", e)
+	}
+	if rec["chose"] != "desk-1" || len(w.calls) != 1 {
+		t.Fatalf("an over-threshold local defers to the woken sleeper: %v %v", rec["chose"], w.calls)
+	}
+}
+
+func TestPlacementOverThresholdLocalFallbackAfterWakeFails(t *testing.T) {
+	src := &fakePlacementSource{hosts: []HostView{{Name: "desk-1", Connected: false}}}
+	w := &fakeWaker{err: errString("wake refused")}
+	a, s, _ := remoteFixture(t, src, w, "2025-12-31T23:30:00Z", func(args string) Result {
+		return Result{}
+	})
+	a.Config.Local = map[string]any{"spawn": true, "max_active": int64(0)}
+	a.Config.Hosts = map[string]map[string]any{"desk-1": {"wake": "panewire"}}
+	a.Config.HostOrder = []string{"desk-1"}
+	handled, rec, e := a.placeAuto(context.Background(), s, "brief")
+	if e != nil || handled {
+		t.Fatalf("a failed wake must fall back to the saturated local: handled=%v %v", handled, e)
+	}
+	if rec["chose"] != a.machine() {
+		t.Fatalf("local is the last resort when no other candidate qualifies: %v", rec["chose"])
+	}
+}
+
+func TestPlacementLocalAdmissionRefusalMovesOn(t *testing.T) {
+	src := &fakePlacementSource{hosts: []HostView{{Name: "remote-1", Connected: true}}}
+	a, s, _ := remoteFixture(t, src, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
+		if strings.Contains(args, "_spawn-stdin") {
+			return Result{Out: "OK pane=w:p3\n"}
+		}
+		return Result{}
+	})
+	a.Config.Local = map[string]any{"spawn": true}
+	a.Config.Hosts = map[string]map[string]any{"remote-1": {}}
+	a.Config.HostOrder = []string{"remote-1"}
+	a.Quota = &fakeQuota{LaunchErr: errString("quota refused")}
+	handled, rec, e := a.placeAuto(context.Background(), s, "brief")
+	if e != nil || !handled {
+		t.Fatalf("%v", e)
+	}
+	if rec["chose"] != "remote-1" {
+		t.Fatalf("a refused local must move to the next candidate: %v", rec["chose"])
 	}
 }

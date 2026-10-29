@@ -195,7 +195,7 @@ func (c *hkQuota) presence(ctx context.Context) ([]PresenceRecord, error) {
 		return nil, e
 	}
 	var rows []PresenceRecord
-	if json.Unmarshal(body, &rows) == nil {
+	if json.Unmarshal(body, &rows) == nil && rows != nil {
 		return rows, nil
 	}
 	var env map[string]json.RawMessage
@@ -203,7 +203,7 @@ func (c *hkQuota) presence(ctx context.Context) ([]PresenceRecord, error) {
 		return nil, fmt.Errorf("handoffkeep presence response invalid")
 	}
 	for _, k := range []string{"records", "presence", "rows"} {
-		if v, ok := env[k]; ok && json.Unmarshal(v, &rows) == nil {
+		if v, ok := env[k]; ok && json.Unmarshal(v, &rows) == nil && rows != nil {
 			return rows, nil
 		}
 	}
