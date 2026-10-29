@@ -14,13 +14,14 @@ import (
 
 type fakeQuota struct {
 	LaunchValue Launch
+	LaunchErr   error
 	GateError   error
 	Calls       []QuotaRequest
 }
 
 func (q *fakeQuota) Launch(_ context.Context, r QuotaRequest) (Launch, error) {
 	q.Calls = append(q.Calls, r)
-	return q.LaunchValue, nil
+	return q.LaunchValue, q.LaunchErr
 }
 func (q *fakeQuota) Gate(_ context.Context, r QuotaRequest) (string, error) {
 	q.Calls = append(q.Calls, r)

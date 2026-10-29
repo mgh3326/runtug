@@ -34,7 +34,20 @@ via = "ssh"
 herdr_session = "workers"
 workspace = "workers"
 capacity = 4
+tags = ["linux", "gpu", "unity"]
+presence_id = "host-b"
 cwd_map = { "/home/example/work/project" = "/srv/work/project" }
+
+[placement]
+load_threshold = 1.0
+wake_after_s = 600
+
+[quota]
+url = "https://hk.example.invalid"
+credential_env = "HANDOFFKEEP_TOKEN"
+presence_ttl_s = 86400
+fresh_ttl_s = 300
+accounts = { pool-a = "0123456789abcdef" }
 
 [artifacts]
 drive_folder = "~/Drive"
@@ -58,6 +71,8 @@ local_delete_at = "drive_confirmed"
 | `shell_ready_timeout_ms` | `120000` | Startup readiness window, integer 30000–300000. |
 | `pi_anthropic` | `false` | Literal capability opt-in required by pi policy rows. |
 | `cmd_dsflash41` | `false` | Literal capability opt-in required by cmd policy rows. The provisioned cmd account must have no persisted MCP servers. |
+| `tags` | unset | Capability tags offered by this host for job placement (`spawn --tags`). Lowercase tag names. |
+| `presence_id` | `machine_id` | Identity this host uses in pacelever host-presence records. |
 | `brief_policy` | embedded policy | Path to the versioned brief-policy JSON; leading `~/` expands. |
 | `brief_preamble` | selected policy block | Explicit named preamble block for this host. |
 | `fleet_usage_alert_gb` | legacy/read-only | Retained config key; standalone wrk disk alerts are not emitted in v0.1. |
@@ -91,25 +106,56 @@ Panewire owns authentication and relay transport; runtug never prints credential
 | `via` | `ssh` | `ssh` or legacy `hub`; legacy hub spawn is refused until the hub can invoke runtug. |
 | `herdr_session` | `workers` | Remote HERDR_SESSION. |
 | `workspace` | spawn `-w` | Remote workspace. |
-| `cwd_map` | required for SSH spawn | Inline table of local prefix → remote prefix. Longest exact, subdirectory or dotted-worktree prefix wins. |
+| `cwd_map` | explicit override | Inline table of local prefix → remote prefix; longest prefix wins. Only needed as an exception: the default remote cwd is `$HOME/work/<repo>` on the target, cloned when missing. |
 | `cwd_keys` | legacy | Kept for legacy hub configurations; not used by SSH. |
+| `tags` | unset | Capability tags offered by this host. A job's required `--tags` must be a subset for the host to be a placement candidate. |
+| `presence_id` | host `NAME` | Identity this host uses in pacelever host-presence records. |
 | `capacity` | unset | Inventory value displayed by hosts. Authoritative capacity comes from panewire placement and remote admission. |
-| `wake` | off | `"panewire"` requests a burst hold before remote spawn. |
+| `wake` | off | `"panewire"` marks the host wakeable: the placement policy may request `panewire node wake` when asleep, then waits for the node to connect. |
 | `wake_hold` | `10` | Burst hold in minutes. |
 | `wake_wait` | `90` | Burst command timeout in seconds; wake refusal returns 81. |
 | `brief_policy`, `brief_preamble` | host policy default | Optional initiator-side preview settings for this host; deploy matching policy on the execution host. |
 
-`--host auto` uses panewire's eligible ordered candidates. A healthy local host
-is used only when hub placement is unavailable and local fallback policy permits
-it. A configured local refusal or pressure uses hosts in configuration order.
-Admission errors stop a candidate round; capacity/transport failures may try the
-next candidate. A remote success receipt, including partial-success exit 82,
-always stops the round to avoid duplicate panes.
+`--host auto` runs the local placement policy: required `--tags` must be a
+subset of a host's tags (a job with no tags may go anywhere), hosts with fresh
+presence evidence for the needed quota account rank before unknown logins
+(degraded reads count as unknown, never absent), and awake candidates order by
+load5/ncpu with any host at or above `load_threshold` tried only when nothing
+else qualifies. The spawn-time quota gate on the chosen host remains the final
+admission check; a refusal moves to the next candidate. Asleep `wake` hosts
+are only awakened under the documented rules — a capability no awake host
+has, every awake candidate over threshold after `wake_after_s`, the needed
+account measured only on the sleeper, or an operator request — then runtug
+waits for the node and places the job. Explicit `--host NAME` stays a forced
+override; an unreachable wakeable target is woken once. Every decision is
+recorded as a `job.placement` event in the job record.
 
 Runtug must already be installed on SSH targets. `_spawn-stdin` transports a
 structured request and original brief through stdin, uses a private temporary
 brief file and deletes it after spawn. The target composes its own preamble.
 No host installation or service management is performed by spawn.
+
+## `[placement]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `load_threshold` | `1.0` | load5/ncpu value above which a host takes no new job while anything else qualifies. |
+| `wake_after_s` | `600` | How long the task must have waited before saturated awake hosts justify waking a sleeper. |
+
+## `[quota]`
+
+Shared-quota read settings for presence-aware placement. URL and credential
+follow the pacelever convention: `HANDOFFKEEP_URL`/`HANDOFFKEEP_TOKEN` in the
+environment or `~/.config/handoffkeep/config.env`; the keys below are explicit
+overrides.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `url` | `HANDOFFKEEP_URL` | Shared quota cache endpoint; HTTPS required outside loopback. |
+| `credential_env` | `HANDOFFKEEP_TOKEN` | Name of the environment variable holding the bearer token. |
+| `presence_ttl_s` | `86400` | How recent a host-presence record must be to count as login evidence. |
+| `fresh_ttl_s` | `300` | How recent a shared observation must be to count as fresh. |
+| `accounts` | unset | Optional pool → 16-hex account-fingerprint table for exact account keys. |
 
 ## `[artifacts]`
 

@@ -194,9 +194,24 @@ func TestR01R09R10R11ExternalServicesRemainExternal(t *testing.T) {
 }
 func TestR03PlacementReadsCanonicalMachineAndFiltersDisconnected(t *testing.T) {
 	raw := `{"decision":"host-b","candidates":[{"machine":"host-a","connected":false},{"machine":"host-b","connected":true},{"host":"host-c","reason":"not_accepting"},"host-d"]}`
-	hosts, e := placementHosts(raw)
-	if e != nil || strings.Join(hosts, ",") != "host-b,host-d" {
-		t.Fatalf("%v %v", hosts, e)
+	views, e := parseHubHosts(raw)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(views) != 4 {
+		t.Fatalf("expected 4 candidate views, got %v", views)
+	}
+	if views[0].Connected || !views[1].Connected || views[2].Reason != "not_accepting" {
+		t.Fatalf("connectivity and acceptance must be preserved: %+v", views)
+	}
+	awake := []string{}
+	for _, v := range views {
+		if v.Connected && !strings.Contains(v.Reason, "not_accepting") {
+			awake = append(awake, v.Name)
+		}
+	}
+	if strings.Join(awake, ",") != "host-b,host-d" {
+		t.Fatalf("%v", views)
 	}
 }
 func TestR04TaskStateAndBindingUseCLIResponse(t *testing.T) {

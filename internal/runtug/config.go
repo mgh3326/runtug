@@ -1,6 +1,8 @@
 package runtug
 
 import (
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +19,8 @@ type Config struct {
 	Hub       map[string]any            `toml:"hub"`
 	Hosts     map[string]map[string]any `toml:"hosts"`
 	Artifacts map[string]any            `toml:"artifacts"`
+	Placement map[string]any            `toml:"placement"`
+	Quota     map[string]any            `toml:"quota"`
 }
 
 func expand(p string) string {
@@ -57,7 +61,7 @@ func LoadConfig(path string) (Config, error) {
 		return c, fail(70, "hosts config: %v", e)
 	}
 	for k := range raw {
-		if k != "local" && k != "hub" && k != "hosts" && k != "artifacts" {
+		if k != "local" && k != "hub" && k != "hosts" && k != "artifacts" && k != "placement" && k != "quota" {
 			return c, fail(70, "unknown hosts table %q", k)
 		}
 	}
@@ -98,6 +102,53 @@ func LoadConfig(path string) (Config, error) {
 		}
 		if v := str(h, "via"); v != "" && v != "ssh" && v != "hub" {
 			return c, fail(70, "hosts.%s.via must be ssh or hub", name)
+		}
+		if e := validTags(h["tags"], "hosts."+name+".tags"); e != nil {
+			return c, e
+		}
+		if v := str(h, "presence_id"); v != "" && !validID(v) {
+			return c, fail(70, "hosts.%s.presence_id must be a machine ID", name)
+		}
+	}
+	if e := validTags(c.Local["tags"], "local.tags"); e != nil {
+		return c, e
+	}
+	if v := str(c.Local, "presence_id"); v != "" && !validID(v) {
+		return c, fail(70, "local.presence_id must be a machine ID")
+	}
+	if v, ok := c.Placement["load_threshold"]; ok {
+		if n, ok := v.(float64); !ok || n < 0 {
+			if m, isInt := v.(int64); !isInt || m < 0 {
+				return c, fail(70, "placement.load_threshold must be a nonnegative number")
+			}
+		}
+	}
+	for _, k := range []string{"wake_after_s", "presence_ttl_s", "fresh_ttl_s"} {
+		for _, m := range []map[string]any{c.Placement, c.Quota} {
+			if v, ok := m[k]; ok {
+				if n, ok := v.(int64); !ok || n < 0 {
+					return c, fail(70, "%s must be a nonnegative integer", k)
+				}
+			}
+		}
+	}
+	if v := str(c.Quota, "url"); v != "" {
+		u, e := url.Parse(v)
+		if e != nil || u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
+			return c, fail(70, "quota.url requires HTTPS")
+		}
+	}
+	if v := str(c.Quota, "credential_env"); v != "" && !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(v) {
+		return c, fail(70, "quota.credential_env must name an environment variable")
+	}
+	if accounts, ok := c.Quota["accounts"].(map[string]any); ok {
+		for pool, fp := range accounts {
+			if !validID(pool) {
+				return c, fail(70, "invalid quota account pool name")
+			}
+			if s, ok := fp.(string); !ok || !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(s) {
+				return c, fail(70, "quota.accounts.%s must be a 16-hex account fingerprint", pool)
+			}
 		}
 	}
 	if v, ok := c.Local["max_load_ratio"]; ok {
@@ -170,6 +221,28 @@ func (c Config) hubArgs(role string) []string {
 		a = append(a, "--hub-cf-env", v)
 	}
 	return a
+}
+
+var tagRule = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+func isLoopbackHost(h string) bool {
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validTags(v any, key string) error {
+	if v == nil {
+		return nil
+	}
+	for _, t := range stringsValue(map[string]any{"v": v}, "v") {
+		if !tagRule.MatchString(t) {
+			return fail(70, "%s contains an invalid tag %q", key, t)
+		}
+	}
+	return nil
 }
 func typeError(key string) error          { return fail(70, "%s has an invalid type", key) }
 func unmarshalTOML(b []byte, v any) error { return toml.Unmarshal(b, v) }
