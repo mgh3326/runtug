@@ -16,6 +16,11 @@ type fakeQuota struct {
 	LaunchValue Launch
 	LaunchErr   error
 	GateError   error
+	GateDo      func(QuotaRequest) (string, error)
+	CatalogRows []CatalogRow
+	CatalogErr  error
+	PoolViews   map[string]PoolView
+	PoolsErr    error
 	Calls       []QuotaRequest
 }
 
@@ -25,7 +30,16 @@ func (q *fakeQuota) Launch(_ context.Context, r QuotaRequest) (Launch, error) {
 }
 func (q *fakeQuota) Gate(_ context.Context, r QuotaRequest) (string, error) {
 	q.Calls = append(q.Calls, r)
+	if q.GateDo != nil {
+		return q.GateDo(r)
+	}
 	return "pool=example profile=cmd-dsflash41\n", q.GateError
+}
+func (q *fakeQuota) Catalog(context.Context) ([]CatalogRow, error) {
+	return q.CatalogRows, q.CatalogErr
+}
+func (q *fakeQuota) Pools(context.Context) (map[string]PoolView, error) {
+	return q.PoolViews, q.PoolsErr
 }
 func testApp(t *testing.T) *App {
 	t.Helper()
@@ -65,7 +79,7 @@ func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 	if e := os.WriteFile(prompt, []byte(strings.Repeat("Please implement and verify the requested change.\n", 200)), 0600); e != nil {
 		t.Fatal(e)
 	}
-	s := Spawn{CWD: cwd, Profile: "cmd-dsflash41", Prompt: prompt, Workspace: "workspace", Label: "worker-a", Job: "job-a", T: "T1", Task: "42", Role: "worker", Host: "local"}
+	s := Spawn{CWD: cwd, Profile: "cmd-dsflash41", Prompt: prompt, Workspace: "workspace", Label: "worker-a", Job: "job-a", T: "T1", Task: "42", Role: "worker", Host: "local", OverrideReason: "fixture"}
 	a.Quota = &fakeQuota{LaunchValue: Launch{Profile: "cmd-dsflash41", ModelID: "provider/example-model", Effort: "high", Grade: "A+", Gate: "default"}}
 	launched := false
 	submitted := false

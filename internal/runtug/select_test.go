@@ -1,0 +1,500 @@
+package runtug
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+// selFixture builds an app with a fake catalog, pool status table and
+// placement source for exercising selectProfile. Local presence keys are
+// registered per pool on demand.
+func selFixture(t *testing.T, grade string, rows []CatalogRow, pools map[string]PoolView, presentPools []string) (*App, Spawn, *fakeQuota) {
+	t.Helper()
+	a := testApp(t)
+	now := a.Now()
+	var presence []PresenceRecord
+	accounts := map[string]SharedAccount{}
+	for i, pool := range presentPools {
+		key := fmt.Sprintf("%s:%016x", pool, i+1)
+		presence = append(presence, PresenceRecord{HostID: "local", AccountKey: key, LastSeen: now.Add(-time.Hour)})
+		accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true, MeasuredAt: now.Add(-time.Hour)}
+	}
+	a.Source = &fakePlacementSource{presence: presence, accounts: accounts}
+	q := &fakeQuota{CatalogRows: rows, PoolViews: pools}
+	a.Quota = q
+	a.Config.Local = map[string]any{}
+	a.Runner = &fakeRunner{Do: func(c Command) Result {
+		if c.Name == "handoffkeep" && strings.HasPrefix(strings.Join(c.Args, " "), "tasks show") {
+			return Result{Out: fmt.Sprintf(`{"id":42,"title":"work (grade %s, T1)","state":"ready","refs":{}}`, grade)}
+		}
+		return Result{}
+	}}
+	s := Spawn{CWD: a.Home + "/repo", Job: "job-a", Task: "42", Role: "worker", Host: "auto", T: "T1"}
+	return a, s, q
+}
+
+func gatePools(pools map[string]string) func(QuotaRequest) (string, error) {
+	return func(r QuotaRequest) (string, error) {
+		pool, ok := pools[r.Profile]
+		if !ok {
+			return "", fail(4, "quota refused for %s", r.Profile)
+		}
+		return fmt.Sprintf("pool=%s profile=%s\n", pool, r.Profile), nil
+	}
+}
+
+func candOutcome(rec map[string]any, profile, effort string) map[string]any {
+	cands, _ := rec["candidates"].([]any)
+	for _, v := range cands {
+		row := v.(map[string]any)
+		if row["profile"] == profile && row["effort"] == effort {
+			return row
+		}
+	}
+	return nil
+}
+
+func TestSelectGradeFilterPrefersCheapestCovering(t *testing.T) {
+	rows := []CatalogRow{
+		{Profile: "devin-swe2", Grade: "A+", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+		{Profile: "devin-swe2-medium", Grade: "A", Pool: "devin", Gate: "default", ModelID: "swe-2-medium"},
+		{Profile: "devin-swe2-max", Grade: "S+", Pool: "devin", Gate: "default", ModelID: "swe-2-max"},
+		{Profile: "sonnet", Grade: "C", Pool: "claude", Gate: "default", ModelID: "m"},
+	}
+	a, s, q := selFixture(t, "B", rows, nil, []string{"devin"})
+	q.GateDo = gatePools(map[string]string{"devin-swe2-medium": "devin"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if sel.chosen.seatName != "devin-swe2-medium" || sel.chosen.row.Grade != "A" {
+		t.Fatalf("lowest covering grade must win: %+v", sel.chosen.row)
+	}
+	rec := sel.record()
+	if got := candOutcome(rec, "sonnet", "")["outcome"]; got != "dropped:grade_insufficient" {
+		t.Fatalf("grade C must drop out: %v", got)
+	}
+	if got := candOutcome(rec, "devin-swe2", "")["outcome"]; got != "below_choice" {
+		t.Fatalf("a higher free rung ranks below the chosen rung: %v", got)
+	}
+}
+
+func TestSelectPolicyOrderFreeWasteCreditRanked(t *testing.T) {
+	waste, noWaste := true, false
+	mk := func() []CatalogRow {
+		return []CatalogRow{
+			{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+			{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+			{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+			{Profile: "codex-sol", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
+			{Profile: "codex-sol", Effort: "max", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
+		}
+	}
+	pools := map[string]PoolView{
+		"claude":        {Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(95)},
+		"anthropic-api": {Status: "ok", Class: "spend", Waste: &noWaste, Blocking: ptrF(25)},
+		"codex":         {Status: "ok", Class: "spend", Waste: &noWaste, Blocking: ptrF(10)},
+	}
+	gp := gatePools(map[string]string{"sonnet": "claude", "opus": "anthropic-api", "codex-sol": "codex", "devin-swe2": "devin"})
+	cases := []struct {
+		name    string
+		rows    []CatalogRow
+		pools   map[string]PoolView
+		present []string
+		want    string
+	}{
+		{"free beats waste", mk(), pools, []string{"devin", "claude", "anthropic-api", "codex"}, "devin-swe2"},
+		{"waste beats credit and ranked", mk()[1:], pools, []string{"claude", "anthropic-api", "codex"}, "sonnet"},
+		{"credit beats ranked", mk()[2:], pools, []string{"anthropic-api", "codex"}, "opus"},
+		{"ranked by blocking", mk()[3:], pools, []string{"codex"}, "codex-sol"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			a, s, q := selFixture(t, "S", tt.rows, tt.pools, tt.present)
+			q.GateDo = gp
+			sel, e := a.selectProfile(context.Background(), s)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if sel.chosen.seatName != tt.want {
+				t.Fatalf("want %s chosen, got %s (%s)", tt.want, sel.chosen.seatName, sel.chosen.row.Effort)
+			}
+			if sel.chosen.tierName == "" {
+				t.Fatal("chosen candidate must carry its policy tier")
+			}
+		})
+	}
+}
+
+func TestSelectWasteNeedsVerdict(t *testing.T) {
+	// A spend pool without a verdict flag is ranked, not waste-promoted.
+	waste, noWaste := true, false
+	rows := []CatalogRow{
+		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+	}
+	pools := map[string]PoolView{
+		"claude":        {Status: "ok", Class: "spend", Blocking: ptrF(5)},
+		"anthropic-api": {Status: "ok", Class: "spend", Waste: &noWaste, Blocking: ptrF(90)},
+	}
+	a, s, q := selFixture(t, "S", rows, pools, []string{"claude", "anthropic-api"})
+	q.GateDo = gatePools(map[string]string{"sonnet": "claude", "opus": "anthropic-api"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if sel.chosen.seatName != "opus" {
+		t.Fatalf("credit pool must come before ranked pools without a waste flag: %s", sel.chosen.seatName)
+	}
+	// With the flag set the same pool moves into the waste tier.
+	pools["claude"] = PoolView{Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(5)}
+	sel, e = a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.seatName != "sonnet" {
+		t.Fatalf("waste flag must promote the pool: %v", e)
+	}
+}
+
+func TestSelectUnknownOrDegradedQuotaNotAdmitted(t *testing.T) {
+	rows := []CatalogRow{
+		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "mystery", Gate: "default", ModelID: "m"},
+		{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+	}
+	a, s, q := selFixture(t, "S", rows, map[string]PoolView{}, []string{"devin", "mystery"})
+	q.GateDo = gatePools(map[string]string{"sonnet": "mystery", "devin-swe2": "devin"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.seatName != "devin-swe2" {
+		t.Fatalf("%v", e)
+	}
+	if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:quota_unknown" {
+		t.Fatalf("a pool with no status must not be guessed admissible: %v", got)
+	}
+	// Degraded, stale and excluded pools drop the same way.
+	for _, pv := range []PoolView{
+		{Status: "degraded", Class: "spend", Stale: true},
+		{Status: "ok", Class: "spend", Stale: true},
+		{Status: "ok", Class: "exclude"},
+		{Status: "error", Class: "spend"},
+	} {
+		a2, s2, _ := selFixture(t, "S", rows[:1], map[string]PoolView{"mystery": pv}, []string{"mystery"})
+		sel, e = a2.selectProfile(context.Background(), s2)
+		if e == nil || sel == nil {
+			t.Fatalf("status %+v must refuse", pv)
+		}
+		if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:quota_unknown" {
+			t.Fatalf("status %+v must be quota_unknown: %v", pv, got)
+		}
+	}
+	// When the status read itself fails, free candidates still run.
+	a, s, q = selFixture(t, "S", rows, nil, []string{"devin", "mystery"})
+	q.PoolsErr = errString("status down")
+	q.GateDo = gatePools(map[string]string{"devin-swe2": "devin"})
+	sel, e = a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.seatName != "devin-swe2" {
+		t.Fatalf("%v", e)
+	}
+	rec := sel.record()
+	if got := candOutcome(rec, "sonnet", "high")["outcome"]; got != "dropped:quota_unknown" {
+		t.Fatalf("%v", got)
+	}
+	if degr, _ := rec["degraded"].([]string); len(degr) == 0 {
+		t.Fatal("a failed status read must be recorded as degraded input")
+	}
+}
+
+func TestSelectRequiresFreshPresence(t *testing.T) {
+	rows := []CatalogRow{
+		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+	}
+	waste := true
+	noWaste := false
+	pools := map[string]PoolView{
+		"claude":        {Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(5)},
+		"anthropic-api": {Status: "ok", Class: "spend", Waste: &noWaste},
+	}
+	// claude presence exists only on a host that is not configured.
+	a, s, q := selFixture(t, "S", rows, pools, []string{"anthropic-api"})
+	src := a.Source.(*fakePlacementSource)
+	src.presence = append(src.presence, PresenceRecord{HostID: "ghost", AccountKey: "claude:00000000000000ff", LastSeen: a.Now()})
+	src.accounts["claude:00000000000000ff"] = SharedAccount{Key: "claude:00000000000000ff", Observed: true, Fresh: true}
+	q.GateDo = gatePools(map[string]string{"sonnet": "claude", "opus": "anthropic-api"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.seatName != "opus" {
+		t.Fatalf("%v", e)
+	}
+	if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:no_presence" {
+		t.Fatalf("presence on a non-spawn host must not admit: %v", got)
+	}
+	// Stale presence drops the same way.
+	a2, s2, q2 := selFixture(t, "S", rows, pools, []string{"anthropic-api"})
+	src2 := a2.Source.(*fakePlacementSource)
+	src2.presence = append(src2.presence, PresenceRecord{HostID: "local", AccountKey: "claude:00000000000000ff", LastSeen: a2.Now().Add(-48 * time.Hour)})
+	src2.accounts["claude:00000000000000ff"] = SharedAccount{Key: "claude:00000000000000ff", Observed: true, Fresh: true}
+	q2.GateDo = q.GateDo
+	sel, e = a2.selectProfile(context.Background(), s2)
+	if e != nil || sel.chosen.seatName != "opus" {
+		t.Fatalf("%v", e)
+	}
+	if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:no_presence" {
+		t.Fatalf("stale presence must not admit: %v", got)
+	}
+}
+
+func TestSelectGateRefusalMovesToNextCandidate(t *testing.T) {
+	waste := true
+	rows := []CatalogRow{
+		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m", Score: ptrF(90)},
+		{Profile: "opus", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m", Score: ptrF(80)},
+	}
+	pools := map[string]PoolView{"claude": {Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(5)}}
+	a, s, q := selFixture(t, "S", rows, pools, []string{"claude"})
+	q.GateDo = func(r QuotaRequest) (string, error) {
+		if r.Profile == "sonnet" {
+			return "", fail(4, "pool exhausted")
+		}
+		return "pool=claude profile=" + r.Profile + "\n", nil
+	}
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.seatName != "opus" {
+		t.Fatalf("%v", e)
+	}
+	row := candOutcome(sel.record(), "sonnet", "high")
+	if row["outcome"] != "dropped:gate_refused" || row["reason"] != "gate_refused:4" {
+		t.Fatalf("the refusal code must be recorded: %v", row)
+	}
+}
+
+func TestSelectDeterministic(t *testing.T) {
+	waste := true
+	rows := []CatalogRow{
+		{Profile: "codex-sol", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
+		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+		{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+	}
+	pools := map[string]PoolView{
+		"claude":        {Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(5)},
+		"anthropic-api": {Status: "ok", Class: "spend", Blocking: ptrF(25)},
+		"codex":         {Status: "ok", Class: "spend", Blocking: ptrF(17)},
+	}
+	gp := gatePools(map[string]string{"sonnet": "claude", "opus": "anthropic-api", "codex-sol": "codex", "devin-swe2": "devin"})
+	var first string
+	for i := 0; i < 3; i++ {
+		a, s, q := selFixture(t, "S", rows, pools, []string{"devin", "claude", "anthropic-api", "codex"})
+		q.GateDo = gp
+		sel, e := a.selectProfile(context.Background(), s)
+		if e != nil {
+			t.Fatal(e)
+		}
+		b, _ := encode(sel.record())
+		if i == 0 {
+			first = string(b)
+			continue
+		}
+		if string(b) != first {
+			t.Fatal("selection must be deterministic")
+		}
+	}
+}
+
+func TestSelectEscalationGateNeedsFlag(t *testing.T) {
+	rows := []CatalogRow{
+		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "escalation", ModelID: "m"},
+	}
+	waste := true
+	pools := map[string]PoolView{"claude": {Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(5)}}
+	a, s, _ := selFixture(t, "S", rows, pools, []string{"claude"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e == nil {
+		t.Fatal("an escalation rung must not be admitted silently")
+	}
+	if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:gate_class" {
+		t.Fatalf("%v", got)
+	}
+	a, s, q := selFixture(t, "S", rows, pools, []string{"claude"})
+	s.AllowEscalation = true
+	q.GateDo = gatePools(map[string]string{"sonnet": "claude"})
+	sel, e = a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.seatName != "sonnet" {
+		t.Fatalf("--allow-escalation must admit the rung: %v", e)
+	}
+}
+
+func TestSelectTesterExcludesBuilderFamily(t *testing.T) {
+	rows := []CatalogRow{
+		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "codex-sol", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
+	}
+	pools := map[string]PoolView{
+		"claude": {Status: "ok", Class: "spend", Blocking: ptrF(5)},
+		"codex":  {Status: "ok", Class: "spend", Blocking: ptrF(90)},
+	}
+	a, s, q := selFixture(t, "S", rows, pools, []string{"claude", "codex"})
+	s.Role = "tester"
+	s.ParentFamily = "anthropic"
+	q.GateDo = gatePools(map[string]string{"codex-sol": "codex"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.seatName != "codex-sol" {
+		t.Fatalf("%v", e)
+	}
+	if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:family_excluded" {
+		t.Fatalf("the builder's family must be excluded for testers: %v", got)
+	}
+}
+
+func TestSelectRetiredAndNoSeatRowsDropped(t *testing.T) {
+	ret := "2026-01-01T00:00:00Z"
+	rows := []CatalogRow{
+		{Profile: "sonnet", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m", RetiredAt: &ret},
+		{Profile: "no-such-profile", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+	}
+	a, s, q := selFixture(t, "S", rows, nil, []string{"devin"})
+	q.GateDo = gatePools(map[string]string{"devin-swe2": "devin"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got := candOutcome(sel.record(), "sonnet", "")["outcome"]; got != "dropped:retired" {
+		t.Fatalf("retired rows must not be candidates: %v", got)
+	}
+	if got := candOutcome(sel.record(), "no-such-profile", "")["outcome"]; got != "dropped:no_seat" {
+		t.Fatalf("catalog profiles without a seat must drop: %v", got)
+	}
+}
+
+func TestSelectRecordsPolicyVersionAndOverride(t *testing.T) {
+	a, s, q := selFixture(t, "B", []CatalogRow{{Profile: "devin-swe2", Grade: "A+", Pool: "devin", Gate: "default", ModelID: "swe-2"}}, nil, []string{"devin"})
+	q.GateDo = gatePools(map[string]string{"devin-swe2": "devin"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	rec := sel.record()
+	if rec["policy_version"] != float64(1) && rec["policy_version"] != 1 {
+		t.Fatalf("policy version must be recorded: %v", rec["policy_version"])
+	}
+	if rec["policy_source"] != "policy/quota-stop" {
+		t.Fatalf("%v", rec["policy_source"])
+	}
+	req, _ := rec["requested"].(map[string]any)
+	if req["grade"] != "B" || req["t"] != "T1" {
+		t.Fatalf("the request must be recorded: %v", req)
+	}
+	if q != nil && len(q.Calls) == 0 {
+		t.Fatal("the chosen candidate must pass the quota gate")
+	}
+}
+
+func TestCatalogTextFallbackParsesTable(t *testing.T) {
+	out := `catalog=cache (age 0.8h)
+S+  codex-sol@max model=gpt-6.1-sol pool=codex gate=default score=67 decided_by=op decided_at=2026-10-08T11:45:00Z ref=hk:task/1269
+S+  kiro-opus model=claude-opus-5 pool=kiro gate=default score=67 retired unsubscribed decided_by=op
+A+  agy-flash@ model=gemini-3.7-flash pool=agy gate=default
+! a prose line
+`
+	rows, e := parseCatalogText(out)
+	if e != nil || len(rows) != 3 {
+		t.Fatalf("%v %v", rows, e)
+	}
+	if rows[0].Profile != "codex-sol" || rows[0].Effort != "max" || rows[0].Grade != "S+" || *rows[0].Score != 67 {
+		t.Fatalf("%+v", rows[0])
+	}
+	if rows[1].RetiredAt == nil || rows[1].Effort != "" {
+		t.Fatalf("retired marker and empty effort: %+v", rows[1])
+	}
+	if _, e = parseCatalogText("catalog=stale (age 25h)\nS+  x model=m pool=p gate=default\n"); e == nil {
+		t.Fatal("a stale catalog must refuse")
+	}
+}
+
+func TestPoolsPrefersUsableDuplicateRows(t *testing.T) {
+	doc := `{"schema":"scopefuel.v1","providers":[
+	  {"id":"p","status":"stale","stale":true,"pool_class":"spend","verdict":{"waste":false,"blocking_pct":90}},
+	  {"id":"p","status":"ok","stale":false,"pool_class":"spend","verdict":{"waste":true,"blocking_pct":5}},
+	  {"id":"q","status":"error","stale":false,"pool_class":"exclude","verdict":{"waste":true,"blocking_pct":1}}
+	]}`
+	q := CLIQuota{Runner: &fakeRunner{Do: func(Command) Result { return Result{Out: doc} }}, Binary: "quota"}
+	pools, e := q.Pools(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if pools["p"].Status != "ok" || pools["p"].Stale || pools["p"].Waste == nil || !*pools["p"].Waste || *pools["p"].Blocking != 5 {
+		t.Fatalf("the fresh row must win: %+v", pools["p"])
+	}
+	if pools["q"].Status != "error" {
+		t.Fatalf("%+v", pools["q"])
+	}
+}
+
+func TestSpawnOverrideReasonRequired(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
+	s.OverrideReason = ""
+	if code(a.Spawn(context.Background(), s)) != 2 {
+		t.Fatal("explicit -m without --override-reason must refuse")
+	}
+	s.OverrideReason = "  "
+	if code(a.Spawn(context.Background(), s)) != 2 {
+		t.Fatal("a blank override reason must refuse")
+	}
+}
+
+func TestSpawnOverrideRecorded(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	if e := a.Spawn(context.Background(), s); e != nil {
+		t.Fatal(e)
+	}
+	var placement map[string]any
+	for _, c := range f.Calls {
+		if c.Name == "arbiter" && len(c.Args) > 4 && c.Args[0] == "event" && c.Args[4] == "job.placement" {
+			json.Unmarshal([]byte(c.Args[6]), &placement)
+		}
+	}
+	if placement == nil {
+		t.Fatal("placement record missing")
+	}
+	if placement["override_reason"] != "fixture" {
+		t.Fatalf("override reason must reach the record: %v", placement)
+	}
+	sel, _ := placement["selection"].(map[string]any)
+	if sel["mode"] != "override" || sel["profile"] != "cmd-dsflash41" {
+		t.Fatalf("explicit choices must be marked as overrides: %v", sel)
+	}
+}
+
+func TestSpawnAutoDryRunPrintsSelection(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	s.Profile = "auto"
+	s.Host = "auto"
+	s.DryRun = true
+	q := a.Quota.(*fakeQuota)
+	q.CatalogRows = []CatalogRow{{Profile: "cmd-dsflash41", Effort: "high", Grade: "A+", Pool: "example", Gate: "default", ModelID: "provider/example-model"}}
+	q.PoolViews = map[string]PoolView{"example": {Status: "ok", Class: "spend"}}
+	now := a.Now()
+	key := "example:0123456789abcdef"
+	a.Source = &fakePlacementSource{
+		presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: now}},
+		accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true}},
+	}
+	q.GateDo = func(r QuotaRequest) (string, error) { return "pool=example\n", nil }
+	if e := a.Spawn(context.Background(), s); e != nil {
+		t.Fatal(e)
+	}
+	out := a.Out.(interface{ String() string }).String()
+	if !strings.Contains(out, `"chosen"`) || !strings.Contains(out, `"seat":"cmd-dsflash41"`) {
+		t.Fatalf("the decision record must be printed: %s", out)
+	}
+	joined := ""
+	for _, c := range f.Calls {
+		joined += c.Name + " " + strings.Join(c.Args, " ") + "\n"
+	}
+	for _, bad := range []string{"arbiter", "tab create", "pane ", "tasks claim"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("dry-run must emit no side effects: %s", joined)
+		}
+	}
+}

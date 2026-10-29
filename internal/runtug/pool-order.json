@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "source_doc": "policy/quota-stop",
+  "order": ["free", "waste", "credit", "ranked"],
+  "free": [
+    {
+      "pool": "devin",
+      "models": ["swe-2", "swe-2-medium", "swe-2-max"]
+    }
+  ],
+  "credit_pools": ["anthropic-api"]
+}
