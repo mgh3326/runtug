@@ -60,7 +60,10 @@ func LoadPolicy(path string) (Policy, error) {
 }
 
 var gradeOrder = map[string]int{"C": 0, "B": 1, "A": 2, "A+": 3, "S": 4, "S+": 5}
-var taskMarker = regexp.MustCompile(`(?i)\(grade (S\+|S|A\+|A|B|C),\s*(T[0-3])\b`)
+
+// Task titles declare their marker as "(grade B, T1)" or the bare sentence
+// form "Grade S+, T3"; both are accepted. Grade and scale must be adjacent.
+var taskMarker = regexp.MustCompile(`(?i)(?:\(|\b)grade (S\+|S|A\+|A|B|C),\s*(T[0-3])\b`)
 
 func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[string]any) error {
 	if _, ok := gradeOrder[l.Grade]; !ok || l.ModelID == "" || l.Effort == "" || l.Gate == "" {

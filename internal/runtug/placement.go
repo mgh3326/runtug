@@ -765,6 +765,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	remote.Prompt = ""
 	remote.Tags = ""
 	remote.Delegated = true
+	remote.Wait = false
 	if s.Report != "" {
 		if !within(a.Jobs, s.Report) {
 			return candResult{stop: fail(2, "remote report outside jobs root")}
@@ -850,6 +851,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	}
 	emit := func(chosen string) map[string]any {
 		rec := p.record(chosen)
+		a.attachSelection(rec, s)
 		if !s.DryRun {
 			if e := a.event(ctx, s.Job, "job.placement", rec); e != nil {
 				a.warn("placement decision record failed: %v", e)
@@ -881,7 +883,9 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 					}
 				}
 			}
-			return false, p.record(c.name), nil
+			rec := p.record(c.name)
+			a.attachSelection(rec, s)
+			return false, rec, nil
 		}
 		res := spawn(c)
 		c.outcome = res.note
@@ -934,7 +938,9 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		lastNote = res.note
 	}
 	if deferredLocal != nil {
-		return false, p.record(deferredLocal.name), nil
+		rec := p.record(deferredLocal.name)
+		a.attachSelection(rec, s)
+		return false, rec, nil
 	}
 	if len(targets) > 0 {
 		if lastNote != "" {
@@ -954,6 +960,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map[string]any, error) {
 	tags, _ := parseTags(s.Tags)
 	rec := map[string]any{"source": "forced", "tags": tags, "profile": s.Profile, "host": s.Host}
+	a.attachSelection(rec, s)
 	if s.Host == "local" || s.Host == a.machine() {
 		return false, rec, nil
 	}

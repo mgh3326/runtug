@@ -14,13 +14,16 @@ import (
 
 type Spawn struct {
 	CWD, Profile, Prompt, Workspace, Label, T, Job, Owner, Effort, Role, Lane, Parent, Task, ParentJob, Host, Report, ExecutionLane, OperatorRequest, RequestedBy, Purpose, LaneDefer, ReportRelative string
-	Keep, DupOK, Bypass, DryRun                                                                                                                                                                       bool
+	OverrideReason, WaitTimeout                                                                                                                                                                       string
+	Keep, DupOK, Bypass, DryRun, Wait, AllowEscalation                                                                                                                                                bool
 	Inherited, ParentFamily                                                                                                                                                                           string
 	// Tags lists the capability tags a host must carry. Delegated marks a
-	// spawn delivered by another initiator; both are initiator-local and
-	// never cross the delegation wire.
-	Tags      string `json:"-"`
-	Delegated bool   `json:"-"`
+	// spawn delivered by another initiator. Sel carries the selection
+	// decision record; all three are initiator-local and never cross the
+	// delegation wire.
+	Tags      string         `json:"-"`
+	Delegated bool           `json:"-"`
+	Sel       map[string]any `json:"-"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -29,13 +32,15 @@ func parseSpawn(args []string) (Spawn, error) {
 	for _, p := range []struct {
 		k string
 		v *string
-	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}} {
+	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}} {
 		f.StringVar(p.v, p.k, *p.v, "")
 	}
 	f.BoolVar(&s.Keep, "keep", false, "")
 	f.BoolVar(&s.DupOK, "job-dup-ok", false, "")
 	f.BoolVar(&s.Bypass, "task-hk-bypass", false, "")
 	f.BoolVar(&s.DryRun, "dry-run", false, "")
+	f.BoolVar(&s.Wait, "wait", false, "")
+	f.BoolVar(&s.AllowEscalation, "allow-escalation", false, "")
 	if e := f.Parse(args); e != nil {
 		return s, fail(2, "%v", e)
 	}
@@ -112,8 +117,8 @@ func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 	return a.event(ctx, s.Job, "job.task_link", map[string]any{"task_id": s.Task, "job_id": s.Job, "claimed_by": s.Label, "status": status, "inherited_from": s.Inherited})
 }
 func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
-	if s.CWD == "" || s.Profile == "" || s.Prompt == "" || s.Workspace == "" || s.Label == "" || !slices.Contains([]string{"T0", "T1", "T2", "T3"}, s.T) {
-		return fail(2, "spawn requires -c -m -p -w -l --t T0..T3")
+	if s.CWD == "" || s.Prompt == "" || s.Workspace == "" || s.Label == "" || !slices.Contains([]string{"T0", "T1", "T2", "T3"}, s.T) {
+		return fail(2, "spawn requires -c -p -w -l --t T0..T3")
 	}
 	if !validID(s.Job) || !validID(s.Label) || !slices.Contains([]string{"worker", "builder", "tester", "reviewer", "counsel"}, s.Role) {
 		return fail(2, "invalid job, label or role")
@@ -126,6 +131,21 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	if s.Task != "" && s.ParentJob != "" {
 		return fail(2, "--task and --parent-job are exclusive")
+	}
+	autoSel := s.Profile == "" || s.Profile == "auto"
+	if !s.Delegated && (!autoSel || s.Host != "auto") && strings.TrimSpace(s.OverrideReason) == "" {
+		return fail(2, "explicit -m or --host requires --override-reason")
+	}
+	if s.Wait && s.DryRun {
+		return fail(2, "--wait needs a real spawn")
+	}
+	if s.WaitTimeout != "" && !s.Wait {
+		return fail(2, "--wait-timeout requires --wait")
+	}
+	if s.Wait {
+		if _, e := waitDeadline(s); e != nil {
+			return e
+		}
 	}
 	if s.ParentJob == "" && s.Task == "" {
 		s.ParentJob = os.Getenv("ARBITER_JOB")
@@ -168,11 +188,35 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if len(strings.TrimSpace(string(brief))) == 0 {
 		return fail(2, "brief is empty")
 	}
+	selEffort := ""
+	if autoSel {
+		sel, e := a.selectProfile(ctx, s)
+		if sel != nil {
+			s.Sel = sel.record()
+		}
+		if s.DryRun && s.Sel != nil {
+			b, _ := encode(s.Sel)
+			fmt.Fprintf(a.Out, "selection=%s\n", b)
+		}
+		if e != nil {
+			return e
+		}
+		s.Profile = sel.chosen.seatName
+		selEffort = sel.chosen.row.Effort
+		if selEffort != "" {
+			s.Effort = selEffort
+		}
+	} else if !s.Delegated {
+		s.Sel = map[string]any{"mode": "override", "profile": s.Profile}
+	}
 	var placementRec map[string]any
 	if s.Host != "local" {
 		handled, rec, e := a.place(ctx, s, string(brief))
-		if handled || e != nil {
+		if e != nil {
 			return e
+		}
+		if handled {
+			return a.afterSpawn(ctx, s)
 		}
 		placementRec = rec
 	}
@@ -251,6 +295,9 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if effort != "" && launch.Effort != effort {
 		return fail(70, "catalog effort does not match request")
 	}
+	if autoSel && selEffort != "" && launch.Effort != selEffort {
+		return fail(70, "launch rung does not match selected catalog rung")
+	}
 	if launch.Profile != seat.Canon {
 		return fail(70, "catalog profile mismatch")
 	}
@@ -310,6 +357,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			tags, _ := parseTags(s.Tags)
 			placementRec = map[string]any{"source": "forced", "tags": tags, "profile": s.Profile, "host": a.machine()}
 		}
+		a.attachSelection(placementRec, s)
 		if e = a.event(ctx, s.Job, "job.placement", placementRec); e != nil {
 			a.warn("placement decision record failed: %v", e)
 		}
@@ -440,7 +488,15 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if s.Role == "builder" && !laneOK && os.Getenv("WRK_LANE_STRICT") == "1" {
 		return fail(82, "builder pane exists but lane is UNREGISTERED")
 	}
-	return nil
+	return a.afterSpawn(ctx, s)
+}
+func (a *App) attachSelection(rec map[string]any, s Spawn) {
+	if s.Sel != nil {
+		rec["selection"] = s.Sel
+	}
+	if s.OverrideReason != "" {
+		rec["override_reason"] = s.OverrideReason
+	}
 }
 func firstNonempty(values ...string) string {
 	for _, v := range values {

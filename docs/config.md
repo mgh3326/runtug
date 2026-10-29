@@ -75,6 +75,7 @@ local_delete_at = "drive_confirmed"
 | `presence_id` | `machine_id` | Identity this host uses in pacelever host-presence records. |
 | `brief_policy` | embedded policy | Path to the versioned brief-policy JSON; leading `~/` expands. |
 | `brief_preamble` | selected policy block | Explicit named preamble block for this host. |
+| `pool_policy` | embedded pool-order policy | Path to the versioned pool-order JSON used by automatic model selection. |
 | `fleet_usage_alert_gb` | legacy/read-only | Retained config key; standalone wrk disk alerts are not emitted in v0.1. |
 
 Additional boolean capabilities can be named by custom seat policy rows. A
@@ -157,6 +158,23 @@ overrides.
 | `fresh_ttl_s` | `300` | How recent a shared observation must be to count as fresh. |
 | `accounts` | unset | Optional pool → 16-hex account-fingerprint table for exact account keys. |
 
+Automatic model selection (`spawn` with `-m` omitted or `-m auto`) reads the
+live bench catalog and pool status from the quota CLI, then orders candidates
+under the versioned pool-order policy (`[local].pool_policy` or
+`RUNTUG_POOL_POLICY`, else the embedded copy): free pool/model sets first,
+then subscription pools the quota status flags WASTE, then named credit
+pools, then ranked spend pools. Non-free candidates additionally need a
+readable `ok` nonstale spend status; every candidate needs fresh
+host-presence evidence for its quota account on a spawn-eligible host and a
+passing quota gate. Any unknown,
+stale or degraded evidence drops the candidate — selection never guesses and
+fails closed. Every catalog row's outcome (grade, gate, policy tier,
+presence, quota or seat reason) is recorded on the `job.placement` event;
+`--dry-run` prints the full record and emits nothing. Explicit `-m`/`--host`
+overrides require `--override-reason`, which is recorded; escalation and
+consult-only gates stay excluded unless `--allow-escalation` is given, and
+quota admission still applies to overrides.
+
 ## `[artifacts]`
 
 | Key | Default | Meaning |
@@ -216,6 +234,7 @@ for ownership and distribution.
 
 | Environment | Meaning |
 | --- | --- |
+| `RUNTUG_POOL_POLICY` | Overrides the pool-order policy used by `spawn` automatic model selection; `[local].pool_policy` takes precedence. |
 | `HERDR_BIN`, `PANEWIRE_BIN` | CLI executable overrides. |
 | `HANDOFFKEEP_BIN`, `ARBITER_BIN` | Must resolve to the canonical current-user ~/.local/bin executable in production. |
 | `SCOPEFUEL_BIN` | Quota executable; default `scopefuel`. |
@@ -259,6 +278,9 @@ pruning. `--queue-key` remains an audit label, not a durable retry reservation.
 | 80 | Local spawning disabled/unavailable without a remote fallback. |
 | 81 | Wake/capacity placement failure. |
 | 82 | Builder pane committed but lane unregistered under strict lane reporting. |
+| 83 | `spawn --wait`: the job escalated. |
+| 84 | `spawn --wait`: the job was lost or revoked. |
+| 85 | `spawn --wait`: the wait deadline expired; the job is retained. |
 
 Unexpected dependency failures preserve their subprocess exit code. Time-bounded
 CLI calls return 124 when their context deadline expires. A pane success receipt
