@@ -208,7 +208,8 @@ func neededAccounts(quota map[string]any, pool string, presence []PresenceRecord
 		}
 	}
 	for _, rec := range presence {
-		if strings.HasPrefix(rec.AccountKey, pool+":") && !slices.Contains(out, rec.AccountKey) {
+		fp, ok := strings.CutPrefix(rec.AccountKey, pool+":")
+		if ok && accountFP.MatchString(fp) && !slices.Contains(out, rec.AccountKey) {
 			out = append(out, rec.AccountKey)
 		}
 	}
@@ -294,8 +295,18 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 			local.over = true
 		}
 	}
-	if n := integer(a.Config.Local, "max_active", 0); n > 0 {
-		if agents, e := a.agents(ctx); e == nil && int64(len(agents)) >= n {
+	if _, ok := a.Config.Local["max_active"]; ok {
+		agents, e := a.agents(ctx)
+		if e != nil {
+			return nil, e
+		}
+		count := int64(0)
+		for _, agent := range agents {
+			if liveStatus(agent.Status) {
+				count++
+			}
+		}
+		if count >= integer(a.Config.Local, "max_active", 0) {
 			local.over = true
 		}
 	}
@@ -650,7 +661,7 @@ func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, rep
 	if repo.url == "" {
 		return fail(70, "repo %s missing on %s and no origin URL to clone", repo.name, host)
 	}
-	r = a.call(ctx, "ssh", "-o", "BatchMode=yes", "--", target, "git clone -- "+shellQuote(repo.url)+" "+dir)
+	r = a.call(ctx, "ssh", "-o", "BatchMode=yes", "--", target, `mkdir -p "$HOME/work" && git clone -- `+shellQuote(repo.url)+" "+dir)
 	if r.Code == 255 {
 		return fail(255, "repo clone unreachable")
 	}
@@ -813,6 +824,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		}
 	}
 	targets, reasons := a.wakeTargets(s, p, unreachable)
+	lastNote := ""
 	for _, w := range targets {
 		c := p.sleeper(w)
 		if c == nil {
@@ -832,6 +844,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		}
 		if wakeErr != nil {
 			p.wake["error"] = wakeErr.Error()
+			lastNote = wakeErr.Error()
 			continue
 		}
 		p.wake["ok"] = true
@@ -843,12 +856,12 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		if res.stop != nil {
 			return true, nil, res.stop
 		}
-		if res.res.Code != 0 {
-			return true, nil, check(res.res, "remote spawn")
-		}
-		return true, nil, fail(81, "woken host %s refused the spawn", w)
+		lastNote = res.note
 	}
 	if len(targets) > 0 {
+		if lastNote != "" {
+			return true, nil, fail(81, "wake target did not accept spawn: %s", lastNote)
+		}
 		return true, nil, fail(81, "wake target did not accept spawn")
 	}
 	if !boolean(a.Config.Local, "spawn", true) {
@@ -866,6 +879,9 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 	h, ok := a.Config.Hosts[s.Host]
 	if !ok {
 		return true, nil, fail(70, "placement selected unconfigured host %s", s.Host)
+	}
+	if _, _, e := a.taskPrecheck(ctx, s); e != nil {
+		return true, nil, e
 	}
 	emit := func() {
 		if s.DryRun {
@@ -910,10 +926,16 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 		if res.res.Code != 0 {
 			return true, nil, check(res.res, "remote spawn")
 		}
+		if res.rc != 0 {
+			return true, nil, fail(res.rc, "host %s answered its wake but the spawn still failed: %s", s.Host, res.note)
+		}
 		return true, nil, fail(81, "host %s answered its wake but the spawn still failed: %s", s.Host, res.note)
 	}
 	if res.res.Code != 0 {
 		return true, nil, check(res.res, "remote spawn")
+	}
+	if res.rc != 0 {
+		return true, nil, fail(res.rc, "host %s refused the spawn: %s", s.Host, res.note)
 	}
 	return true, nil, fail(81, "host %s refused the spawn: %s", s.Host, res.note)
 }

@@ -220,7 +220,10 @@ func (c *hkQuota) sharedAccount(ctx context.Context, key string) (SharedAccount,
 			Buckets    any       `json:"buckets"`
 		} `json:"observation"`
 	}
-	if e := c.get(ctx, "/v1/quota/accounts/"+key+"/latest", &body); e != nil {
+	if i := strings.IndexByte(key, ':'); i <= 0 || !validID(key[:i]) || !accountFP.MatchString(key[i+1:]) {
+		return SharedAccount{Key: key, Degraded: true}, fmt.Errorf("invalid quota account key")
+	}
+	if e := c.get(ctx, "/v1/quota/accounts/"+url.PathEscape(key)+"/latest", &body); e != nil {
 		return SharedAccount{Key: key, Degraded: true}, e
 	}
 	acc := SharedAccount{Key: key}
