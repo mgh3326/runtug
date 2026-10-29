@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -773,5 +774,26 @@ func TestQuotaClientPlaintextOnlyForOptedInTailnet(t *testing.T) {
 		if (e == nil) != tc.ok {
 			t.Fatalf("%s optIn=%v: got err=%v want ok=%v", tc.url, tc.optIn, e, tc.ok)
 		}
+	}
+}
+
+func TestQuotaBinaryDefaultsToPacelever(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SCOPEFUEL_BIN", "")
+	t.Setenv("RUNTUG_QUOTA_BIN", "")
+	a, e := New(io.Discard, io.Discard)
+	if e != nil {
+		t.Fatalf("New: %v", e)
+	}
+	if got := a.Bins["scopefuel"]; got != "pacelever" {
+		t.Fatalf("quota CLI default = %q, want pacelever (scopefuel is retired)", got)
+	}
+	t.Setenv("SCOPEFUEL_BIN", "/opt/legacy-quota")
+	if a, e = New(io.Discard, io.Discard); e != nil || a.Bins["scopefuel"] != "/opt/legacy-quota" {
+		t.Fatalf("SCOPEFUEL_BIN must still override: %q %v", a.Bins["scopefuel"], e)
+	}
+	t.Setenv("RUNTUG_QUOTA_BIN", "/opt/quota")
+	if a, e = New(io.Discard, io.Discard); e != nil || a.Bins["scopefuel"] != "/opt/quota" {
+		t.Fatalf("RUNTUG_QUOTA_BIN must win over SCOPEFUEL_BIN: %q %v", a.Bins["scopefuel"], e)
 	}
 }
