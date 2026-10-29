@@ -44,7 +44,7 @@ func secureOpen(path string, create bool) (*os.File, error) {
 	// group/ACL write. Other-write and symlinks/hard links are always refused.
 	if !ok || !info.Mode().IsRegular() || st.Nlink != 1 || !lockOwnerOK(st.Uid, st.Gid, info.Mode().Perm(), uint32(os.Getuid())) {
 		f.Close()
-		return nil, fail(70, "insecure lock file %s", path)
+		return nil, fail(70, "insecure lock file %s (a lock shared by several users must be pre-created root:root without other-write, e.g. a tmpfiles.d rule)", path)
 	}
 	return f, nil
 }
