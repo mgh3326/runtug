@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
@@ -82,14 +83,15 @@ func (a *App) poolPolicy() (PoolPolicy, error) {
 // selCand is one catalog rung evaluated for this spawn. Reason records why it
 // was dropped; Tier and TierName record the policy bucket it ranked under.
 type selCand struct {
-	row      CatalogRow
-	seat     *Seat
-	seatName string
-	tier     int
-	tierName string
-	blocking *float64
-	reason   string
-	outcome  string
+	row       CatalogRow
+	seat      *Seat
+	seatName  string
+	tier      int
+	tierName  string
+	blocking  *float64
+	reason    string
+	outcome   string
+	judgments []quotaJudgment
 }
 
 type selPlan struct {
@@ -285,6 +287,8 @@ func (p PoolPolicy) orderFor(urgency string) []string {
 
 // selHost is one spawn host as the presence rule sees it.
 type selHost struct {
+	name     string
+	local    bool
 	cfg      map[string]any
 	presence string
 	awake    bool
@@ -323,7 +327,7 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *s
 	}
 	machine := a.machine()
 	add := func(name string, cfg map[string]any, local bool) {
-		h := selHost{cfg: cfg, presence: firstNonempty(str(cfg, "presence_id"), name)}
+		h := selHost{name: name, local: local, cfg: cfg, presence: firstNonempty(str(cfg, "presence_id"), name)}
 		if local {
 			h.presence = firstNonempty(str(cfg, "presence_id"), machine)
 			h.awake = true
@@ -371,7 +375,7 @@ func (sp *selPresence) present(ctx context.Context, seat *Seat, pool string) boo
 	if sp.presErr || pool == "" {
 		return false
 	}
-	keys := neededAccounts(sp.a.Config.Quota, pool, sp.presence)
+	keys := neededAccounts(nil, pool, sp.presence)
 	if len(keys) == 0 {
 		return false
 	}
@@ -396,6 +400,35 @@ func (sp *selPresence) present(ctx context.Context, seat *Seat, pool string) boo
 		}
 	}
 	return false
+}
+
+// admit tries this rung on each eligible host. A remote attempt always names
+// that host's current account, even when the spawner has a different login.
+func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, pool, host string) ([]quotaJudgment, error) {
+	var judgments []quotaJudgment
+	var last error
+	for _, h := range sp.hosts {
+		if host != "" && host != "auto" && host != h.name && !(h.local && host == "local") {
+			continue
+		}
+		if !h.eligible || h.excluded || !h.awake && !h.wakeable || seat.Capability != "standard" && !boolean(h.cfg, seat.Capability, false) {
+			continue
+		}
+		key := hostAccount(sp.presence, pool, h.presence, sp.now, sp.presTTL)
+		// Preserve the selector's existing pool-level presence prerequisite.
+		// Local admission itself uses the local gate without requiring that
+		// this host also publish readable shared evidence.
+		j, err := sp.a.judgeHost(ctx, qr, pool, h.name, h.local, key, sp.accounts[key])
+		judgments = append(judgments, j)
+		if err == nil {
+			return judgments, nil
+		}
+		last = err
+	}
+	if last == nil {
+		last = fail(4, "no host has usable quota evidence")
+	}
+	return judgments, last
 }
 
 // selectProfile runs automatic model selection when -m is omitted or "auto":
@@ -541,15 +574,10 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 			continue
 		}
 		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
-		gate, e := a.Quota.Gate(ctx, qr)
+		c.judgments, e = pres.admit(ctx, qr, c.seat, c.row.Pool, s.Host)
 		if e != nil {
 			c.reason = fmt.Sprintf("gate_refused:%d", exitCode(e))
 			c.outcome = "dropped:gate_refused"
-			continue
-		}
-		if gpool := gatePool(gate); gpool != "" && gpool != c.row.Pool {
-			c.reason = "gate_pool_mismatch"
-			c.outcome = "dropped:gate_pool_mismatch"
 			continue
 		}
 		c.outcome = "chosen"
@@ -573,6 +601,15 @@ func rankScore(s *float64) float64 {
 	return -(*s)
 }
 func gatePool(gate string) string {
+	if strings.HasPrefix(strings.TrimSpace(gate), "{") {
+		var receipt struct {
+			Pool string `json:"provider_id"`
+		}
+		if json.Unmarshal([]byte(gate), &receipt) == nil {
+			return receipt.Pool
+		}
+		return ""
+	}
 	for _, word := range strings.Fields(strings.SplitN(gate, "\n", 2)[0]) {
 		if w, ok := strings.CutPrefix(word, "pool="); ok {
 			return w
@@ -596,6 +633,9 @@ func (p *selPlan) record() map[string]any {
 		}
 		if c.reason != "" {
 			row["reason"] = c.reason
+		}
+		if len(c.judgments) > 0 {
+			row["quota_gates"] = c.judgments
 		}
 		cands = append(cands, row)
 	}

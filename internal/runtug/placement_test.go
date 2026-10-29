@@ -19,12 +19,16 @@ type fakePlacementSource struct {
 	presenceErr error
 	accounts    map[string]SharedAccount
 	accountErr  error
+	presenceDo  func() []PresenceRecord
 }
 
 func (f *fakePlacementSource) Hosts(context.Context, string) ([]HostView, error) {
 	return f.hosts, f.hostsErr
 }
 func (f *fakePlacementSource) Presence(context.Context) ([]PresenceRecord, error) {
+	if f.presenceDo != nil {
+		return f.presenceDo(), f.presenceErr
+	}
 	return f.presence, f.presenceErr
 }
 func (f *fakePlacementSource) SharedAccount(_ context.Context, key string) (SharedAccount, error) {
@@ -235,6 +239,21 @@ func remoteFixture(t *testing.T, src *fakePlacementSource, w *fakeWaker, taskCre
 	a := placementApp(t, src)
 	a.Wake = w
 	a.Config.Local = map[string]any{"spawn": false}
+	// Transport fixtures carry readable target quota; tests of missing quota
+	// replace this source with their explicit evidence.
+	key := "claude:0123456789abcdef"
+	if src.accounts == nil {
+		src.accounts = map[string]SharedAccount{}
+	}
+	src.accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true, MeasuredAt: a.Now()}
+	src.presenceDo = func() []PresenceRecord {
+		records := slices.Clone(src.presence)
+		for name, cfg := range a.Config.Hosts {
+			records = append(records, PresenceRecord{HostID: firstNonempty(str(cfg, "presence_id"), name), AccountKey: key, LastSeen: a.Now()})
+		}
+		return records
+	}
+	a.Quota = &fakeQuota{LaunchValue: Launch{Pool: "claude"}, GateDo: gatePools(map[string]string{"sonnet": "claude"})}
 	cwd := a.Home + "/work/repo-a"
 	f := &fakeRunner{}
 	f.Do = func(c Command) Result {
@@ -670,7 +689,12 @@ func TestPlacementLocalAdmissionRefusalMovesOn(t *testing.T) {
 	a.Config.Local = map[string]any{"spawn": true}
 	a.Config.Hosts = map[string]map[string]any{"remote-1": {}}
 	a.Config.HostOrder = []string{"remote-1"}
-	a.Quota = &fakeQuota{LaunchErr: errString("quota refused")}
+	a.Quota = &fakeQuota{LaunchValue: Launch{Pool: "claude"}, GateDo: func(r QuotaRequest) (string, error) {
+		if r.AccountKey == "" {
+			return "", fail(3, "quota refused")
+		}
+		return "pool=claude\n", nil
+	}}
 	handled, rec, e := a.placeAuto(context.Background(), s, "brief")
 	if e != nil || !handled {
 		t.Fatalf("%v", e)

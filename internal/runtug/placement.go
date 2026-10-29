@@ -147,6 +147,7 @@ type placeCandidate struct {
 	wakeable   bool
 	excluded   string
 	login      string
+	judgment   *quotaJudgment
 	load       *float64
 	over       bool
 	outcome    string
@@ -245,6 +246,50 @@ func neededAccounts(quota map[string]any, pool string, presence []PresenceRecord
 	return out
 }
 
+// hostAccount selects the most recent fresh presence for this host and pool.
+// Equal-time conflicting keys are ambiguous; an older login must never replace
+// the current account merely because its quota happens to be available.
+func hostAccount(presence []PresenceRecord, pool, host string, now time.Time, ttl time.Duration) string {
+	var newest time.Time
+	key := ""
+	ambiguous := false
+	for _, rec := range presence {
+		fp, ok := strings.CutPrefix(rec.AccountKey, pool+":")
+		age := now.Sub(rec.LastSeen)
+		if pool == "" || rec.HostID != host || !ok || !accountFP.MatchString(fp) || age < -time.Minute || age > ttl {
+			continue
+		}
+		if rec.LastSeen.After(newest) {
+			newest, key, ambiguous = rec.LastSeen, rec.AccountKey, false
+		} else if rec.LastSeen.Equal(newest) && rec.AccountKey != key {
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return key
+}
+
+func (a *App) remoteAccount(ctx context.Context, pool, host string, cfg map[string]any) (string, SharedAccount) {
+	if a.Source == nil || pool == "" {
+		return "", SharedAccount{}
+	}
+	presence, err := a.Source.Presence(ctx)
+	if err != nil {
+		return "", SharedAccount{}
+	}
+	key := hostAccount(presence, pool, firstNonempty(str(cfg, "presence_id"), host), a.Now(), a.placementTTL("presence_ttl_s", 86400))
+	if key == "" {
+		return "", SharedAccount{}
+	}
+	acc, err := a.Source.SharedAccount(ctx, key)
+	if err != nil {
+		acc = SharedAccount{Key: key, Degraded: true}
+	}
+	return key, acc
+}
+
 // candidateLogin classes a host's evidence for holding the needed account.
 // "present" requires a fresh presence record corroborated by a readable
 // shared-cache observation; everything else is "unknown" — a degraded or
@@ -290,7 +335,9 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 			presence = records
 		}
 	}
-	keys := neededAccounts(a.Config.Quota, pool, presence)
+	// Remote accounts come from each host's presence, independently of the
+	// spawner's configured pool fingerprint.
+	keys := neededAccounts(nil, pool, presence)
 	accounts := map[string]SharedAccount{}
 	if a.Source != nil {
 		for _, k := range keys {
@@ -349,7 +396,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 			local.over = true
 		}
 	}
-	local.login = a.candidateLogin(presence, accounts, keys, firstNonempty(str(a.Config.Local, "presence_id"), machine), now, presTTL)
+	local.login = a.candidateLogin(presence, accounts, neededAccounts(a.Config.Quota, pool, presence), firstNonempty(str(a.Config.Local, "presence_id"), machine), now, presTTL)
 	if presencesDegraded && local.login == "" {
 		local.login = loginUnknown
 	}
@@ -491,6 +538,9 @@ func (p *placePlan) record(chosen string) map[string]any {
 		if c.outcome != "" {
 			row["outcome"] = c.outcome
 		}
+		if c.judgment != nil {
+			row["quota_gate"] = *c.judgment
+		}
 		if c.name == chosen {
 			row["chosen"] = true
 		}
@@ -526,10 +576,10 @@ func (p *placePlan) allOver() bool {
 	return true
 }
 
-func (p *placePlan) sleeper(name string) *placeCandidate {
-	for _, c := range p.sleepers {
-		if c.name == name {
-			return c
+func (p *placePlan) candidate(name string) *placeCandidate {
+	for i := range p.candidates {
+		if p.candidates[i].name == name {
+			return &p.candidates[i]
 		}
 	}
 	return nil
@@ -861,6 +911,16 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		return repo
 	}
 	spawn := func(c *placeCandidate) candResult {
+		qr, ok := a.quotaRequest(s)
+		if !ok {
+			return candResult{rc: 70, note: "quota_request_unavailable"}
+		}
+		key, acc := a.remoteAccount(ctx, pool, c.name, c.cfg)
+		j, err := a.judgeHost(ctx, qr, pool, c.name, false, key, acc)
+		c.judgment = &j
+		if err != nil {
+			return candResult{rc: exitCode(err), note: "quota_" + j.Outcome}
+		}
 		if s.DryRun {
 			return a.spawnRemote(ctx, s, brief, c, resolveRepo(), false)
 		}
@@ -882,6 +942,24 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	var unreachable []string
 	var deferredLocal *placeCandidate
 	var localRefusal error
+	admitLocal := func(c *placeCandidate) bool {
+		if a.Quota == nil {
+			return true
+		}
+		if qr, ok := a.quotaRequest(s); ok {
+			if _, err := a.Quota.Launch(ctx, qr); err != nil {
+				c.outcome, localRefusal = "admission_refused", err
+				return false
+			}
+			j, err := a.judgeHost(ctx, qr, pool, c.name, true, "", SharedAccount{})
+			c.judgment = &j
+			if err != nil {
+				c.outcome, localRefusal = "quota_refused", err
+				return false
+			}
+		}
+		return true
+	}
 	for _, c := range p.ordered {
 		if c.local {
 			// An over-threshold local is a last resort: when the job has
@@ -894,14 +972,8 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 			}
 			// Verify the catalog admits this launch so a refusal can move
 			// on to the next candidate instead of committing to local.
-			if a.Quota != nil {
-				if qr, ok := a.quotaRequest(s); ok {
-					if _, e := a.Quota.Launch(ctx, qr); e != nil {
-						c.outcome = "admission_refused"
-						localRefusal = e
-						continue
-					}
-				}
+			if !admitLocal(c) {
+				continue
 			}
 			rec := p.record(c.name)
 			a.attachSelection(rec, s)
@@ -922,9 +994,12 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	targets, reasons := a.wakeTargets(s, p, unreachable)
 	lastNote := ""
 	for _, w := range targets {
-		c := p.sleeper(w)
+		c := p.candidate(w)
 		if c == nil {
-			c = &placeCandidate{name: w, cfg: a.Config.Hosts[w], wakeable: true}
+			// Wake targets must come from this plan so every gate attempt has
+			// a candidate in the placement record.
+			lastNote = "wake target missing from placement plan"
+			continue
 		}
 		p.wake = map[string]any{"host": w, "reasons": reasons, "ok": false}
 		h := c.cfg
@@ -957,7 +1032,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		}
 		lastNote = res.note
 	}
-	if deferredLocal != nil {
+	if deferredLocal != nil && admitLocal(deferredLocal) {
 		rec := p.record(deferredLocal.name)
 		a.attachSelection(rec, s)
 		return false, rec, nil
@@ -1003,8 +1078,21 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 		}
 	}
 	c := placeCandidate{name: s.Host, cfg: h, wakeable: str(h, "wake") == "panewire", awake: true, eligible: true}
-	repo := a.localRepo(ctx, s.CWD)
-	res := a.spawnRemote(ctx, s, brief, &c, repo, true)
+	qr, ok := a.quotaRequest(s)
+	if !ok {
+		return true, nil, fail(70, "quota_request_unavailable")
+	}
+	pool := a.quotaPool(ctx, s)
+	spawn := func() candResult {
+		key, acc := a.remoteAccount(ctx, pool, c.name, c.cfg)
+		j, err := a.judgeHost(ctx, qr, pool, c.name, false, key, acc)
+		rec["quota_gate"] = j
+		if err != nil {
+			return candResult{stop: err}
+		}
+		return a.spawnRemote(ctx, s, brief, &c, a.localRepo(ctx, s.CWD), true)
+	}
+	res := spawn()
 	if res.ok {
 		emit()
 		return true, rec, nil
@@ -1026,7 +1114,7 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 		if e := a.waitForNode(ctx, s.Host, h, req.WaitSeconds); e != nil {
 			return true, nil, e
 		}
-		res = a.spawnRemote(ctx, s, brief, &c, repo, true)
+		res = spawn()
 		if res.ok {
 			emit()
 			return true, rec, nil
