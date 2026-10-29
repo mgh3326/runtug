@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -93,6 +94,7 @@ type selCand struct {
 
 type selPlan struct {
 	policy   PoolPolicy
+	order    []string
 	req      selReq
 	cands    []*selCand
 	chosen   *selCand
@@ -107,6 +109,8 @@ type selReq struct {
 	effort          string
 	allowEscalation bool
 	builderFamily   string
+	urgency         string
+	urgencySource   string
 }
 
 // effortRank orders rung efforts cheap-first; an empty effort is the catalog's
@@ -195,10 +199,10 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 // tierOf classes a candidate under the operator pool order. The waste tier
 // needs the quota adapter's verdict flag; pools without a readable spend
 // status are unknown rather than ranked.
-func (p PoolPolicy) tierOf(row CatalogRow, pools map[string]PoolView, poolsOK bool) (string, int) {
+func (p PoolPolicy) tierOf(row CatalogRow, order []string, pools map[string]PoolView, poolsOK bool) (string, int) {
 	for _, fs := range p.Free {
 		if fs.Pool == row.Pool && (len(fs.Models) == 0 || slices.Contains(fs.Models, row.ModelID)) {
-			return "free", slices.Index(p.Order, "free")
+			return "free", slices.Index(order, "free")
 		}
 	}
 	if !poolsOK {
@@ -215,7 +219,55 @@ func (p PoolPolicy) tierOf(row CatalogRow, pools map[string]PoolView, poolsOK bo
 	if slices.Contains(p.CreditPools, row.Pool) {
 		tier = "credit"
 	}
-	return tier, slices.Index(p.Order, tier)
+	return tier, slices.Index(order, tier)
+}
+
+// Urgency values and the sources a resolved urgency can come from.
+const (
+	urgencyNormal = "normal"
+	urgencyUrgent = "urgent"
+)
+
+// urgentPriorities are the hk task priorities that make a spawn urgent when
+// --urgency is omitted (policy/quota-stop: urgent_priorities [1, 2]).
+var urgentPriorities = []int{1, 2}
+
+// resolveUrgency applies the explicit flag first, then the bound task's hk
+// priority, then the normal default. The returned source names which won.
+func resolveUrgency(flag string, task Task) (string, string) {
+	if flag != "" {
+		return flag, "flag"
+	}
+	if n, ok := taskPriority(task.Priority); ok && slices.Contains(urgentPriorities, n) {
+		return urgencyUrgent, "task-priority"
+	}
+	return urgencyNormal, "default"
+}
+func taskPriority(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), n == float64(int(n))
+	case string:
+		i, e := strconv.Atoi(strings.TrimSpace(n))
+		return i, e == nil
+	}
+	return 0, false
+}
+
+// orderFor returns the tier order for one urgency. Urgent work must not queue
+// behind the free bucket, so free moves to the end and the policy's relative
+// order of the paid tiers is kept.
+func (p PoolPolicy) orderFor(urgency string) []string {
+	if urgency != urgencyUrgent {
+		return slices.Clone(p.Order)
+	}
+	var order []string
+	for _, tier := range p.Order {
+		if tier != "free" {
+			order = append(order, tier)
+		}
+	}
+	return append(order, "free")
 }
 
 // selHost is one spawn host as the presence rule sees it.
@@ -367,7 +419,8 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if e != nil {
 		return nil, e
 	}
-	p := &selPlan{policy: policy, req: req, at: a.Now()}
+	req.urgency, req.urgencySource = resolveUrgency(s.Urgency, task)
+	p := &selPlan{policy: policy, order: policy.orderFor(req.urgency), req: req, at: a.Now()}
 	rows, e := a.Quota.Catalog(ctx)
 	if e != nil {
 		return nil, fail(70, "bench catalog unreadable: %v", e)
@@ -414,7 +467,7 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 			c.outcome = "dropped:" + c.reason
 			continue
 		}
-		tierName, n := policy.tierOf(row, pools, poolsErr == nil)
+		tierName, n := policy.tierOf(row, p.order, pools, poolsErr == nil)
 		if n < 0 {
 			c.reason = "quota_unknown"
 			c.outcome = "dropped:quota_unknown"
@@ -426,9 +479,16 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 		}
 		pending = append(pending, c)
 	}
+	urgent := req.urgency == urgencyUrgent
 	slices.SortStableFunc(pending, func(x, y *selCand) int {
 		if x.tier != y.tier {
 			return x.tier - y.tier
+		}
+		if urgent && x.tierName == "ranked" {
+			// Urgent work takes the strongest ranked model first.
+			if gx, gy := gradeOrder[x.row.Grade], gradeOrder[y.row.Grade]; gx != gy {
+				return gy - gx
+			}
 		}
 		if bx, by := rankBlocking(x.blocking), rankBlocking(y.blocking); bx != by {
 			if bx < by {
@@ -536,10 +596,13 @@ func (p *selPlan) record() map[string]any {
 	}
 	rec := map[string]any{
 		"mode":           "auto",
+		"decision":       fmt.Sprintf("urgency=%s source=%s tiers=%s", p.req.urgency, p.req.urgencySource, strings.Join(p.order, ">")),
 		"policy_version": p.policy.Version,
 		"policy_source":  p.policy.SourceDoc,
 		"requested":      map[string]any{"grade": p.req.grade, "t": p.req.t, "role": p.req.role, "tags": tags, "effort": p.req.effort, "allow_escalation": p.req.allowEscalation},
-		"tiers":          p.policy.Order,
+		"urgency":        p.req.urgency,
+		"urgency_source": p.req.urgencySource,
+		"tiers":          p.order,
 		"candidates":     cands,
 		"at":             p.at.Format(time.RFC3339Nano),
 	}

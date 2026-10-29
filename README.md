@@ -23,6 +23,17 @@ degraded evidence is never guessed admissible: selection fails closed.
 Every considered rung and its drop reason is recorded on the placement event;
 `--dry-run` prints the record and executes nothing.
 
+Urgency changes only the tier order. Normal work keeps the free pool (SWE-2)
+first. Urgent work must not queue behind it, so the free tier moves last:
+WASTE subscription pools, the credit pool, ranked spend (highest grade first,
+then quota headroom), then free. Pass `--urgency normal|urgent`; when it is
+omitted the bound hk task's priority decides (1–2 is urgent) and otherwise the
+default is normal. An explicit flag always wins. Grade, gate, role and family
+filters, presence and the quota gate apply unchanged, unknown quota still
+fails closed, and an urgent spawn whose paid rungs are all refused falls back
+to free. The record and the `--dry-run` output carry
+`urgency=<v> source=<flag|task-priority|default>` and the tier order used.
+
 ```sh
 runtug spawn -c ~/work/project.task42 -m cmd-dsflash41 \
   -p brief.md -w workers -l task42-worker --t T1 \

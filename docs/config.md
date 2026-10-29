@@ -175,6 +175,21 @@ overrides require `--override-reason`, which is recorded; escalation and
 consult-only gates stay excluded unless `--allow-escalation` is given, and
 quota admission still applies to overrides.
 
+Selection is urgency-aware. `spawn --urgency normal|urgent` sets it; when the
+flag is omitted the bound hk task's `priority` is read from the existing task
+precheck (priority 1 or 2 resolves to urgent, anything else or unreadable to
+normal), and an explicit flag always wins. The policy `order` is used as
+written for normal work. For urgent work the `free` tier moves to the end and
+the other tiers keep their policy order (default `waste`, `credit`, `ranked`,
+`free`); within `ranked` the highest catalog grade is tried first, then the
+lowest used quota percentage. Grade, gate, role, family and capability
+filters, host presence and the quota gate are unchanged, unknown or stale
+quota still drops the candidate, and an urgent spawn whose paid candidates are
+all refused falls back to free. The `job.placement` selection record gains
+`urgency`, `urgency_source` (`flag`, `task-priority` or `default`), the
+`tiers` order actually used and a one-line `decision`; `--dry-run` prints
+`urgency=<v> source=<s> tiers=<a>><b>...` before the full record.
+
 ## `[artifacts]`
 
 | Key | Default | Meaning |
