@@ -411,11 +411,27 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		}
 	}
 	if seat.Proof == "codex-footer" {
-		screen, e := a.visible(ctx, pane)
-		if e != nil {
-			return e
+		// Codex draws its footer (model, effort, cwd) a moment after start; a
+		// single read right after launch sees only the banner. Re-read until
+		// the footer proves the launch or the launch deadline passes.
+		proven := false
+		for deadline := a.Now().Add(timeout); ; {
+			screen, e := a.visible(ctx, pane)
+			if e != nil {
+				return e
+			}
+			if CodexFooterProof(screen, l.ModelID, l.Effort, s.CWD, a.Home) {
+				proven = true
+				break
+			}
+			if !a.Now().Before(deadline) {
+				break
+			}
+			if e := a.Sleep(ctx, time.Second); e != nil {
+				return e
+			}
 		}
-		if !CodexFooterProof(screen, l.ModelID, l.Effort, s.CWD, a.Home) {
+		if !proven {
 			return fail(70, "Codex model/effort footer not proven")
 		}
 	}
@@ -433,7 +449,7 @@ func (a *App) waitAgentIdle(ctx context.Context, pane string, timeout time.Durat
 		if left < time.Second {
 			left = time.Second
 		}
-		r := a.call(ctx, "herdr", "agent", "wait", pane, "--until", "idle", "--timeout", fmt.Sprint(left.Milliseconds()))
+		r := a.call(ctx, "herdr", "agent", "wait", pane, "--timeout", fmt.Sprint(left.Milliseconds()))
 		if r.Code == 0 || !strings.Contains(r.Out+r.Err, "agent_not_found") || !a.Now().Before(deadline) {
 			return check(r, "herdr")
 		}
