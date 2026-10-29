@@ -142,6 +142,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if s.WaitTimeout != "" && !s.Wait {
 		return fail(2, "--wait-timeout requires --wait")
 	}
+	if s.Wait {
+		if _, e := waitDeadline(s); e != nil {
+			return e
+		}
+	}
 	if s.ParentJob == "" && s.Task == "" {
 		s.ParentJob = os.Getenv("ARBITER_JOB")
 		if s.ParentJob == "" {

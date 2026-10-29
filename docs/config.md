@@ -163,9 +163,10 @@ live bench catalog and pool status from the quota CLI, then orders candidates
 under the versioned pool-order policy (`[local].pool_policy` or
 `RUNTUG_POOL_POLICY`, else the embedded copy): free pool/model sets first,
 then subscription pools the quota status flags WASTE, then named credit
-pools, then ranked spend pools. Each candidate additionally needs a readable
-`ok` nonstale spend status, fresh host-presence evidence for its quota
-account on a spawn-eligible host, and a passing quota gate. Any unknown,
+pools, then ranked spend pools. Non-free candidates additionally need a
+readable `ok` nonstale spend status; every candidate needs fresh
+host-presence evidence for its quota account on a spawn-eligible host and a
+passing quota gate. Any unknown,
 stale or degraded evidence drops the candidate — selection never guesses and
 fails closed. Every catalog row's outcome (grade, gate, policy tier,
 presence, quota or seat reason) is recorded on the `job.placement` event;

@@ -60,10 +60,10 @@ func candOutcome(rec map[string]any, profile, effort string) map[string]any {
 
 func TestSelectGradeFilterPrefersCheapestCovering(t *testing.T) {
 	rows := []CatalogRow{
-		{Profile: "devin-swe2", Grade: "A+", Pool: "devin", Gate: "default", ModelID: "swe-2"},
-		{Profile: "devin-swe2-medium", Grade: "A", Pool: "devin", Gate: "default", ModelID: "swe-2-medium"},
-		{Profile: "devin-swe2-max", Grade: "S+", Pool: "devin", Gate: "default", ModelID: "swe-2-max"},
-		{Profile: "sonnet", Grade: "C", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "devin-swe2", Effort: "high", Grade: "A+", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+		{Profile: "devin-swe2-medium", Effort: "medium", Grade: "A", Pool: "devin", Gate: "default", ModelID: "swe-2-medium"},
+		{Profile: "devin-swe2-max", Effort: "max", Grade: "S+", Pool: "devin", Gate: "default", ModelID: "swe-2-max"},
+		{Profile: "sonnet", Effort: "high", Grade: "C", Pool: "claude", Gate: "default", ModelID: "m"},
 	}
 	a, s, q := selFixture(t, "B", rows, nil, []string{"devin"})
 	q.GateDo = gatePools(map[string]string{"devin-swe2-medium": "devin"})
@@ -75,10 +75,10 @@ func TestSelectGradeFilterPrefersCheapestCovering(t *testing.T) {
 		t.Fatalf("lowest covering grade must win: %+v", sel.chosen.row)
 	}
 	rec := sel.record()
-	if got := candOutcome(rec, "sonnet", "")["outcome"]; got != "dropped:grade_insufficient" {
+	if got := candOutcome(rec, "sonnet", "high")["outcome"]; got != "dropped:grade_insufficient" {
 		t.Fatalf("grade C must drop out: %v", got)
 	}
-	if got := candOutcome(rec, "devin-swe2", "")["outcome"]; got != "below_choice" {
+	if got := candOutcome(rec, "devin-swe2", "high")["outcome"]; got != "below_choice" {
 		t.Fatalf("a higher free rung ranks below the chosen rung: %v", got)
 	}
 }
@@ -87,9 +87,9 @@ func TestSelectPolicyOrderFreeWasteCreditRanked(t *testing.T) {
 	waste, noWaste := true, false
 	mk := func() []CatalogRow {
 		return []CatalogRow{
-			{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+			{Profile: "devin-swe2", Effort: "high", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
 			{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
-			{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+			{Profile: "opus", Effort: "high", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
 			{Profile: "codex-sol", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
 			{Profile: "codex-sol", Effort: "max", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
 		}
@@ -135,7 +135,7 @@ func TestSelectWasteNeedsVerdict(t *testing.T) {
 	waste, noWaste := true, false
 	rows := []CatalogRow{
 		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
-		{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+		{Profile: "opus", Effort: "high", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
 	}
 	pools := map[string]PoolView{
 		"claude":        {Status: "ok", Class: "spend", Blocking: ptrF(5)},
@@ -161,7 +161,7 @@ func TestSelectWasteNeedsVerdict(t *testing.T) {
 func TestSelectUnknownOrDegradedQuotaNotAdmitted(t *testing.T) {
 	rows := []CatalogRow{
 		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "mystery", Gate: "default", ModelID: "m"},
-		{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+		{Profile: "devin-swe2", Effort: "high", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
 	}
 	a, s, q := selFixture(t, "S", rows, map[string]PoolView{}, []string{"devin", "mystery"})
 	q.GateDo = gatePools(map[string]string{"sonnet": "mystery", "devin-swe2": "devin"})
@@ -208,7 +208,7 @@ func TestSelectUnknownOrDegradedQuotaNotAdmitted(t *testing.T) {
 func TestSelectRequiresFreshPresence(t *testing.T) {
 	rows := []CatalogRow{
 		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
-		{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+		{Profile: "opus", Effort: "high", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
 	}
 	waste := true
 	noWaste := false
@@ -273,8 +273,8 @@ func TestSelectDeterministic(t *testing.T) {
 	rows := []CatalogRow{
 		{Profile: "codex-sol", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
 		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
-		{Profile: "opus", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
-		{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+		{Profile: "opus", Effort: "high", Grade: "S", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
+		{Profile: "devin-swe2", Effort: "high", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
 	}
 	pools := map[string]PoolView{
 		"claude":        {Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(5)},
@@ -350,8 +350,8 @@ func TestSelectRetiredAndNoSeatRowsDropped(t *testing.T) {
 	ret := "2026-01-01T00:00:00Z"
 	rows := []CatalogRow{
 		{Profile: "sonnet", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m", RetiredAt: &ret},
-		{Profile: "no-such-profile", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
-		{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+		{Profile: "no-such-profile", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "devin-swe2", Effort: "high", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
 	}
 	a, s, q := selFixture(t, "S", rows, nil, []string{"devin"})
 	q.GateDo = gatePools(map[string]string{"devin-swe2": "devin"})
@@ -362,13 +362,13 @@ func TestSelectRetiredAndNoSeatRowsDropped(t *testing.T) {
 	if got := candOutcome(sel.record(), "sonnet", "")["outcome"]; got != "dropped:retired" {
 		t.Fatalf("retired rows must not be candidates: %v", got)
 	}
-	if got := candOutcome(sel.record(), "no-such-profile", "")["outcome"]; got != "dropped:no_seat" {
+	if got := candOutcome(sel.record(), "no-such-profile", "high")["outcome"]; got != "dropped:no_seat" {
 		t.Fatalf("catalog profiles without a seat must drop: %v", got)
 	}
 }
 
 func TestSelectRecordsPolicyVersionAndOverride(t *testing.T) {
-	a, s, q := selFixture(t, "B", []CatalogRow{{Profile: "devin-swe2", Grade: "A+", Pool: "devin", Gate: "default", ModelID: "swe-2"}}, nil, []string{"devin"})
+	a, s, q := selFixture(t, "B", []CatalogRow{{Profile: "devin-swe2", Effort: "high", Grade: "A+", Pool: "devin", Gate: "default", ModelID: "swe-2"}}, nil, []string{"devin"})
 	q.GateDo = gatePools(map[string]string{"devin-swe2": "devin"})
 	sel, e := a.selectProfile(context.Background(), s)
 	if e != nil {
@@ -496,5 +496,37 @@ func TestSpawnAutoDryRunPrintsSelection(t *testing.T) {
 		if strings.Contains(joined, bad) {
 			t.Fatalf("dry-run must emit no side effects: %s", joined)
 		}
+	}
+}
+
+func TestSelectDropsRunglessRows(t *testing.T) {
+	rows := []CatalogRow{
+		{Profile: "devin-swe2", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+		{Profile: "devin-swe2", Effort: "high", Grade: "S", Pool: "devin", Gate: "default", ModelID: "swe-2"},
+	}
+	a, s, q := selFixture(t, "S", rows, nil, []string{"devin"})
+	q.GateDo = gatePools(map[string]string{"devin-swe2": "devin"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil || sel.chosen.row.Effort != "high" {
+		t.Fatalf("the runged row must win: %v", e)
+	}
+	if got := candOutcome(sel.record(), "devin-swe2", "")["outcome"]; got != "dropped:effort_empty" {
+		t.Fatalf("a rung-less row can never launch: %v", got)
+	}
+}
+
+func TestSpawnWaitValidatesTimeoutBeforePane(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	s.Wait = true
+	s.WaitTimeout = "nonsense"
+	if code(a.Spawn(context.Background(), s)) != 2 {
+		t.Fatal("an unparseable --wait-timeout must refuse before spawning")
+	}
+	joined := ""
+	for _, c := range f.Calls {
+		joined += c.Name + " " + strings.Join(c.Args, " ") + "\n"
+	}
+	if strings.Contains(joined, "tab create") || strings.Contains(joined, "pane ") {
+		t.Fatalf("no pane may launch after a timeout usage error: %s", joined)
 	}
 }

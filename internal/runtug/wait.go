@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -99,7 +100,12 @@ func (a *App) waitJob(ctx context.Context, s Spawn) error {
 // inbox when the hub is configured. Event reads tolerate a missing dir (a
 // delegated job only has the initiator-side placement record here).
 func (a *App) waitOutcome(ctx context.Context, s Spawn, lane string, warned *bool) waitOutcome {
-	if evs, e := a.events(s.Job); e == nil {
+	evs, e := a.events(s.Job)
+	if e != nil && !errors.Is(e, os.ErrNotExist) && !*warned {
+		*warned = true
+		a.warn("job events unreadable: %v", e)
+	}
+	if e == nil {
 		for _, ev := range evs {
 			p := ev.Payload
 			switch ev.Kind {

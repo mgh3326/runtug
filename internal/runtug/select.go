@@ -386,6 +386,10 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 			c.reason = "retired"
 		case row.Profile == "" || row.ModelID == "" || row.Pool == "":
 			c.reason = "catalog_incomplete"
+		case row.Effort == "":
+			// Rung-less rows exist for quota accounting; their launch
+			// resolves to an empty effort that Seat.Check always refuses.
+			c.reason = "effort_empty"
 		case !validGrade:
 			c.reason = "grade_invalid"
 		case gradeOrder[row.Grade] < gradeOrder[req.grade]:
