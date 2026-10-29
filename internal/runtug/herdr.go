@@ -177,7 +177,7 @@ func cleanScreen(s string) []string {
 }
 func normalized(s string) string { return strings.Join(strings.Fields(s), " ") }
 func (a *App) visible(ctx context.Context, pane string) (string, error) {
-	r := a.call(ctx, "herdr", "agent", "read", pane, "--source", "visible", "--lines", "80")
+	r := a.call(ctx, "herdr", "pane", "read", pane, "--source", "visible", "--lines", "80")
 	return r.Out, check(r, "herdr visible read")
 }
 func CmdProof(screen, model, effort, cwd, home, brief string) bool {
@@ -336,12 +336,12 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		return e
 	}
 	token := "runtug-ready-" + hex.EncodeToString(nonce[:])
-	if e := a.must(ctx, "herdr", "pane", "run", pane, "printf", "%s\\n", token); e != nil {
+	if e := a.must(ctx, "herdr", "pane", "run", pane, "echo", token); e != nil {
 		return e
 	}
 	ready = false
 	for n := 0; n < 20 && a.Now().Before(deadline); n++ {
-		r := a.call(ctx, "herdr", "agent", "read", pane, "--source", "visible", "--lines", "40")
+		r := a.call(ctx, "herdr", "pane", "read", pane, "--source", "visible", "--lines", "40")
 		for _, line := range cleanScreen(r.Out) {
 			if line == token {
 				ready = true

@@ -547,7 +547,7 @@ func (a *App) machine() string {
 	return "local"
 }
 func (a *App) captureFailure(ctx context.Context, job, pane string) {
-	r := a.call(ctx, "herdr", "agent", "read", pane, "--source", "visible", "--lines", "80")
+	r := a.call(ctx, "herdr", "pane", "read", pane, "--source", "visible", "--lines", "80")
 	if r.Code != 0 {
 		return
 	}
