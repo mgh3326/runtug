@@ -209,6 +209,57 @@ func TestSpawnDryRunShowsPreambleWithoutSideEffects(t *testing.T) {
 		t.Fatal("preamble missing")
 	}
 }
+func TestSeatDefaultEffortResolvesBareProfile(t *testing.T) {
+	a := testApp(t)
+	// wrk pins DEFAULT_EFFORT=high for these seats; a bare -m must resolve the
+	// same rung instead of passing an empty effort the catalog always refuses.
+	for _, tc := range []struct{ seat, effort string }{
+		{"devin-swe2", "high"},
+		{"cmd-dsflash41", "high"},
+		{"pi-haiku55", "high"},
+		{"pi-sonnet55", "high"},
+		{"pi-opus55", "high"},
+	} {
+		qr, ok := a.quotaRequest(Spawn{Profile: tc.seat})
+		if !ok || qr.Effort != tc.effort {
+			t.Fatalf("%s must default to effort %s: %+v", tc.seat, tc.effort, qr)
+		}
+	}
+	qr, _ := a.quotaRequest(Spawn{Profile: "pi-sonnet55", Effort: "max"})
+	if qr.Effort != "max" {
+		t.Fatalf("an explicit --effort must win over the seat default: %+v", qr)
+	}
+}
+
+func TestSpawnDryRunLocalRefusesMissingCapability(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
+	s.Profile = "pi-sonnet55" // a.Config.Local carries cmd_dsflash41 but not pi_anthropic
+	s.DryRun = true
+	e := a.Spawn(context.Background(), s)
+	if code(e) != 70 {
+		t.Fatalf("a local dry-run on a host without the capability must refuse 70: %v", e)
+	}
+	if strings.Contains(a.Out.(*bytes.Buffer).String(), "dry-run host=") {
+		t.Fatal("the preview must not promise a spawn Seat.Check would refuse")
+	}
+}
+
+func TestSpawnExplicitProfileWithoutSeatRefusesBeforePlacement(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	s.Profile = "agy-flash38-high" // a catalog profile with no seat policy
+	s.DryRun = true
+	e := a.Spawn(context.Background(), s)
+	if code(e) != 70 {
+		t.Fatalf("a -m profile with no seat policy must refuse 70: %v", e)
+	}
+	if len(f.Calls) != 0 {
+		t.Fatalf("a missing seat must refuse before any dependency call: %v", f.Calls)
+	}
+	if strings.Contains(a.Out.(*bytes.Buffer).String(), "dry-run host=") {
+		t.Fatal("dry-run must not preview a spawn that can never admit")
+	}
+}
+
 func TestR12ArbiterIsSoleLedger(t *testing.T) {
 	a, s, f, _ := cmdFixture(t)
 	if e := a.Spawn(context.Background(), s); e != nil {

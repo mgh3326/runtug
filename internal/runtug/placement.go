@@ -138,13 +138,18 @@ type placeCandidate struct {
 	order    int
 	eligible bool
 	missing  []string
-	awake    bool
-	wakeable bool
-	excluded string
-	login    string
-	load     *float64
-	over     bool
-	outcome  string
+	// missingCap is the seat capability key this host does not carry. The
+	// flag lives in the local copy of hosts.toml, so a candidate without it
+	// can only refuse the spawn — offering it would burn a delegation round
+	// and its rc70 refusal would stop the whole round early.
+	missingCap string
+	awake      bool
+	wakeable   bool
+	excluded   string
+	login      string
+	load       *float64
+	over       bool
+	outcome    string
 }
 
 type placePlan struct {
@@ -374,6 +379,10 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		enum = append(enum, c)
 	}
 	p := &placePlan{tags: required, profile: s.Profile, pool: pool, waited: waited, threshold: threshold, at: now, degraded: degraded, hostsDegraded: hub == nil}
+	needCap := ""
+	if seat, ok := a.Policy.Profiles[s.Profile]; ok && seat.Capability != "standard" {
+		needCap = seat.Capability
+	}
 	for i := range enum {
 		c := &enum[i]
 		for _, t := range required {
@@ -381,13 +390,18 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 				c.missing = append(c.missing, t)
 			}
 		}
-		c.eligible = len(c.missing) == 0
+		if needCap != "" && !boolean(c.cfg, needCap, false) {
+			c.missingCap = needCap
+		}
+		c.eligible = len(c.missing) == 0 && c.missingCap == ""
 		if !c.over && c.load != nil && *c.load >= threshold {
 			c.over = true
 		}
 		switch {
 		case c.excluded != "":
 			c.outcome = c.excluded
+		case c.missingCap != "":
+			c.outcome = "missing_capability:" + c.missingCap
 		case !c.eligible:
 			c.outcome = "missing_tags:" + strings.Join(c.missing, ",")
 		case c.awake:
@@ -967,6 +981,9 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 	h, ok := a.Config.Hosts[s.Host]
 	if !ok {
 		return true, nil, fail(70, "placement selected unconfigured host %s", s.Host)
+	}
+	if seat, ok := a.Policy.Profiles[s.Profile]; ok && seat.Capability != "standard" && !boolean(h, seat.Capability, false) {
+		return true, nil, fail(70, "host %s lacks capability %s", s.Host, seat.Capability)
 	}
 	if _, _, e := a.taskPrecheck(ctx, s); e != nil {
 		return true, nil, e

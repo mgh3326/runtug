@@ -214,6 +214,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	} else if !s.Delegated {
 		s.Sel = map[string]any{"mode": "override", "profile": s.Profile}
 	}
+	// An unknown -m seat can never admit anywhere: refuse before placement
+	// burns a remote round on hosts that must all answer rc70.
+	if _, ok := a.Policy.Profiles[s.Profile]; !ok {
+		return fail(70, "missing seat policy for %s", s.Profile)
+	}
 	var placementRec map[string]any
 	if s.Host != "local" {
 		handled, rec, e := a.place(ctx, s, string(brief))
@@ -230,6 +235,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return e
 	}
 	if s.DryRun {
+		// The local preview must still refuse what Seat.Check would refuse:
+		// a capability-bound seat on a host that lacks the flag.
+		if seat := a.Policy.Profiles[s.Profile]; seat.Capability != "standard" && !boolean(a.Config.Local, seat.Capability, false) {
+			return fail(70, "host %s lacks capability %s", a.machine(), seat.Capability)
+		}
 		fmt.Fprintf(a.Out, "dry-run host=%s profile=%s role=%s job=%s\n%s\n", a.machine(), s.Profile, s.Role, s.Job, payload)
 		return nil
 	}
