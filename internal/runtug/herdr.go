@@ -280,9 +280,11 @@ func (a *App) modelProof(ctx context.Context, s Seat, l Launch, cwd, pane, brief
 type processInfo struct {
 	ShellPID  int `json:"shell_pid"`
 	Processes []struct {
-		PID     int    `json:"pid"`
-		Argv0   string `json:"argv0"`
-		Cmdline string `json:"cmdline"`
+		PID     int      `json:"pid"`
+		Argv0   string   `json:"argv0"`
+		Argv    []string `json:"argv"`
+		Name    string   `json:"name"`
+		Cmdline string   `json:"cmdline"`
 	} `json:"foreground_processes"`
 }
 
@@ -381,7 +383,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			return e
 		}
 		for _, proc := range p.Processes {
-			if slices.Contains(executables(seat.Kind), procName(proc.Argv0)) {
+			if slices.Contains(executables(seat.Kind), procName(firstNonEmpty(proc.Argv0, firstArg(proc.Argv), proc.Name))) {
 				foreground = true
 			}
 		}
@@ -593,4 +595,22 @@ func procName(argv0 string) string {
 		name = name[i+1:]
 	}
 	return strings.TrimSuffix(strings.ToLower(name), ".exe")
+}
+
+// herdr on Linux reports argv and name but no argv0, so the foreground check
+// falls back to argv[0], then the process name.
+func firstArg(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
+	return argv[0]
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
