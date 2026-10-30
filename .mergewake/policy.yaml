@@ -14,3 +14,7 @@ blocking:
     reason: Admission and host rules can permit unsafe work before recovery
   - paths: [.mergewake/**, .github/workflows/**, install.sh]
     reason: Changes to verification or installation can bypass recovery controls
+review_gate:
+  land: graded
+fast_lane:
+  max_changed_lines: 50
