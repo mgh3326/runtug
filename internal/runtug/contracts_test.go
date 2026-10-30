@@ -228,13 +228,14 @@ func TestR04TaskStateAndBindingUseCLIResponse(t *testing.T) {
 		})
 	}
 }
-func TestR05MergewakePolicyShadowAndNoLegacyPins(t *testing.T) {
+func TestR05MergewakePolicyActingAndNoLegacyPins(t *testing.T) {
 	b, e := os.ReadFile("../../.mergewake/policy.yaml")
 	if e != nil {
 		t.Fatal(e)
 	}
-	if !bytes.Contains(b, []byte("enabled: false")) {
-		t.Fatal("mergewake is not shadow")
+	// Operator 10-30: mergewake owns land and watch for this repo.
+	if !bytes.Contains(b, []byte("enabled: true")) {
+		t.Fatal("mergewake acting land is not enabled")
 	}
 	for _, name := range []string{"gate_policy.json", "verdict.json"} {
 		if _, e := os.Stat("../../" + name); !os.IsNotExist(e) {
