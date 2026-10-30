@@ -70,7 +70,7 @@ func putEvent(t *testing.T, a *App, job, kind string, p map[string]any) {
 func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 	t.Helper()
 	a := testApp(t)
-	a.Config.Local = map[string]any{"cmd_dsflash41": true, "heavy_load_wait": false}
+	a.Config.Local = map[string]any{"cmd_dsflash41": true}
 	cwd := filepath.Join(a.Home, "tree")
 	if e := os.MkdirAll(cwd, 0700); e != nil {
 		t.Fatal(e)

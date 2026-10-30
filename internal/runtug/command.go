@@ -67,10 +67,9 @@ const (
 	exitEvictionUnconfirmed = 4   // artifact Drive eviction unconfirmed
 	exitConfig              = 70  // configuration, trust or unverified admission evidence
 	exitDuplicate           = 74  // active job duplicate
-	exitStateConflict       = 75  // unreadable/changed durable state or heavy wait cap
+	exitStateConflict       = 75  // unreadable/changed durable state
 	exitSubmitUnconfirmed   = 76  // initial brief submission unconfirmed
 	exitSeatRefused         = 77  // role/seat/grade/family/E6 refusal
-	exitHeavyConfig         = 78  // heavy configuration refusal
 	exitMockRefused         = 79  // mock isolation refusal
 	exitLocalDisabled       = 80  // local spawning disabled without a remote fallback
 	exitPlacement           = 81  // wake/capacity placement failure

@@ -54,8 +54,8 @@ func TestEnvReadsAreHermetic(t *testing.T) {
 	}
 }
 
-// isEnvRead reports whether lit is the name argument of os.Getenv,
-// os.LookupEnv or envInt.
+// isEnvRead reports whether lit is the name argument of os.Getenv or
+// os.LookupEnv.
 func isEnvRead(f *ast.File, lit *ast.BasicLit) bool {
 	found := false
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -63,11 +63,8 @@ func isEnvRead(f *ast.File, lit *ast.BasicLit) bool {
 		if !ok || len(x.Args) == 0 || x.Args[0] != lit {
 			return !found
 		}
-		switch fn := x.Fun.(type) {
-		case *ast.SelectorExpr:
+		if fn, ok := x.Fun.(*ast.SelectorExpr); ok {
 			found = fn.Sel.Name == "Getenv" || fn.Sel.Name == "LookupEnv"
-		case *ast.Ident:
-			found = fn.Name == "envInt"
 		}
 		return !found
 	})

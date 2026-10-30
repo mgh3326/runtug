@@ -112,7 +112,7 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 func validID(s string) bool { return idPattern.MatchString(s) && s != "." && s != ".." }
 func (a *App) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(a.Out, "Usage: runtug <spawn|done|escalate|restore|reap|prune|heavy|lanes-missing|hosts|profiles|find|name-sync|artifacts> [options]")
+		fmt.Fprintln(a.Out, "Usage: runtug <spawn|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts> [options]")
 		return nil
 	}
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
@@ -136,8 +136,6 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.hygiene(ctx, args[0], args[1:])
 	case "hosts", "profiles", "find", "name-sync", "lanes-missing":
 		return a.diagnostics(ctx, args[0], args[1:])
-	case "heavy":
-		return a.heavy(ctx, args[1:])
 	case "artifacts":
 		return a.artifacts(ctx, args[1:])
 	case "_artifact-inventory":
@@ -162,8 +160,6 @@ func (a *App) help(cmd string) error {
 		fmt.Fprintln(a.Out, "Usage: runtug restore JOB (rebind a released job to its verified existing pane)")
 	case "reap", "prune":
 		fmt.Fprintf(a.Out, "Usage: runtug %s [--job ID[,ID]] [--lane L] [--grace 10m] [--include-builders] [--worktrees] [--apply]\n", cmd)
-	case "heavy":
-		fmt.Fprintln(a.Out, "Usage: runtug heavy status | [--queue-key KEY] -- COMMAND [ARGS...]")
 	case "artifacts":
 		fmt.Fprintln(a.Out, "Usage: runtug artifacts move SRC --dest DEST [--source-host HOST] [--apply] | sweep [--job JOB] [--age 7d] [--policy FILE] [--apply]")
 	default:
