@@ -381,8 +381,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			return e
 		}
 		for _, proc := range p.Processes {
-			name := filepath.Base(proc.Argv0)
-			if slices.Contains(executables(seat.Kind), name) {
+			if slices.Contains(executables(seat.Kind), procName(proc.Argv0)) {
 				foreground = true
 			}
 		}
@@ -583,4 +582,15 @@ func (a *App) hubGate(ctx context.Context, cwd, gate string) error {
 	default:
 		return fail(exitConfig, "hub quota policy failed closed")
 	}
+}
+
+// procName is a process's lowercased executable name without a Windows-style
+// ".exe" suffix (in any case): Claude Code's native installer links claude to claude.exe, so the
+// foreground process can report either name.
+func procName(argv0 string) string {
+	name := argv0
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.TrimSuffix(strings.ToLower(name), ".exe")
 }
