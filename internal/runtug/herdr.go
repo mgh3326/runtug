@@ -584,9 +584,9 @@ func (a *App) hubGate(ctx context.Context, cwd, gate string) error {
 	}
 }
 
-// procName is a process's executable name without a Windows-style ".exe"
-// suffix: Claude Code's native installer links claude to claude.exe, so the
+// procName is a process's lowercased executable name without a Windows-style
+// ".exe" suffix (in any case): Claude Code's native installer links claude to claude.exe, so the
 // foreground process can report either name.
 func procName(argv0 string) string {
-	return strings.TrimSuffix(filepath.Base(argv0), ".exe")
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(argv0)), ".exe")
 }
