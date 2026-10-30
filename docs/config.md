@@ -318,7 +318,7 @@ for ownership and distribution.
 | `RUNTUG_E6_ARM` | Exact canon@effort experiment marker when policy requires one. |
 | `ARBITER_JOB`, `HK_TASK_ID` | Calling job/task inheritance; populated in spawned panes. |
 | `RUNTUG_LANE_STRICT=1` | A committed builder with unregistered lane returns 82. |
-| `RUNTUG_COMPLETION_TIMEOUT_S` | Positive watcher lifetime in seconds; default 3600. Expiry retains the job. |
+| `RUNTUG_COMPLETION_TIMEOUT_S` | Positive watcher lifetime; duration or bare seconds, default 1h. Expiry retains the job. |
 | `MOCK_MCP_PROFILE`, `RUNTUG_MOCK_MCP_CONFIG` | Required reviewed mock profile name and exclusive stdio mcpServers JSON. |
 | `KIMI_CODE_HOME` | Kimi config home; thinking effort is verified. |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME` | Harness config homes for selected-workspace trust; mock Codex uses its private job home. |

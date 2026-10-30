@@ -215,7 +215,11 @@ func (a *App) diagnostics(ctx context.Context, kind string, args []string) error
 		if len(args) > 0 {
 			return fail(exitUsage, "hosts accepts no arguments")
 		}
-		fmt.Fprintf(a.Out, "config=%s\nlocal spawn=%t\n", a.ConfigPath, boolean(a.Config.Local, "spawn", true))
+		path := a.ConfigPath
+		if path == "" {
+			path = configPath(a.Err)
+		}
+		fmt.Fprintf(a.Out, "config=%s\nlocal spawn=%t\n", path, boolean(a.Config.Local, "spawn", true))
 		for _, host := range slices.Sorted(maps.Keys(a.Config.Hosts)) {
 			h := a.Config.Hosts[host]
 			fmt.Fprintf(a.Out, "host=%s via=%s capacity=%d\n", host, str(h, "via"), integer(h, "capacity", 0))

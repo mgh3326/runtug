@@ -51,8 +51,17 @@ func TestConfigPathFleetResolution(t *testing.T) {
 		t.Fatalf("fleet path must win: %q warn=%q", got, warn.String())
 	}
 
-	// The retired env var still loads for one release, with a warning.
+	// The retired env var is ignored while the fleet config exists.
 	t.Setenv("WRK_HOSTS_CONFIG", "/tmp/explicit-wrk.toml")
+	warn.Reset()
+	if got := configPath(&warn); got != next || !strings.Contains(warn.String(), "ignored") {
+		t.Fatalf("WRK_HOSTS_CONFIG must not override the fleet config: %q warn=%q", got, warn.String())
+	}
+
+	// With the fleet file gone it still loads for one release, with a warning.
+	if e := os.Remove(next); e != nil {
+		t.Fatal(e)
+	}
 	warn.Reset()
 	if got := configPath(&warn); got != "/tmp/explicit-wrk.toml" || !strings.Contains(warn.String(), "FLEET_HOSTS_CONFIG") {
 		t.Fatalf("WRK_HOSTS_CONFIG fallback = %q warn=%q", got, warn.String())

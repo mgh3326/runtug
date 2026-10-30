@@ -40,13 +40,23 @@ func (a *App) waitDeadline(s Spawn) (time.Duration, error) {
 	if raw == "" {
 		return time.Hour, nil
 	}
-	if d, e := duration(raw); e == nil && d > 0 {
+	if d, ok := timeoutValue(raw); ok {
 		return d, nil
 	}
-	if n, e := strconv.Atoi(raw); e == nil && n > 0 {
-		return time.Duration(n) * time.Second, nil
-	}
 	return 0, fail(exitUsage, "invalid --wait-timeout %q", raw)
+}
+
+// timeoutValue parses a positive duration or bare seconds, shared by
+// --wait-timeout, RUNTUG_COMPLETION_TIMEOUT_S and the completion watcher so a
+// duration form cannot be accepted by one and rejected by the other.
+func timeoutValue(raw string) (time.Duration, bool) {
+	if d, e := duration(raw); e == nil && d > 0 {
+		return d, true
+	}
+	if n, e := strconv.Atoi(raw); e == nil && n > 0 {
+		return time.Duration(n) * time.Second, true
+	}
+	return 0, false
 }
 
 // waitJob blocks until the job's outcome reaches this host: a durable

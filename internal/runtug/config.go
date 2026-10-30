@@ -52,8 +52,13 @@ func configPath(errw io.Writer) string {
 		return v
 	}
 	if v := os.Getenv("WRK_HOSTS_CONFIG"); v != "" {
-		fmt.Fprintf(errw, "runtug: warning: WRK_HOSTS_CONFIG is retired; move the hosts config to %s or set FLEET_HOSTS_CONFIG, then unset WRK_HOSTS_CONFIG\n", next)
-		return v
+		if _, e := os.Stat(next); os.IsNotExist(e) {
+			fmt.Fprintf(errw, "runtug: warning: WRK_HOSTS_CONFIG is retired; move the hosts config to %s or set FLEET_HOSTS_CONFIG, then unset WRK_HOSTS_CONFIG\n", next)
+			return v
+		}
+		// The fleet config already exists: a stale export must not keep
+		// overriding it for the whole deprecation release.
+		fmt.Fprintf(errw, "runtug: warning: WRK_HOSTS_CONFIG is retired and ignored; the fleet hosts config is at %s, unset WRK_HOSTS_CONFIG\n", next)
 	}
 	old := filepath.Join(p, "wrk", "hosts.toml")
 	if _, e := os.Stat(next); os.IsNotExist(e) {
