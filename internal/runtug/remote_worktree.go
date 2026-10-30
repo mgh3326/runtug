@@ -29,7 +29,7 @@ func (a *App) ensureWorktree(ctx context.Context, h map[string]any, host string,
 		if got := strings.TrimSpace(o.Out); o.Code != 0 || got != repo.branch {
 			return fail(exitPlacement, "worktree %s on %s exists but is not on branch %s (found %q)", dir, host, repo.branch, got)
 		}
-		return nil
+		return a.verifyHead(ctx, h, host, repo, dir)
 	case exitUnreachable:
 		return fail(exitUnreachable, "worktree check unreachable")
 	case 1:
@@ -61,15 +61,21 @@ func (a *App) ensureWorktree(ctx context.Context, h map[string]any, host string,
 		return e
 	}
 
-	// A branch with local-only commits cannot be rebuilt on the target.
-	if repo.head != "" {
-		r := a.sshRun(ctx, h, host, "git -C "+wt+" merge-base --is-ancestor "+shellQuote(repo.head)+" HEAD")
-		if r.Code == exitUnreachable {
-			return fail(exitUnreachable, "worktree verification unreachable")
-		}
-		if r.Code != 0 {
-			return fail(exitPlacement, "worktree %s on %s does not contain local commit %s of %s; push the branch first", dir, host, short(repo.head), repo.branch)
-		}
+	return a.verifyHead(ctx, h, host, repo, dir)
+}
+
+// verifyHead refuses a target worktree that lacks the local HEAD: the job
+// would run code without the local commits (unpushed, or a stale worktree).
+func (a *App) verifyHead(ctx context.Context, h map[string]any, host string, repo *repoResolution, dir string) error {
+	if repo.head == "" {
+		return nil
+	}
+	r := a.sshRun(ctx, h, host, "git -C "+remotePath(dir)+" merge-base --is-ancestor "+shellQuote(repo.head)+" HEAD")
+	if r.Code == exitUnreachable {
+		return fail(exitUnreachable, "worktree verification unreachable")
+	}
+	if r.Code != 0 {
+		return fail(exitPlacement, "worktree %s on %s does not contain local commit %s of %s; push the branch and update the remote worktree first", dir, host, short(repo.head), repo.branch)
 	}
 	return nil
 }

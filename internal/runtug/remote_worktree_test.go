@@ -79,7 +79,7 @@ func worktreeFixture(t *testing.T, remote *remoteWT, branch string, hosts map[st
 			case strings.Contains(args, "--show-toplevel"):
 				return Result{Out: a.Home + "/work/repo-a.wk\n"}
 			case strings.Contains(args, "--git-common-dir"):
-				return Result{Out: a.Home + "/work/repo-a/.git\n"}
+				return Result{Out: a.Home + "/work/repo-a/.git/worktrees/repo-a.wk\n" + a.Home + "/work/repo-a/.git\n"}
 			case strings.Contains(args, "branch --show-current"):
 				return Result{Out: branch + "\n"}
 			case strings.HasSuffix(args, "rev-parse HEAD"):
@@ -192,7 +192,8 @@ func TestRemoteWorktreeFailsClosed(t *testing.T) {
 		{"add fails", &remoteWT{cloneExists: true, defaultBase: "origin/main", addCode: 128}, "wk/feat", "worktree add"},
 		{"existing on other branch", &remoteWT{cloneExists: true, wtExists: true, wtBranch: "main"}, "wk/feat", "not on branch wk/feat"},
 		{"unknown default branch", &remoteWT{cloneExists: true}, "wk/feat", "default branch is unknown"},
-		{"local commits missing remotely", &remoteWT{cloneExists: true, defaultBase: "origin/main", ancestorCode: 128}, "wk/feat", "push the branch first"},
+		{"local commits missing remotely", &remoteWT{cloneExists: true, defaultBase: "origin/main", ancestorCode: 128}, "wk/feat", "push the branch and update"},
+		{"reused worktree behind local HEAD", &remoteWT{cloneExists: true, wtExists: true, wtBranch: "wk/feat", ancestorCode: 1}, "wk/feat", "update the remote worktree"},
 		{"detached local HEAD", &remoteWT{cloneExists: true, defaultBase: "origin/main"}, "", "detached HEAD"},
 	}
 	for _, tc := range tests {
@@ -311,5 +312,26 @@ func TestRemotePathQuoting(t *testing.T) {
 		if got := remotePath(in); got != want {
 			t.Errorf("remotePath(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+func TestLocalRepoCanonicalCheckoutIsNotAWorktree(t *testing.T) {
+	// A canonical checkout whose toplevel string differs from the .git
+	// parent (symlinked root, separate git dir) has git-dir == common-dir.
+	a := testApp(t)
+	f := &fakeRunner{Do: func(c Command) Result {
+		args := strings.Join(c.Args, " ")
+		switch {
+		case strings.Contains(args, "--show-toplevel"):
+			return Result{Out: "/private/var/work/repo-a\n"}
+		case strings.Contains(args, "--git-common-dir"):
+			return Result{Out: "/var/work/repo-a/.git\n/var/work/repo-a/.git\n"}
+		}
+		return Result{}
+	}}
+	a.Runner = f
+	repo := a.localRepo(context.Background(), "/private/var/work/repo-a")
+	if repo == nil || repo.wt != "" || repo.name != "repo-a" {
+		t.Fatalf("a canonical checkout must keep its own name: %+v", repo)
 	}
 }

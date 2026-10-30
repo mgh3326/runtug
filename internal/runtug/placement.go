@@ -755,11 +755,12 @@ func (a *App) localRepo(ctx context.Context, cwd string) *repoResolution {
 		return nil
 	}
 	wt := ""
-	if g := a.call(ctx, "git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"); g.Code == 0 {
-		// A linked worktree shares the canonical checkout's .git; the clone
-		// on a target is named after the canonical checkout, not the worktree.
-		if common := strings.TrimSpace(g.Out); filepath.Base(common) == ".git" {
-			if canon := filepath.Dir(common); canon != top && validID(filepath.Base(canon)) {
+	if g := a.call(ctx, "git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"); g.Code == 0 {
+		// A linked worktree has its own git dir apart from the common one,
+		// which is the canonical checkout's .git. The clone on a target is
+		// named after the canonical checkout, not the worktree.
+		if dirs := strings.Fields(g.Out); len(dirs) == 2 && dirs[0] != dirs[1] && filepath.Base(dirs[1]) == ".git" {
+			if canon := filepath.Dir(dirs[1]); validID(filepath.Base(canon)) {
 				wt, name = name, filepath.Base(canon)
 			}
 		}
