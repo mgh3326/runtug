@@ -21,7 +21,7 @@ type fleetSource struct{ a *App }
 func (s fleetSource) Hosts(ctx context.Context, cwd string) ([]HostView, error) {
 	// panewire place is an operator call: it rejects a node token.
 	if str(s.a.Config.Hub, "hub_url") == "" || firstNonempty(str(s.a.Config.Hub, "operator_token_env"), str(s.a.Config.Hub, "hub_token_env")) == "" {
-		return nil, fail(70, "hub placement unavailable")
+		return nil, fail(exitConfig, "hub placement unavailable")
 	}
 	args := append([]string{"place", "--class", "worker", "--cwd", cwd}, s.a.controlHubArgs(true)...)
 	r := s.a.call(ctx, "panewire", args...)
@@ -120,21 +120,21 @@ func (a *App) quotaClient() (*hkQuota, error) {
 		token = envFile[tokenEnv]
 	}
 	if u == "" || token == "" {
-		return nil, fail(70, "shared quota cache unavailable")
+		return nil, fail(exitConfig, "shared quota cache unavailable")
 	}
 	parsed, e := url.Parse(u)
 	if e != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, fail(70, "invalid shared quota endpoint")
+		return nil, fail(exitConfig, "invalid shared quota endpoint")
 	}
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
-		return nil, fail(70, "invalid shared quota endpoint scheme")
+		return nil, fail(exitConfig, "invalid shared quota endpoint scheme")
 	}
 	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) && !(boolean(q, "allow_plaintext_tailnet", false) && isTailnetHost(parsed.Hostname())) {
-		return nil, fail(70, "shared quota cache requires HTTPS")
+		return nil, fail(exitConfig, "shared quota cache requires HTTPS")
 	}
 	c := &hkQuota{base: strings.TrimRight(u, "/"), token: token, cfID: read("HANDOFFKEEP_CF_ACCESS_CLIENT_ID"), cfSecret: read("HANDOFFKEEP_CF_ACCESS_CLIENT_SECRET"), now: a.Now, freshTTL: a.placementTTL("fresh_ttl_s", 300)}
 	if (c.cfID == "") != (c.cfSecret == "") {
-		return nil, fail(70, "CF Access credential pair incomplete")
+		return nil, fail(exitConfig, "CF Access credential pair incomplete")
 	}
 	return c, nil
 }

@@ -1,6 +1,7 @@
 package runtug
 
 import (
+	"cmp"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -57,26 +58,26 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 		return p, e
 	}
 	if p.Version != 1 || len(p.Order) == 0 {
-		return p, fail(70, "invalid pool order policy")
+		return p, fail(exitConfig, "invalid pool order policy")
 	}
 	for _, tier := range poolTiers {
 		if !slices.Contains(p.Order, tier) {
-			return p, fail(70, "pool order policy missing tier %q", tier)
+			return p, fail(exitConfig, "pool order policy missing tier %q", tier)
 		}
 	}
 	for _, tier := range p.Order {
 		if !slices.Contains(poolTiers, tier) {
-			return p, fail(70, "unknown pool order tier %q", tier)
+			return p, fail(exitConfig, "unknown pool order tier %q", tier)
 		}
 	}
 	for _, fs := range p.Free {
 		if !validID(fs.Pool) {
-			return p, fail(70, "invalid free pool name %q", fs.Pool)
+			return p, fail(exitConfig, "invalid free pool name %q", fs.Pool)
 		}
 	}
 	for _, pool := range p.CreditPools {
 		if !validID(pool) {
-			return p, fail(70, "invalid credit pool name %q", pool)
+			return p, fail(exitConfig, "invalid credit pool name %q", pool)
 		}
 	}
 	for _, x := range []**float64{&p.WasteBelow, &p.ExcludeAt} {
@@ -86,7 +87,7 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 		}
 	}
 	if *p.WasteBelow < 0 || *p.ExcludeAt <= 0 || *p.WasteBelow > *p.ExcludeAt {
-		return p, fail(70, "invalid projected-at-reset thresholds")
+		return p, fail(exitConfig, "invalid projected-at-reset thresholds")
 	}
 	return p, nil
 }
@@ -426,7 +427,7 @@ func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, p
 		last = err
 	}
 	if last == nil {
-		last = fail(4, "no host has usable quota evidence")
+		last = fail(exitEvictionUnconfirmed, "no host has usable quota evidence")
 	}
 	return judgments, last
 }
@@ -443,7 +444,7 @@ func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, p
 // effort. A pool projected to run out before reset is never a candidate.
 func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if a.Quota == nil {
-		return nil, fail(70, "auto selection needs the quota catalog")
+		return nil, fail(exitConfig, "auto selection needs the quota catalog")
 	}
 	req := selReq{t: s.T, role: s.Role, effort: s.Effort, allowEscalation: s.AllowEscalation, builderFamily: s.ParentFamily}
 	tags, e := parseTags(s.Tags)
@@ -458,13 +459,13 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if m := taskMarker.FindStringSubmatch(task.Title); m != nil {
 		req.grade = strings.ToUpper(m[1])
 		if strings.ToUpper(m[2]) != s.T {
-			return nil, fail(77, "task scale does not match --t")
+			return nil, fail(exitSeatRefused, "task scale does not match --t")
 		}
 	} else {
-		return nil, fail(77, "auto selection needs a readable task grade")
+		return nil, fail(exitSeatRefused, "auto selection needs a readable task grade")
 	}
 	if _, ok := gradeOrder[req.grade]; !ok {
-		return nil, fail(77, "unreadable task grade %q", req.grade)
+		return nil, fail(exitSeatRefused, "unreadable task grade %q", req.grade)
 	}
 	policy, e := a.poolPolicy()
 	if e != nil {
@@ -474,7 +475,7 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	p := &selPlan{policy: policy, order: slices.Clone(policy.Order), req: req, at: a.Now()}
 	rows, e := a.Quota.Catalog(ctx)
 	if e != nil {
-		return nil, fail(70, "bench catalog unreadable: %v", e)
+		return nil, fail(exitConfig, "bench catalog unreadable: %v", e)
 	}
 	pools, poolsErr := a.Quota.Pools(ctx)
 	if poolsErr != nil {
@@ -539,31 +540,19 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 		}
 		// Then the pool with more room at reset; a pool that cannot be
 		// paced yet ranks by its used percentage.
-		if bx, by := rankBlocking(firstPct(x.projected, x.blocking)), rankBlocking(firstPct(y.projected, y.blocking)); bx != by {
-			if bx < by {
-				return -1
-			}
-			return 1
+		if c := cmp.Compare(rankBlocking(firstPct(x.projected, x.blocking)), rankBlocking(firstPct(y.projected, y.blocking))); c != 0 {
+			return c
 		}
 		if ex, ey := rankEffort(x.row.Effort), rankEffort(y.row.Effort); ex != ey {
 			return ex - ey
 		}
-		if sx, sy := rankScore(x.row.Score), rankScore(y.row.Score); sx != sy {
-			if sx < sy {
-				return -1
-			}
-			return 1
+		if c := cmp.Compare(rankScore(x.row.Score), rankScore(y.row.Score)); c != 0 {
+			return c
 		}
-		if x.row.Profile != y.row.Profile {
-			if x.row.Profile < y.row.Profile {
-				return -1
-			}
-			return 1
+		if c := cmp.Compare(x.row.Profile, y.row.Profile); c != 0 {
+			return c
 		}
-		if x.row.Effort < y.row.Effort {
-			return -1
-		}
-		return 1
+		return cmp.Compare(x.row.Effort, y.row.Effort)
 	})
 	pres := a.newSelPresence(ctx, s, req.tags)
 	p.degraded = append(p.degraded, pres.degraded...)
@@ -588,7 +577,7 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 		p.chosen = c
 	}
 	if p.chosen == nil {
-		return p, fail(77, "auto selection admitted no candidate")
+		return p, fail(exitSeatRefused, "auto selection admitted no candidate")
 	}
 	return p, nil
 }

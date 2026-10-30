@@ -35,7 +35,7 @@ func (a *App) prepareBrief(s Spawn, body string) (string, error) {
 		return "", e
 	}
 	if p.Version != 1 {
-		return "", fail(70, "unsupported brief policy version")
+		return "", fail(exitConfig, "unsupported brief policy version")
 	}
 	key := p.Default
 	if v := p.Hosts[a.machine()]; v != "" {
@@ -49,7 +49,7 @@ func (a *App) prepareBrief(s Spawn, body string) (string, error) {
 	}
 	block := p.Blocks[key]
 	if block == "" {
-		return "", fail(70, "missing brief preamble %q", key)
+		return "", fail(exitConfig, "missing brief preamble %q", key)
 	}
 	return fmt.Sprintf("runtug brief-policy: v%d / %s\n%s\n\n%s", p.Version, key, block, body), nil
 }

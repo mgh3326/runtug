@@ -1,11 +1,13 @@
 package runtug
 
 import (
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -51,22 +53,22 @@ func LoadConfig(path string) (Config, error) {
 		return c, nil
 	}
 	if e != nil {
-		return c, fail(70, "hosts config: %v", e)
+		return c, fail(exitConfig, "hosts config: %v", e)
 	}
 	if strings.Contains(string(b), "\ufeff") {
-		return c, fail(70, "hosts config contains a BOM")
+		return c, fail(exitConfig, "hosts config contains a BOM")
 	}
 	var raw map[string]any
 	if e = toml.Unmarshal(b, &raw); e != nil {
-		return c, fail(70, "hosts config: %v", e)
+		return c, fail(exitConfig, "hosts config: %v", e)
 	}
-	for k := range raw {
+	for _, k := range slices.Sorted(maps.Keys(raw)) {
 		if k != "local" && k != "hub" && k != "hosts" && k != "artifacts" && k != "placement" && k != "quota" {
-			return c, fail(70, "unknown hosts table %q", k)
+			return c, fail(exitConfig, "unknown hosts table %q", k)
 		}
 	}
 	if e = toml.Unmarshal(b, &c); e != nil {
-		return c, fail(70, "hosts config: %v", e)
+		return c, fail(exitConfig, "hosts config: %v", e)
 	}
 	for _, m := range regexp.MustCompile(`(?m)^\s*\[hosts\.([A-Za-z0-9._-]+)\]\s*(?:#.*)?$`).FindAllStringSubmatch(string(b), -1) {
 		c.HostOrder = append(c.HostOrder, m[1])
@@ -74,52 +76,53 @@ func LoadConfig(path string) (Config, error) {
 	for _, k := range []string{"spawn", "pi_anthropic", "cmd_dsflash41", "heavy_load_wait"} {
 		if v, ok := c.Local[k]; ok {
 			if _, ok = v.(bool); !ok {
-				return c, fail(70, "local.%s must be a boolean", k)
+				return c, fail(exitConfig, "local.%s must be a boolean", k)
 			}
 		}
 	}
 	for _, k := range []string{"heavy_max", "max_active", "shell_ready_timeout_ms", "fleet_usage_alert_gb"} {
 		if v, ok := c.Local[k]; ok {
 			if n, ok := v.(int64); !ok || n < 0 {
-				return c, fail(70, "local.%s must be a nonnegative integer", k)
+				return c, fail(exitConfig, "local.%s must be a nonnegative integer", k)
 			}
 		}
 	}
 	if v, ok := c.Hub["quota_gate"]; ok {
 		if v != "local" || str(c.Hub, "hub_token_env") != "" {
-			return c, fail(70, "hub.quota_gate accepts only local and contradicts hub_token_env")
+			return c, fail(exitConfig, "hub.quota_gate accepts only local and contradicts hub_token_env")
 		}
 	}
 	if str(c.Hub, "hub_token_env") != "" && str(c.Hub, "hub_url") == "" {
-		return c, fail(70, "hub_token_env requires hub_url")
+		return c, fail(exitConfig, "hub_token_env requires hub_url")
 	}
-	for name, h := range c.Hosts {
+	for _, name := range slices.Sorted(maps.Keys(c.Hosts)) {
+		h := c.Hosts[name]
 		if !validID(name) {
-			return c, fail(70, "invalid host name")
+			return c, fail(exitConfig, "invalid host name")
 		}
 		if v := str(h, "ssh"); v != "" && !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._-]*$`).MatchString(v) {
-			return c, fail(70, "SSH target must be an SSH config alias")
+			return c, fail(exitConfig, "SSH target must be an SSH config alias")
 		}
 		if v := str(h, "via"); v != "" && v != "ssh" && v != "hub" {
-			return c, fail(70, "hosts.%s.via must be ssh or hub", name)
+			return c, fail(exitConfig, "hosts.%s.via must be ssh or hub", name)
 		}
 		if e := validTags(h["tags"], "hosts."+name+".tags"); e != nil {
 			return c, e
 		}
 		if v := str(h, "presence_id"); v != "" && !validID(v) {
-			return c, fail(70, "hosts.%s.presence_id must be a machine ID", name)
+			return c, fail(exitConfig, "hosts.%s.presence_id must be a machine ID", name)
 		}
 	}
 	if e := validTags(c.Local["tags"], "local.tags"); e != nil {
 		return c, e
 	}
 	if v := str(c.Local, "presence_id"); v != "" && !validID(v) {
-		return c, fail(70, "local.presence_id must be a machine ID")
+		return c, fail(exitConfig, "local.presence_id must be a machine ID")
 	}
 	if v, ok := c.Placement["load_threshold"]; ok {
 		if n, ok := v.(float64); !ok || n < 0 {
 			if m, isInt := v.(int64); !isInt || m < 0 {
-				return c, fail(70, "placement.load_threshold must be a nonnegative number")
+				return c, fail(exitConfig, "placement.load_threshold must be a nonnegative number")
 			}
 		}
 	}
@@ -127,7 +130,7 @@ func LoadConfig(path string) (Config, error) {
 		for _, m := range []map[string]any{c.Placement, c.Quota} {
 			if v, ok := m[k]; ok {
 				if n, ok := v.(int64); !ok || n < 0 {
-					return c, fail(70, "%s must be a nonnegative integer", k)
+					return c, fail(exitConfig, "%s must be a nonnegative integer", k)
 				}
 			}
 		}
@@ -135,19 +138,20 @@ func LoadConfig(path string) (Config, error) {
 	if v := str(c.Quota, "url"); v != "" {
 		u, e := url.Parse(v)
 		if e != nil || u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
-			return c, fail(70, "quota.url requires HTTPS")
+			return c, fail(exitConfig, "quota.url requires HTTPS")
 		}
 	}
 	if v := str(c.Quota, "credential_env"); v != "" && !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(v) {
-		return c, fail(70, "quota.credential_env must name an environment variable")
+		return c, fail(exitConfig, "quota.credential_env must name an environment variable")
 	}
 	if accounts, ok := c.Quota["accounts"].(map[string]any); ok {
-		for pool, fp := range accounts {
+		for _, pool := range slices.Sorted(maps.Keys(accounts)) {
+			fp := accounts[pool]
 			if !validID(pool) {
-				return c, fail(70, "invalid quota account pool name")
+				return c, fail(exitConfig, "invalid quota account pool name")
 			}
 			if s, ok := fp.(string); !ok || !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(s) {
-				return c, fail(70, "quota.accounts.%s must be a 16-hex account fingerprint", pool)
+				return c, fail(exitConfig, "quota.accounts.%s must be a 16-hex account fingerprint", pool)
 			}
 		}
 	}
@@ -162,13 +166,13 @@ func LoadConfig(path string) (Config, error) {
 				return c, typeError("local.max_load_ratio")
 			}
 		default:
-			return c, fail(70, "local.max_load_ratio must be a nonnegative number")
+			return c, fail(exitConfig, "local.max_load_ratio must be a nonnegative number")
 		}
 	}
 	if v, ok := c.Local["shell_ready_timeout_ms"]; ok {
 		n := v.(int64)
 		if n < 30000 || n > 300000 {
-			return c, fail(70, "shell_ready_timeout_ms must be 30000..300000")
+			return c, fail(exitConfig, "shell_ready_timeout_ms must be 30000..300000")
 		}
 	}
 	return c, nil
@@ -249,12 +253,12 @@ func validTags(v any, key string) error {
 	}
 	for _, t := range stringsValue(map[string]any{"v": v}, "v") {
 		if !tagRule.MatchString(t) {
-			return fail(70, "%s contains an invalid tag %q", key, t)
+			return fail(exitConfig, "%s contains an invalid tag %q", key, t)
 		}
 	}
 	return nil
 }
-func typeError(key string) error          { return fail(70, "%s has an invalid type", key) }
+func typeError(key string) error          { return fail(exitConfig, "%s has an invalid type", key) }
 func unmarshalTOML(b []byte, v any) error { return toml.Unmarshal(b, v) }
 func (a *App) controlHubArgs(operator bool) []string {
 	token := str(a.Config.Hub, "hub_token_env")

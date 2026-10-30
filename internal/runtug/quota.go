@@ -83,13 +83,13 @@ func (q CLIQuota) Launch(ctx context.Context, r QuotaRequest) (Launch, error) {
 	}
 	var l Launch
 	if e := uniqueJSON([]byte(result.Out)); e != nil {
-		return l, fail(70, "ambiguous quota catalog JSON: %v", e)
+		return l, fail(exitConfig, "ambiguous quota catalog JSON: %v", e)
 	}
 	if e := json.Unmarshal([]byte(result.Out), &l); e != nil {
-		return l, fail(70, "invalid quota catalog JSON: %v", e)
+		return l, fail(exitConfig, "invalid quota catalog JSON: %v", e)
 	}
 	if l.Catalog.Stale {
-		return l, fail(70, "quota catalog is stale")
+		return l, fail(exitConfig, "quota catalog is stale")
 	}
 	return l, nil
 }
@@ -111,8 +111,8 @@ func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
 		args = append(args, "--account-key", r.AccountKey, "--json")
 	}
 	x := q.Runner.Run(ctx, Command{Name: q.Binary, Args: args})
-	if x.Code == 5 {
-		return "", fail(77, "quota role-denied (gate exit 5 → runtug exit 77): %s", x.Err)
+	if x.Code == quotaGateRoleDenied {
+		return "", fail(exitSeatRefused, "quota role-denied (gate exit 5 → runtug exit 77): %s", x.Err)
 	}
 	if e := check(x, "quota gate"); e != nil {
 		return "", e
@@ -129,7 +129,7 @@ func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
 		}
 		pool, _, _ := strings.Cut(r.AccountKey, ":")
 		if uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != r.AccountKey || receipt.Pool != pool || !receipt.OK || receipt.ExitCode == nil || *receipt.ExitCode != 0 {
-			return "", fail(70, "quota gate did not confirm the target account")
+			return "", fail(exitConfig, "quota gate did not confirm the target account")
 		}
 	}
 	return x.Out, nil
@@ -163,17 +163,17 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 			j.Reason = "stale"
 		}
 		if j.Reason != "" {
-			return j, fail(4, "target account quota unavailable: %s", j.Reason)
+			return j, fail(exitEvictionUnconfirmed, "target account quota unavailable: %s", j.Reason)
 		}
 		r.AccountKey = key
 	}
 	if a.Quota == nil {
-		return j, fail(4, "quota gate unavailable")
+		return j, fail(exitEvictionUnconfirmed, "quota gate unavailable")
 	}
 	gate, err := a.Quota.Gate(ctx, r)
 	if err == nil {
 		if got := gatePool(gate); pool != "" && got != pool && (got != "" || !local) {
-			err = fail(70, "quota gate pool mismatch")
+			err = fail(exitConfig, "quota gate pool mismatch")
 		}
 	}
 	j.Outcome, j.ExitCode = "admitted", 0
@@ -209,13 +209,13 @@ func parseCatalogJSON(out string) ([]CatalogRow, error) {
 		} `json:"source"`
 	}
 	if e := uniqueJSON([]byte(out)); e != nil {
-		return nil, fail(70, "ambiguous bench catalog JSON: %v", e)
+		return nil, fail(exitConfig, "ambiguous bench catalog JSON: %v", e)
 	}
 	if e := json.Unmarshal([]byte(out), &doc); e != nil || doc.Catalog == nil {
-		return nil, fail(70, "invalid bench catalog JSON")
+		return nil, fail(exitConfig, "invalid bench catalog JSON")
 	}
 	if doc.Source.Stale {
-		return nil, fail(70, "bench catalog is stale")
+		return nil, fail(exitConfig, "bench catalog is stale")
 	}
 	return doc.Catalog, nil
 }
@@ -236,12 +236,12 @@ func parseCatalogText(out string) ([]CatalogRow, error) {
 		}
 		if strings.HasPrefix(line, "catalog=") {
 			if strings.Contains(line, "stale") {
-				return nil, fail(70, "bench catalog is stale")
+				return nil, fail(exitConfig, "bench catalog is stale")
 			}
 			if m := catalogAge.FindStringSubmatch(line); m != nil {
 				n, e := strconv.ParseFloat(m[1], 64)
 				if e == nil && (m[2] == "d" || m[2] == "h" && n > 24) {
-					return nil, fail(70, "bench catalog is stale")
+					return nil, fail(exitConfig, "bench catalog is stale")
 				}
 			}
 			continue
@@ -279,12 +279,12 @@ func parseCatalogText(out string) ([]CatalogRow, error) {
 			}
 		}
 		if row.ModelID == "" || row.Pool == "" || row.Gate == "" {
-			return nil, fail(70, "bench catalog row incomplete: %s", line)
+			return nil, fail(exitConfig, "bench catalog row incomplete: %s", line)
 		}
 		rows = append(rows, row)
 	}
 	if rows == nil {
-		return nil, fail(70, "empty bench catalog")
+		return nil, fail(exitConfig, "empty bench catalog")
 	}
 	return rows, nil
 }
@@ -321,7 +321,7 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 		} `json:"providers"`
 	}
 	if e := json.Unmarshal([]byte(r.Out), &doc); e != nil || doc.Schema == "" {
-		return nil, fail(70, "invalid quota status JSON")
+		return nil, fail(exitConfig, "invalid quota status JSON")
 	}
 	// Projections are paced at the document's own measurement time.
 	now, e := time.Parse(time.RFC3339Nano, doc.GeneratedAt)
@@ -411,7 +411,7 @@ func projectAtReset(used *float64, window, resetsAt string, now time.Time) *floa
 // same grammar as pacelever's Duration.
 func windowDuration(s string) (time.Duration, error) {
 	if s == "" {
-		return 0, fail(70, "empty duration")
+		return 0, fail(exitConfig, "empty duration")
 	}
 	var total time.Duration
 	for len(s) > 0 {
@@ -420,15 +420,15 @@ func windowDuration(s string) (time.Duration, error) {
 			i++
 		}
 		if i == 0 || i == len(s) {
-			return 0, fail(70, "invalid duration")
+			return 0, fail(exitConfig, "invalid duration")
 		}
 		n, e := strconv.ParseFloat(s[:i], 64)
 		if e != nil || math.IsNaN(n) || math.IsInf(n, 0) {
-			return 0, fail(70, "invalid duration")
+			return 0, fail(exitConfig, "invalid duration")
 		}
 		unit := map[byte]time.Duration{'s': time.Second, 'm': time.Minute, 'h': time.Hour, 'd': 24 * time.Hour, 'w': 168 * time.Hour}[s[i]]
 		if unit == 0 || n < 0 || n > 1e6 {
-			return 0, fail(70, "invalid duration")
+			return 0, fail(exitConfig, "invalid duration")
 		}
 		total += time.Duration(n * float64(unit))
 		s = strings.TrimSpace(s[i+1:])

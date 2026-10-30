@@ -46,7 +46,7 @@ func waitDeadline(s Spawn) (time.Duration, error) {
 	if n, e := strconv.Atoi(raw); e == nil && n > 0 {
 		return time.Duration(n) * time.Second, nil
 	}
-	return 0, fail(2, "invalid --wait-timeout %q", raw)
+	return 0, fail(exitUsage, "invalid --wait-timeout %q", raw)
 }
 
 // waitJob blocks until the job's outcome reaches this host: a durable
@@ -77,15 +77,15 @@ func (a *App) waitJob(ctx context.Context, s Spawn) error {
 			fmt.Fprintf(a.Out, "wait job=%s outcome=%s report=%s pane=%s\n", s.Job, out.name, out.report, out.pane)
 			switch out.name {
 			case "escalate":
-				return fail(83, "job %s escalated: %s", s.Job, firstNonempty(out.detail, "escalation"))
+				return fail(exitWaitEscalated, "job %s escalated: %s", s.Job, firstNonempty(out.detail, "escalation"))
 			case "lost", "revoked":
-				return fail(84, "job %s %s", s.Job, out.name)
+				return fail(exitWaitLost, "job %s %s", s.Job, out.name)
 			}
 			return nil
 		}
 		if !a.Now().Before(deadline) {
 			fmt.Fprintf(a.Out, "wait job=%s outcome=timeout waited_s=%d\n", s.Job, int64(timeout.Seconds()))
-			return fail(85, "wait timeout for job %s", s.Job)
+			return fail(exitWaitTimeout, "wait timeout for job %s", s.Job)
 		}
 		if e := a.Sleep(ctx, delay); e != nil {
 			return e

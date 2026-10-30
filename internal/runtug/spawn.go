@@ -42,10 +42,10 @@ func parseSpawn(args []string) (Spawn, error) {
 	f.BoolVar(&s.Wait, "wait", false, "")
 	f.BoolVar(&s.AllowEscalation, "allow-escalation", false, "")
 	if e := f.Parse(args); e != nil {
-		return s, fail(2, "%v", e)
+		return s, fail(exitUsage, "%v", e)
 	}
 	if f.NArg() != 0 {
-		return s, fail(2, "unexpected spawn arguments")
+		return s, fail(exitUsage, "unexpected spawn arguments")
 	}
 	if s.Job == "" {
 		s.Job = s.Label
@@ -71,30 +71,30 @@ func (a *App) taskPrecheck(ctx context.Context, s Spawn) (Task, bool, error) {
 	var t Task
 	if r.Code != 0 {
 		if strings.Contains(r.Out+r.Err, "not_found") {
-			return t, false, fail(2, "task does not exist")
+			return t, false, fail(exitUsage, "task does not exist")
 		}
 		if s.Bypass {
 			return t, true, nil
 		}
-		return t, false, fail(70, "task precheck unavailable: %s", r.Err)
+		return t, false, fail(exitConfig, "task precheck unavailable: %s", r.Err)
 	}
 	if e := json.Unmarshal([]byte(r.Out), &t); e != nil || t.State == "" {
-		return t, false, fail(70, "unreadable task precheck")
+		return t, false, fail(exitConfig, "unreadable task precheck")
 	}
 	if t.ID != nil && scalar(t.ID) != s.Task {
-		return t, false, fail(70, "task response ID mismatch")
+		return t, false, fail(exitConfig, "task response ID mismatch")
 	}
 	if s.Inherited != "" {
 		return t, false, nil
 	}
 	if slices.Contains([]string{"merged", "dropped", "hold", "needs_decision"}, t.State) {
-		return t, false, fail(2, "task unavailable: %s", t.State)
+		return t, false, fail(exitUsage, "task unavailable: %s", t.State)
 	}
 	if j := str(t.Refs, "job_id"); j != "" && j != s.Job {
-		return t, false, fail(2, "task bound to another job")
+		return t, false, fail(exitUsage, "task bound to another job")
 	}
 	if str(t.Refs, "job_id") == "" && t.ClaimedBy != "" && t.ClaimedBy != s.Label {
-		return t, false, fail(2, "task has another claimant without a job binding")
+		return t, false, fail(exitUsage, "task has another claimant without a job binding")
 	}
 	return t, false, nil
 }
@@ -105,12 +105,12 @@ func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 		var t Task
 		if r.Code != 0 {
 			if !bypassed || !s.Bypass || strings.Contains(r.Out+r.Err, "conflict") || strings.Contains(r.Out+r.Err, "refused") {
-				return fail(70, "task claim refused: %s", r.Err)
+				return fail(exitConfig, "task claim refused: %s", r.Err)
 			}
 			status = "bypassed"
 		} else {
 			if e := json.Unmarshal([]byte(r.Out), &t); e != nil || t.ClaimedBy != s.Label || str(t.Refs, "job_id") != s.Job {
-				return fail(70, "task claim did not confirm claimed_by and refs.job_id")
+				return fail(exitConfig, "task claim did not confirm claimed_by and refs.job_id")
 			}
 			status = "linked"
 		}
@@ -119,32 +119,32 @@ func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 }
 func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if s.CWD == "" || s.Prompt == "" || s.Workspace == "" || s.Label == "" || !slices.Contains([]string{"T0", "T1", "T2", "T3"}, s.T) {
-		return fail(2, "spawn requires -c -p -w -l --t T0..T3")
+		return fail(exitUsage, "spawn requires -c -p -w -l --t T0..T3")
 	}
 	if !validID(s.Job) || !validID(s.Label) || !slices.Contains([]string{"worker", "builder", "tester", "reviewer", "counsel"}, s.Role) {
-		return fail(2, "invalid job, label or role")
+		return fail(exitUsage, "invalid job, label or role")
 	}
 	if s.Role == "builder" && (s.Lane == "" || s.Parent == "" || s.Owner != "" || s.Task == "") {
-		return fail(2, "builder requires --lane --parent --task; --owner is not accepted")
+		return fail(exitUsage, "builder requires --lane --parent --task; --owner is not accepted")
 	}
 	if s.LaneDefer != "" && (s.Role != "builder" || !validID(s.LaneDefer)) {
-		return fail(2, "--lane-defer requires builder and a host name")
+		return fail(exitUsage, "--lane-defer requires builder and a host name")
 	}
 	if s.Task != "" && s.ParentJob != "" {
-		return fail(2, "--task and --parent-job are exclusive")
+		return fail(exitUsage, "--task and --parent-job are exclusive")
 	}
 	autoSel := s.Profile == "" || s.Profile == "auto"
 	if !s.Delegated && (!autoSel || s.Host != "auto") && strings.TrimSpace(s.OverrideReason) == "" {
-		return fail(2, "explicit -m or --host requires --override-reason")
+		return fail(exitUsage, "explicit -m or --host requires --override-reason")
 	}
 	if s.Urgency != "" && !slices.Contains([]string{"normal", "urgent"}, s.Urgency) {
-		return fail(2, "--urgency must be normal or urgent")
+		return fail(exitUsage, "--urgency must be normal or urgent")
 	}
 	if s.Wait && s.DryRun {
-		return fail(2, "--wait needs a real spawn")
+		return fail(exitUsage, "--wait needs a real spawn")
 	}
 	if s.WaitTimeout != "" && !s.Wait {
-		return fail(2, "--wait-timeout requires --wait")
+		return fail(exitUsage, "--wait-timeout requires --wait")
 	}
 	if s.Wait {
 		if _, e := waitDeadline(s); e != nil {
@@ -161,7 +161,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if s.ParentJob != "" {
 		j, e := a.job(s.ParentJob)
 		if e != nil {
-			return fail(75, "parent metadata unreadable: %v", e)
+			return fail(exitStateConflict, "parent metadata unreadable: %v", e)
 		}
 		s.Task = j.Task
 		s.Inherited = s.ParentJob
@@ -176,11 +176,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		}
 		s.ParentFamily = builderFamily
 		if s.Report == "" && s.ReportRelative == "" {
-			return fail(2, "--parent-job requires --report")
+			return fail(exitUsage, "--parent-job requires --report")
 		}
 	}
 	if !regexp.MustCompile(`^[0-9]+$`).MatchString(s.Task) {
-		return fail(2, "spawn requires a numeric task binding")
+		return fail(exitUsage, "spawn requires a numeric task binding")
 	}
 	if _, e := parseTags(s.Tags); e != nil {
 		return e
@@ -190,7 +190,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return e
 	}
 	if len(strings.TrimSpace(string(brief))) == 0 {
-		return fail(2, "brief is empty")
+		return fail(exitUsage, "brief is empty")
 	}
 	selEffort := ""
 	if autoSel {
@@ -217,7 +217,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	// An unknown -m seat can never admit anywhere: refuse before placement
 	// burns a remote round on hosts that must all answer rc70.
 	if _, ok := a.Policy.Profiles[s.Profile]; !ok {
-		return fail(70, "missing seat policy for %s", s.Profile)
+		return fail(exitConfig, "missing seat policy for %s", s.Profile)
 	}
 	var placementRec map[string]any
 	if s.Host != "local" {
@@ -238,13 +238,13 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		// The local preview must still refuse what Seat.Check would refuse:
 		// a capability-bound seat on a host that lacks the flag.
 		if seat := a.Policy.Profiles[s.Profile]; seat.Capability != "standard" && !boolean(a.Config.Local, seat.Capability, false) {
-			return fail(70, "host %s lacks capability %s", a.machine(), seat.Capability)
+			return fail(exitConfig, "host %s lacks capability %s", a.machine(), seat.Capability)
 		}
 		fmt.Fprintf(a.Out, "dry-run host=%s profile=%s role=%s job=%s\n%s\n", a.machine(), s.Profile, s.Role, s.Job, payload)
 		return nil
 	}
 	if !boolean(a.Config.Local, "spawn", true) {
-		return fail(80, "local spawns disabled")
+		return fail(exitLocalDisabled, "local spawns disabled")
 	}
 	cwd, e := filepath.Abs(expand(s.CWD))
 	if e != nil {
@@ -253,18 +253,18 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	s.CWD = cwd
 	if s.ExecutionLane != "" {
 		if s.ExecutionLane != "live" && s.ExecutionLane != "mock" {
-			return fail(2, "-L must be live or mock")
+			return fail(exitUsage, "-L must be live or mock")
 		}
 		if info, e := os.Stat(filepath.Join(cwd, s.ExecutionLane)); e == nil && info.IsDir() {
 			s.CWD = filepath.Join(cwd, s.ExecutionLane)
 		}
 	}
 	if info, e := os.Stat(s.CWD); e != nil || !info.IsDir() {
-		return fail(2, "cwd is not a directory")
+		return fail(exitUsage, "cwd is not a directory")
 	}
 	if s.ReportRelative != "" {
 		if filepath.IsAbs(s.ReportRelative) || strings.Contains(s.ReportRelative, "..") {
-			return fail(2, "unsafe report-relative")
+			return fail(exitUsage, "unsafe report-relative")
 		}
 		s.Report = filepath.Join(a.Jobs, s.ReportRelative)
 	}
@@ -275,14 +275,14 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	seat, ok := a.Policy.Profiles[s.Profile]
 	if !ok {
-		return fail(70, "missing seat policy for %s", s.Profile)
+		return fail(exitConfig, "missing seat policy for %s", s.Profile)
 	}
 	effort := s.Effort
 	if effort == "" {
 		effort = seat.Effort
 	}
 	if seat.Pin && effort != seat.Effort {
-		return fail(77, "profile pins effort %s", seat.Effort)
+		return fail(exitSeatRefused, "profile pins effort %s", seat.Effort)
 	}
 	task, bypassed, e := a.taskPrecheck(ctx, s)
 	if e != nil {
@@ -292,10 +292,10 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if m := taskMarker.FindStringSubmatch(task.Title); m != nil {
 		grade = strings.ToUpper(m[1])
 		if strings.ToUpper(m[2]) != s.T {
-			return fail(77, "task scale does not match --t")
+			return fail(exitSeatRefused, "task scale does not match --t")
 		}
 	} else if !bypassed {
-		return fail(77, "task title lacks (grade X, Tn marker")
+		return fail(exitSeatRefused, "task title lacks (grade X, Tn marker")
 	}
 	qr := QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
 	launch, e := a.Quota.Launch(ctx, qr)
@@ -308,13 +308,13 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return e
 	}
 	if effort != "" && launch.Effort != effort {
-		return fail(70, "catalog effort does not match request")
+		return fail(exitConfig, "catalog effort does not match request")
 	}
 	if autoSel && selEffort != "" && launch.Effort != selEffort {
-		return fail(70, "launch rung does not match selected catalog rung")
+		return fail(exitConfig, "launch rung does not match selected catalog rung")
 	}
 	if launch.Profile != seat.Canon {
-		return fail(70, "catalog profile mismatch")
+		return fail(exitConfig, "catalog profile mismatch")
 	}
 	if e = seat.Check(launch, s.Role, grade, builderFamily, os.Getenv("SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
 		return e
@@ -322,7 +322,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	// A gate alias is the pool gate for a whole family of spellings, so it
 	// cannot tell an escalation rung from a default one; the launch row can.
 	if seat.Gate != "" && launch.Gate != "default" && !s.AllowEscalation {
-		return fail(77, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
+		return fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
 	}
 	qr.Effort = launch.Effort
 	gate, e := a.Quota.Gate(ctx, qr)
@@ -352,15 +352,15 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	// The arbiter arbitrates concurrent duplicate claims; never infer a free job from pane status.
 	r := a.call(ctx, "arbiter", append(claim, "--json")...)
-	if r.Code == 4 {
+	if r.Code == arbiterDuplicateClaim {
 		d, de := a.durable(ctx, s.Job)
 		if de != nil {
-			return fail(75, "duplicate job state unreadable")
+			return fail(exitStateConflict, "duplicate job state unreadable")
 		}
 		if d.State == "released" {
 			r = a.call(ctx, "arbiter", append(claim, "--reclaim-released", "--json")...)
 		} else if !s.DupOK {
-			return fail(74, "active duplicate job %s", s.Job)
+			return fail(exitDuplicate, "active duplicate job %s", s.Job)
 		} else {
 			a.warn("--job-dup-ok used for %s", s.Job)
 			if e = a.event(ctx, s.Job, "job.duplicate_override", map[string]any{"label": s.Label}); e != nil {
@@ -422,7 +422,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	pool = str(lease, "pool")
 	if pool == "" {
 		_ = a.releaseQuota(ctx, Job{ID: s.Job})
-		return fail(70, "lease missing pool")
+		return fail(exitConfig, "lease missing pool")
 	}
 	mockEnv, e := a.mock(ctx, s, seat)
 	if e != nil {
@@ -443,7 +443,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		env = append(env, "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false")
 	}
 	if e = a.workspaceTrust(ctx, s, seat, env); e != nil {
-		return fail(70, "workspace trust: %v", e)
+		return fail(exitConfig, "workspace trust: %v", e)
 	}
 	tabArgs := []string{"tab", "create", "--workspace", s.Workspace, "--cwd", s.CWD, "--label", s.Label, "--no-focus"}
 	for _, v := range env {
@@ -462,7 +462,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	pane = str(root, "pane_id")
 	tab := str(created, "tab_id")
 	if pane == "" {
-		return fail(70, "tab create omitted pane_id")
+		return fail(exitConfig, "tab create omitted pane_id")
 	}
 	if e = a.start(ctx, s, seat, launch, pane, argv); e != nil {
 		return e
@@ -506,7 +506,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	fmt.Fprintf(a.Out, "OK pane=%s model=%s label=%s status=working landed=yes job=%s quota_record=%s/quota_pool%s\n", pane, s.Profile, s.Label, s.Job, pool, laneStatus)
 	if s.Role == "builder" && !laneOK && os.Getenv("WRK_LANE_STRICT") == "1" {
-		return fail(82, "builder pane exists but lane is UNREGISTERED")
+		return fail(exitLaneUnregistered, "builder pane exists but lane is UNREGISTERED")
 	}
 	return a.afterSpawn(ctx, s)
 }
@@ -563,14 +563,14 @@ func (a *App) captureFailure(ctx context.Context, job, pane string) {
 }
 func safeReport(root, job, parent, path string) error {
 	if !filepath.IsAbs(path) {
-		return fail(2, "report must be absolute")
+		return fail(exitUsage, "report must be absolute")
 	}
 	for _, id := range []string{job, parent} {
 		if id != "" && within(filepath.Join(root, id), path) {
 			return noSymlinks(path)
 		}
 	}
-	return fail(2, "report must be under the job or parent job directory")
+	return fail(exitUsage, "report must be under the job or parent job directory")
 }
 func within(root, path string) bool {
 	rel, e := filepath.Rel(root, path)
@@ -586,7 +586,7 @@ func noSymlinks(path string) error {
 			return e
 		}
 		if s.Mode()&os.ModeSymlink != 0 {
-			return fail(2, "symlink path refused: %s", p)
+			return fail(exitUsage, "symlink path refused: %s", p)
 		}
 	}
 	return nil

@@ -166,6 +166,26 @@ binding, archive confirmation and a matching size/hash immediately before
 deletion. Metadata is recorded before removal; repeat runs safely skip missing
 files. It never removes unclassified files, credentials or source symlinks.
 
+## Determinism and code conventions
+
+Identical inputs must produce identical decisions, output and errors. The
+package keeps to these rules; the tests named here enforce them:
+
+- Never let map iteration order reach output, records, errors or decisions.
+  Iterate `slices.Sorted(maps.Keys(m))` instead; validation then reports the
+  first invalid entry in name order.
+- Sort with `slices.SortStableFunc` and a comparator that is a strict weak
+  order (compose `cmp.Compare` results) ending in a deterministic tie-break
+  such as a name or configuration order.
+- Read the clock through `App.Now` and sleep through `App.Sleep`.
+- Exit statuses are the named `exit*` constants in `command.go`; `fail` never
+  takes a literal number (`TestExitCodesNamed`), and each constant has a row
+  in the [exit status table](docs/config.md#exit-statuses)
+  (`TestExitCodesDocumented`).
+- Tests are hermetic: `TestMain` clears every environment variable runtug
+  reads, and `TestEnvReadsAreHermetic` fails when a new variable is outside
+  that list. Set variables in a test with `t.Setenv`.
+
 ## wrk → runtug parity and migration
 
 | wrk feature | runtug v0.1 status |

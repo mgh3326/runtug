@@ -39,7 +39,7 @@ func (a *App) startWatch(job string) error {
 }
 func (a *App) watch(ctx context.Context, args []string) error {
 	if len(args) != 1 || !validID(args[0]) {
-		return fail(2, "invalid watch job")
+		return fail(exitUsage, "invalid watch job")
 	}
 	id := args[0]
 	lock, e := os.OpenFile(filepath.Join(a.Jobs, id, ".runtug-watch.lock"), os.O_CREATE|os.O_RDWR, 0600)
@@ -54,7 +54,7 @@ func (a *App) watch(ctx context.Context, args []string) error {
 	if v := os.Getenv("WRK_COMPLETION_TIMEOUT_S"); v != "" {
 		n, e := strconv.Atoi(v)
 		if e != nil || n <= 0 {
-			return fail(2, "invalid completion timeout")
+			return fail(exitUsage, "invalid completion timeout")
 		}
 		timeout = n
 	}

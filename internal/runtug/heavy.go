@@ -44,7 +44,7 @@ func secureOpen(path string, create bool) (*os.File, error) {
 	// group/ACL write. Other-write and symlinks/hard links are always refused.
 	if !ok || !info.Mode().IsRegular() || st.Nlink != 1 || !lockOwnerOK(st.Uid, st.Gid, info.Mode().Perm(), uint32(os.Getuid())) {
 		f.Close()
-		return nil, fail(70, "insecure lock file %s (a lock shared by several users must be pre-created root:root without other-write, e.g. a tmpfiles.d rule)", path)
+		return nil, fail(exitConfig, "insecure lock file %s (a lock shared by several users must be pre-created root:root without other-write, e.g. a tmpfiles.d rule)", path)
 	}
 	return f, nil
 }
@@ -75,7 +75,7 @@ func envInt(key string, def int) (int, error) {
 	}
 	n, e := strconv.Atoi(v)
 	if e != nil || n < 0 {
-		return 0, fail(78, "%s must be a nonnegative integer", key)
+		return 0, fail(exitHeavyConfig, "%s must be a nonnegative integer", key)
 	}
 	return n, nil
 }
@@ -96,7 +96,7 @@ func (a *App) loadRatio(ctx context.Context) (float64, error) {
 	}
 	fields := strings.Fields(strings.Trim(text, "{} \n"))
 	if len(fields) < 2 {
-		return 0, fail(70, "host load unavailable")
+		return 0, fail(exitConfig, "host load unavailable")
 	}
 	load, e := strconv.ParseFloat(fields[1], 64)
 	return load / float64(runtime.NumCPU()), e
@@ -109,7 +109,7 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 		return e
 	}
 	if limit > 1024 {
-		return fail(78, "heavy limit exceeds 1024")
+		return fail(exitHeavyConfig, "heavy limit exceeds 1024")
 	}
 	if len(args) == 1 && args[0] == "status" {
 		fmt.Fprintf(a.Out, "lock=%s limit=%d load_wait=%t\n", base, limit, boolean(a.Config.Local, "heavy_load_wait", true))
@@ -130,18 +130,18 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 		return nil
 	}
 	if limit == 0 {
-		return fail(78, "heavy_max=0 refuses builds on this host")
+		return fail(exitHeavyConfig, "heavy_max=0 refuses builds on this host")
 	}
 	queueKey := ""
 	if len(args) >= 2 && args[0] == "--queue-key" {
 		queueKey = args[1]
 		args = args[2:]
 		if !validID(queueKey) {
-			return fail(2, "invalid queue key")
+			return fail(exitUsage, "invalid queue key")
 		}
 	}
 	if len(args) < 2 || args[0] != "--" {
-		return fail(2, "heavy requires -- COMMAND [ARGS]")
+		return fail(exitUsage, "heavy requires -- COMMAND [ARGS]")
 	}
 	args = args[1:]
 	class := os.Getenv("WRK_HEAVY_CLASS")
@@ -149,7 +149,7 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 		class = "lane"
 	}
 	if class != "ci" && class != "lane" {
-		return fail(78, "heavy class must be ci or lane")
+		return fail(exitHeavyConfig, "heavy class must be ci or lane")
 	}
 	capSeconds, e := envInt("WRK_HEAVY_WAIT_CAP", 1200)
 	if e != nil {
@@ -196,7 +196,7 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 			break
 		}
 		if !a.Now().Before(deadline) {
-			return fail(75, "heavy wait cap expired; command not run")
+			return fail(exitStateConflict, "heavy wait cap expired; command not run")
 		}
 		if e = a.Sleep(ctx, 250*time.Millisecond); e != nil {
 			return e
@@ -217,7 +217,7 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 			}
 			fields := strings.Fields(strings.Trim(r.Out, "{} \n"))
 			if len(fields) < 2 {
-				return fail(70, "host load unavailable")
+				return fail(exitConfig, "host load unavailable")
 			}
 			load, err := strconv.ParseFloat(fields[1], 64)
 			if err != nil {
@@ -227,7 +227,7 @@ func (a *App) heavy(ctx context.Context, args []string) error {
 				break
 			}
 			if !a.Now().Before(deadline) {
-				return fail(75, "heavy load wait cap expired")
+				return fail(exitStateConflict, "heavy load wait cap expired")
 			}
 			if e = a.Sleep(ctx, time.Second); e != nil {
 				return e
