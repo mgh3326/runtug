@@ -200,8 +200,9 @@ package keeps to these rules; the tests named here enforce them:
 | usage | Not carried over; no standalone disk alert |
 | rounds / o3 / joined / takeovers / grants / landing-strict | Deliberately excluded; mergewake owns review/landing |
 
-1. Validate runtug configuration and `spawn --dry-run` before replacing any
-   pinned spawner binary.
+1. Validate runtug configuration and `spawn --dry-run` beside the pinned
+   spawner on each host. Do not replace the pinned binary before the hub
+   transport has migrated; hub-launched jobs still depend on it.
 2. Rebaseline trust receipts through the merge/release policy before changing
    skills or wrappers. The repository's mergewake policy is shadow only and
    names the exact CI checks; it authorizes no automatic merge or rollout.
@@ -213,8 +214,8 @@ package keeps to these rules; the tests named here enforce them:
    binary name in the core spawn/done/reap paths. Keep review/round callers on
    mergewake. No rollout is performed by this build task.
 5. Expand only after comparing receipts, completion relay, quota release and
-   cleanup. The hub transport boundary migrates separately; arbiter remains
-   the shared ledger throughout.
+   cleanup. Retain the previous spawner for legacy hub transport until that
+   boundary is migrated; arbiter remains the shared ledger throughout.
 
 Inventory risks R1/R3/R4/R6/R9/R10/R11 remain external-service boundaries;
 runtug neither removes their routes, wrappers, provider pools nor attachment

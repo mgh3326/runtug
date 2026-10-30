@@ -24,6 +24,7 @@ type App struct {
 	Sleep        func(context.Context, time.Duration) error
 	Now          func() time.Time
 	Bins         map[string]string
+	warned       map[string]bool
 	Source       PlacementSource
 	Wake         Waker
 	LoadRatio    func(context.Context) (float64, error)
@@ -102,13 +103,20 @@ func (a *App) must(ctx context.Context, bin string, args ...string) error {
 }
 
 // envOr reads a renamed environment variable. For one release the retired
-// name still applies, with a one-line warning to switch.
+// name still applies, with a one-line warning to switch, emitted once per
+// name so selection loops do not repeat it.
 func (a *App) envOr(name, retired string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
 	}
 	if v := os.Getenv(retired); v != "" {
-		a.warn("%s is retired; set %s instead", retired, name)
+		if a.warned == nil {
+			a.warned = map[string]bool{}
+		}
+		if !a.warned[retired] {
+			a.warned[retired] = true
+			a.warn("%s is retired; set %s instead", retired, name)
+		}
 		return v
 	}
 	return ""
