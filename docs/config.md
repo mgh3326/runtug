@@ -4,7 +4,11 @@ Runtug reads `~/.config/fleet/hosts.toml`. `FLEET_HOSTS_CONFIG` overrides the fi
 otherwise `XDG_CONFIG_HOME/fleet/hosts.toml` is used when XDG_CONFIG_HOME is set.
 For one release a config found only at the retired `~/.config/wrk/hosts.toml`
 path (or through `WRK_HOSTS_CONFIG`) still loads with a one-line warning naming
-the new location.
+the new location. The same applies to retired environment names: `WRK_LANE_STRICT`,
+`WRK_COMPLETION_TIMEOUT_S`, `WRK_MOCK_MCP_CONFIG` and `SCOPEFUEL_E6_ARM` fall back
+to their `RUNTUG_*` replacements with a warning; a set `SCOPEFUEL_BIN` is ignored
+with a warning. The workspace trust lock stays `.wrk.lock` until old spawner
+binaries are drained from every host.
 A missing file means a local host with standard harnesses. Malformed TOML,
 duplicate keys, root assignments, BOMs, invalid safety booleans and contradictory
 hub quota settings refuse with exit 70. Existing tables keep their key names.

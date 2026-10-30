@@ -51,7 +51,7 @@ func (a *App) watch(ctx context.Context, args []string) error {
 		return nil
 	}
 	timeout := 3600
-	if v := os.Getenv("RUNTUG_COMPLETION_TIMEOUT_S"); v != "" {
+	if v := a.envOr("RUNTUG_COMPLETION_TIMEOUT_S", "WRK_COMPLETION_TIMEOUT_S"); v != "" {
 		n, e := strconv.Atoi(v)
 		if e != nil || n <= 0 {
 			return fail(exitUsage, "invalid completion timeout")

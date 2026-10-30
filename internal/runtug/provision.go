@@ -99,7 +99,10 @@ func (a *App) workspaceTrust(ctx context.Context, s Spawn, seat Seat, env []stri
 		if e = os.MkdirAll(home, 0700); e != nil {
 			return e
 		}
-		lock, e := secureOpen(path+".runtug.lock", true)
+		// The .wrk.lock suffix is shared with the retired spawner so
+		// concurrently deployed binaries still serialize on the same file;
+		// rename only after every host has drained its old processes.
+		lock, e := secureOpen(path+".wrk.lock", true)
 		if e != nil {
 			return e
 		}
@@ -149,7 +152,8 @@ func (a *App) mergeStore(ctx context.Context, path string, required bool, mutate
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return e
 	}
-	lock, e := secureOpen(path+".runtug.lock", true)
+	// See above: the lock name stays .wrk.lock for one release.
+	lock, e := secureOpen(path+".wrk.lock", true)
 	if e != nil {
 		return e
 	}

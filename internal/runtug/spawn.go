@@ -147,7 +147,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return fail(exitUsage, "--wait-timeout requires --wait")
 	}
 	if s.Wait {
-		if _, e := waitDeadline(s); e != nil {
+		if _, e := a.waitDeadline(s); e != nil {
 			return e
 		}
 	}
@@ -316,7 +316,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if launch.Profile != seat.Canon {
 		return fail(exitConfig, "catalog profile mismatch")
 	}
-	if e = seat.Check(launch, s.Role, grade, builderFamily, os.Getenv("RUNTUG_E6_ARM"), a.Config.Local); e != nil {
+	if e = seat.Check(launch, s.Role, grade, builderFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
 		return e
 	}
 	// A gate alias is the pool gate for a whole family of spellings, so it
@@ -505,7 +505,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		laneStatus = " lane=UNREGISTERED"
 	}
 	fmt.Fprintf(a.Out, "OK pane=%s model=%s label=%s status=working landed=yes job=%s quota_record=%s/quota_pool%s\n", pane, s.Profile, s.Label, s.Job, pool, laneStatus)
-	if s.Role == "builder" && !laneOK && os.Getenv("RUNTUG_LANE_STRICT") == "1" {
+	if s.Role == "builder" && !laneOK && a.envOr("RUNTUG_LANE_STRICT", "WRK_LANE_STRICT") == "1" {
 		return fail(exitLaneUnregistered, "builder pane exists but lane is UNREGISTERED")
 	}
 	return a.afterSpawn(ctx, s)
