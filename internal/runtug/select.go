@@ -216,7 +216,7 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 				reason = "builder_family_unreadable"
 			case (req.role == "tester" || req.role == "reviewer") && seat.Family == req.builderFamily:
 				reason = "family_excluded"
-			case seat.seatE6(row.Effort) && os.Getenv("SCOPEFUEL_E6_ARM") != seat.Canon+"@"+row.Effort:
+			case seat.seatE6(row.Effort) && os.Getenv("RUNTUG_E6_ARM") != seat.Canon+"@"+row.Effort:
 				reason = "e6_marker"
 			}
 		}

@@ -803,21 +803,20 @@ func TestQuotaClientPlaintextOnlyForOptedInTailnet(t *testing.T) {
 
 func TestQuotaBinaryDefaultsToPacelever(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("SCOPEFUEL_BIN", "")
 	t.Setenv("RUNTUG_QUOTA_BIN", "")
 	a, e := New(io.Discard, io.Discard)
 	if e != nil {
 		t.Fatalf("New: %v", e)
 	}
-	if got := a.Bins["scopefuel"]; got != "pacelever" {
-		t.Fatalf("quota CLI default = %q, want pacelever (scopefuel is retired)", got)
-	}
-	t.Setenv("SCOPEFUEL_BIN", "/opt/legacy-quota")
-	if a, e = New(io.Discard, io.Discard); e != nil || a.Bins["scopefuel"] != "/opt/legacy-quota" {
-		t.Fatalf("SCOPEFUEL_BIN must still override: %q %v", a.Bins["scopefuel"], e)
+	q, ok := a.Quota.(CLIQuota)
+	if !ok || q.Binary != "pacelever" {
+		t.Fatalf("quota CLI default = %+v, want pacelever", a.Quota)
 	}
 	t.Setenv("RUNTUG_QUOTA_BIN", "/opt/quota")
-	if a, e = New(io.Discard, io.Discard); e != nil || a.Bins["scopefuel"] != "/opt/quota" {
-		t.Fatalf("RUNTUG_QUOTA_BIN must win over SCOPEFUEL_BIN: %q %v", a.Bins["scopefuel"], e)
+	if a, e = New(io.Discard, io.Discard); e != nil {
+		t.Fatalf("New: %v", e)
+	}
+	if q, ok = a.Quota.(CLIQuota); !ok || q.Binary != "/opt/quota" {
+		t.Fatalf("RUNTUG_QUOTA_BIN must override: %+v %v", a.Quota, e)
 	}
 }

@@ -17,7 +17,7 @@ func TestWatcherExpiryKeepsLiveLease(t *testing.T) {
 		}
 		return original(c)
 	}
-	t.Setenv("WRK_COMPLETION_TIMEOUT_S", "1")
+	t.Setenv("RUNTUG_COMPLETION_TIMEOUT_S", "1")
 	if e := a.watch(context.Background(), []string{"j"}); e != nil {
 		t.Fatal(e)
 	}

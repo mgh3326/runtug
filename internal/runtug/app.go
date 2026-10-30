@@ -44,7 +44,7 @@ func Main(ctx context.Context, args []string, out, errout io.Writer) int {
 	return 0
 }
 func New(out, errout io.Writer) (*App, error) {
-	c, e := LoadConfig(configPath())
+	c, e := LoadConfig(configPath(errout))
 	if e != nil {
 		return nil, e
 	}
@@ -57,21 +57,18 @@ func New(out, errout io.Writer) (*App, error) {
 	if v := os.Getenv("ARBITER_INBOX_ROOT"); v != "" {
 		a.Jobs = v
 	}
-	for bin, env := range map[string]string{"herdr": "HERDR_BIN", "arbiter": "ARBITER_BIN", "handoffkeep": "HANDOFFKEEP_BIN", "panewire": "PANEWIRE_BIN", "scopefuel": "SCOPEFUEL_BIN"} {
+	for bin, env := range map[string]string{"herdr": "HERDR_BIN", "arbiter": "ARBITER_BIN", "handoffkeep": "HANDOFFKEEP_BIN", "panewire": "PANEWIRE_BIN"} {
 		a.Bins[bin] = bin
 		if v := os.Getenv(env); v != "" {
 			a.Bins[bin] = v
 		}
 	}
-	// The quota CLI is pacelever; scopefuel is retired. SCOPEFUEL_BIN and
-	// RUNTUG_QUOTA_BIN stay as explicit overrides.
-	if os.Getenv("SCOPEFUEL_BIN") == "" {
-		a.Bins["scopefuel"] = "pacelever"
-	}
+	// The quota CLI is pacelever; RUNTUG_QUOTA_BIN is an explicit override.
+	quota := "pacelever"
 	if v := os.Getenv("RUNTUG_QUOTA_BIN"); v != "" {
-		a.Bins["scopefuel"] = v
+		quota = v
 	}
-	a.Quota = CLIQuota{a.Runner, a.Bins["scopefuel"]}
+	a.Quota = CLIQuota{a.Runner, quota}
 	a.Source = fleetSource{a}
 	a.Wake = cliWaker{a}
 	a.LoadRatio = a.loadRatio

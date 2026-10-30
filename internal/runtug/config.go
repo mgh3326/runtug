@@ -1,6 +1,8 @@
 package runtug
 
 import (
+	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/url"
@@ -13,7 +15,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// Config accepts the existing wrk hosts.toml surface. Capability booleans remain
+// Config accepts the fleet hosts.toml surface. Capability booleans remain
 // data so new harnesses do not require a configuration parser change.
 type Config struct {
 	HostOrder []string                  `toml:"-"`
@@ -36,15 +38,31 @@ func expand(p string) string {
 	}
 	return p
 }
-func configPath() string {
+
+// configPath resolves the fleet hosts config. FLEET_HOSTS_CONFIG wins, then
+// XDG_CONFIG_HOME|~/.config/fleet/hosts.toml. For one release the retired
+// wrk env var and path still load, each with a one-line migration warning.
+func configPath(errw io.Writer) string {
+	if v := os.Getenv("FLEET_HOSTS_CONFIG"); v != "" {
+		return v
+	}
 	if v := os.Getenv("WRK_HOSTS_CONFIG"); v != "" {
+		fmt.Fprintf(errw, "runtug: warning: WRK_HOSTS_CONFIG is retired; move the hosts config to ~/.config/fleet/hosts.toml or set FLEET_HOSTS_CONFIG\n")
 		return v
 	}
 	p := os.Getenv("XDG_CONFIG_HOME")
 	if p == "" {
 		p = expand("~/.config")
 	}
-	return filepath.Join(p, "wrk", "hosts.toml")
+	next := filepath.Join(p, "fleet", "hosts.toml")
+	old := filepath.Join(p, "wrk", "hosts.toml")
+	if _, e := os.Stat(next); os.IsNotExist(e) {
+		if _, e = os.Stat(old); e == nil {
+			fmt.Fprintf(errw, "runtug: warning: hosts config still at %s; move it to %s\n", old, next)
+			return old
+		}
+	}
+	return next
 }
 func LoadConfig(path string) (Config, error) {
 	c := Config{}

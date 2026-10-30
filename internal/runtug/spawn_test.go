@@ -224,7 +224,7 @@ func TestSpawnDryRunShowsPreambleWithoutSideEffects(t *testing.T) {
 }
 func TestSeatDefaultEffortResolvesBareProfile(t *testing.T) {
 	a := testApp(t)
-	// wrk pins DEFAULT_EFFORT=high for these seats; a bare -m must resolve the
+	// the retired launcher pinned DEFAULT_EFFORT=high for these seats; a bare -m must resolve the
 	// same rung instead of passing an empty effort the catalog always refuses.
 	for _, tc := range []struct{ seat, effort string }{
 		{"devin-swe2", "high"},
@@ -259,7 +259,7 @@ func TestSpawnDryRunLocalRefusesMissingCapability(t *testing.T) {
 
 func TestSpawnExplicitProfileWithoutSeatRefusesBeforePlacement(t *testing.T) {
 	a, s, f, _ := cmdFixture(t)
-	s.Profile = "cc-dsflash" // a wrk spelling with no seat policy
+	s.Profile = "cc-dsflash" // a legacy spelling with no seat policy
 	s.DryRun = true
 	e := a.Spawn(context.Background(), s)
 	if code(e) != 70 {

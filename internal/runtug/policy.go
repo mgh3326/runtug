@@ -137,7 +137,7 @@ func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[s
 		return fail(exitSeatRefused, "%s rung is worker/tester only", l.Gate)
 	}
 	if e6 && arm != s.Canon+"@"+l.Effort {
-		return fail(exitSeatRefused, "requires SCOPEFUEL_E6_ARM=%s@%s", s.Canon, l.Effort)
+		return fail(exitSeatRefused, "requires RUNTUG_E6_ARM=%s@%s", s.Canon, l.Effort)
 	}
 	if grade != "" {
 		n, ok := gradeOrder[grade]

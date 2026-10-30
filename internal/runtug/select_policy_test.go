@@ -30,7 +30,7 @@ var policyCatalog = []CatalogRow{
 	{Profile: "pi-sonnet55", Effort: "high", Grade: "A", Pool: "anthropic-api", Gate: "default", ModelID: "m"},
 }
 
-// paceStatus renders a scopefuel.v1 status document with one 7d account
+// paceStatus renders a quota status document with one 7d account
 // bucket per pool, generated at now.
 func paceStatus(now time.Time, pools map[string]pace) string {
 	var providers []map[string]any
