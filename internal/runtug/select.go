@@ -108,6 +108,9 @@ type selCand struct {
 	reason    string
 	outcome   string
 	judgments []quotaJudgment
+	// exhausted marks a free rung whose account projection reaches the
+	// exclusion threshold: only an admit on a free bucket may keep it.
+	exhausted bool
 }
 
 type selPlan struct {
@@ -231,11 +234,17 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 // pool is waste when its projected use at reset stays below the policy
 // threshold; without a projection the quota adapter's verdict flag decides.
 // Pools without a readable spend status are unknown rather than ranked.
-func (p PoolPolicy) tierOf(row CatalogRow, order []string, pools map[string]PoolView, poolsOK bool) (string, int) {
+func (p PoolPolicy) isFree(row CatalogRow) bool {
 	for _, fs := range p.Free {
 		if fs.Pool == row.Pool && (len(fs.Models) == 0 || slices.Contains(fs.Models, row.ModelID)) {
-			return "free", slices.Index(order, "free")
+			return true
 		}
+	}
+	return false
+}
+func (p PoolPolicy) tierOf(row CatalogRow, order []string, pools map[string]PoolView, poolsOK bool) (string, int) {
+	if p.isFree(row) {
+		return "free", slices.Index(order, "free")
 	}
 	if !poolsOK {
 		return "", -1
@@ -405,7 +414,10 @@ func (sp *selPresence) present(ctx context.Context, seat *Seat, pool string) boo
 
 // admit tries this rung on each eligible host. A remote attempt always names
 // that host's current account, even when the spawner has a different login.
-func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, pool, host string) ([]quotaJudgment, error) {
+//
+// An exhausted rung (its account projects past the exclusion threshold) is
+// admitted only on a free-bucket gate basis; any other basis drops it.
+func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, pool, host string, exhausted bool) ([]quotaJudgment, error) {
 	var judgments []quotaJudgment
 	var last error
 	for _, h := range sp.hosts {
@@ -420,6 +432,10 @@ func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, p
 		// Local admission itself uses the local gate without requiring that
 		// this host also publish readable shared evidence.
 		j, err := sp.a.judgeHost(ctx, qr, pool, h.name, h.local, key, sp.accounts[key])
+		if err == nil && exhausted && !strings.HasPrefix(j.Basis, freeBasisPrefix) {
+			j.Outcome, j.ExitCode = "refused", exitSeatRefused
+			err = fail(exitSeatRefused, "projected_exhaust: gate basis %q is not a free bucket", j.Basis)
+		}
 		judgments = append(judgments, j)
 		if err == nil {
 			return judgments, nil
@@ -514,7 +530,13 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 		if v, ok := pools[row.Pool]; ok {
 			c.blocking, c.projected = v.Blocking, v.Projected
 			if c.reason == "" && v.Projected != nil && *v.Projected >= *policy.ExcludeAt {
-				c.reason = "projected_exhaust"
+				// The account projection does not bind a free bucket; the gate
+				// names its basis at admission, which decides.
+				if policy.isFree(row) {
+					c.exhausted = true
+				} else {
+					c.reason = "projected_exhaust"
+				}
 			}
 		}
 		if c.reason != "" {
@@ -567,8 +589,12 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 			continue
 		}
 		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
-		c.judgments, e = pres.admit(ctx, qr, c.seat, c.row.Pool, s.Host)
+		c.judgments, e = pres.admit(ctx, qr, c.seat, c.row.Pool, s.Host, c.exhausted)
 		if e != nil {
+			if c.exhausted && strings.HasPrefix(e.Error(), "projected_exhaust") {
+				c.reason, c.outcome = "projected_exhaust", "dropped:projected_exhaust"
+				continue
+			}
 			c.reason = fmt.Sprintf("gate_refused:%d", exitCode(e))
 			c.outcome = "dropped:gate_refused"
 			continue

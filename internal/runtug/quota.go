@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,24 @@ func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
 	return x.Out, nil
 }
 
+// sharedReason names why a target account's shared observation is unusable,
+// or "" when it is observed, fresh and not degraded.
+func sharedReason(key string, acc SharedAccount) string {
+	switch {
+	case key == "":
+		return "no_usable_presence"
+	case acc.Key != key:
+		return "account_mismatch"
+	case acc.Degraded:
+		return "degraded"
+	case !acc.Observed:
+		return "not_observed"
+	case !acc.Fresh:
+		return "stale"
+	}
+	return ""
+}
+
 // quotaJudgment binds a gate attempt to its host and, for shared evidence, the
 // exact account passed to pacelever. Unknown evidence never invokes a local gate.
 type quotaJudgment struct {
@@ -144,23 +163,105 @@ type quotaJudgment struct {
 	Outcome    string `json:"outcome"`
 	ExitCode   int    `json:"exit_code"`
 	Reason     string `json:"reason,omitempty"`
+	// Basis is the gate's own admission basis (for example free-bucket:NAME).
+	Basis string `json:"basis,omitempty"`
+	// Measured records an on-target measurement: "ok" or "failed".
+	Measured string `json:"measured,omitempty"`
+}
+
+// freeBasisPrefix opens the gate_basis of an admit that drew on a free bucket.
+const freeBasisPrefix = "free-bucket:"
+
+// gateBasis reads the admission basis a gate reports: the gate_basis field of
+// its JSON receipt, or a gate_basis=VALUE word of the text form.
+func gateBasis(gate string) string {
+	if strings.HasPrefix(strings.TrimSpace(gate), "{") {
+		var receipt struct {
+			Basis string `json:"gate_basis"`
+		}
+		if json.Unmarshal([]byte(gate), &receipt) == nil {
+			return receipt.Basis
+		}
+		return ""
+	}
+	for _, word := range strings.Fields(gate) {
+		if w, ok := strings.CutPrefix(word, "gate_basis="); ok {
+			return w
+		}
+	}
+	return ""
+}
+
+// localAccountKeys lists the pool account keys this host holds: the pinned
+// [quota.accounts] fingerprint and every key the local presence records name.
+func (a *App) localAccountKeys(ctx context.Context, pool string) []string {
+	var keys []string
+	if accounts, ok := a.Config.Quota["accounts"].(map[string]any); ok {
+		if fp := str(accounts, pool); accountFP.MatchString(fp) {
+			keys = append(keys, pool+":"+fp)
+		}
+	}
+	if a.Source == nil {
+		return keys
+	}
+	records, e := a.Source.Presence(ctx)
+	if e != nil {
+		return keys
+	}
+	id := firstNonempty(str(a.Config.Local, "presence_id"), a.machine())
+	for _, rec := range records {
+		if rec.HostID == id && strings.HasPrefix(rec.AccountKey, pool+":") && !slices.Contains(keys, rec.AccountKey) {
+			keys = append(keys, rec.AccountKey)
+		}
+	}
+	return keys
+}
+
+// measureTarget runs pacelever's on-demand refresh for the pool on the target
+// over the host's SSH transport so its account's shared observation is current.
+// pacelever only refreshes on demand for an account the spawning host holds.
+func (a *App) measureTarget(ctx context.Context, host, pool string) error {
+	h, ok := a.Config.Hosts[host]
+	if !ok || !validID(pool) || str(h, "via") == "hub" {
+		return fail(exitConfig, "target %s cannot be measured", host)
+	}
+	target := firstNonempty(str(h, "ssh"), host)
+	if strings.HasPrefix(target, "-") || strings.ContainsAny(target, "\r\n") {
+		return fail(exitConfig, "invalid SSH target")
+	}
+	timeout := time.Duration(integer(a.Config.Quota, "measure_timeout_s", 60)) * time.Second
+	if timeout <= 0 {
+		timeout = time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	r := a.Runner.Run(ctx, Command{Name: "ssh", Args: []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "pacelever refresh " + shellQuote(pool)}})
+	if ctx.Err() != nil {
+		return fail(exitTimeout, "measurement timed out")
+	}
+	return check(r, "target measurement")
 }
 
 func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
 	j := quotaJudgment{Host: host, Source: "local", Outcome: "unknown", ExitCode: 4}
 	if !local {
 		j.Source, j.AccountKey = "shared", key
-		switch {
-		case key == "":
-			j.Reason = "no_usable_presence"
-		case acc.Key != key:
-			j.Reason = "account_mismatch"
-		case acc.Degraded:
-			j.Reason = "degraded"
-		case !acc.Observed:
-			j.Reason = "not_observed"
-		case !acc.Fresh:
-			j.Reason = "stale"
+		j.Reason = sharedReason(key, acc)
+		// A stale or missing observation of an account this host does not hold
+		// is never refreshed by the gate, so measure it on the target first.
+		if (j.Reason == "stale" || j.Reason == "not_observed") && a.Source != nil && !slices.Contains(a.localAccountKeys(ctx, pool), key) {
+			if err := a.measureTarget(ctx, host, pool); err != nil {
+				j.Measured, j.Reason = "failed", "measure_failed"
+				return j, fail(exitEvictionUnconfirmed, "target account measurement failed: %v", err)
+			}
+			j.Measured = "ok"
+			fresh, err := a.Source.SharedAccount(ctx, key)
+			if err != nil {
+				fresh = SharedAccount{Key: key, Degraded: true}
+			}
+			if j.Reason = sharedReason(key, fresh); j.Reason != "" {
+				j.Reason = "measure_" + j.Reason
+			}
 		}
 		if j.Reason != "" {
 			return j, fail(exitEvictionUnconfirmed, "target account quota unavailable: %s", j.Reason)
@@ -177,6 +278,9 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		}
 	}
 	j.Outcome, j.ExitCode = "admitted", 0
+	if err == nil {
+		j.Basis = gateBasis(gate)
+	}
 	if err != nil {
 		j.Outcome, j.ExitCode = "refused", exitCode(err)
 	}
