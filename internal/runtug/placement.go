@@ -9,6 +9,7 @@ import (
 	"io"
 	neturl "net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -728,6 +729,16 @@ type repoResolution struct {
 	name string
 	url  string
 	rel  string
+	// wt, branch and head describe a linked worktree checkout: name is then
+	// the canonical clone and wt the worktree directory beside it. wt is
+	// empty for a canonical checkout.
+	wt     string
+	branch string
+	head   string
+	// localRoot is the directory holding the local checkout; root is the
+	// remote work root chosen by remoteDir ("" means ~/work).
+	localRoot string
+	root      string
 }
 
 // localRepo resolves the job checkout: the repo name from the top-level
@@ -743,6 +754,16 @@ func (a *App) localRepo(ctx context.Context, cwd string) *repoResolution {
 	if !validID(name) {
 		return nil
 	}
+	wt := ""
+	if g := a.call(ctx, "git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"); g.Code == 0 {
+		// A linked worktree shares the canonical checkout's .git; the clone
+		// on a target is named after the canonical checkout, not the worktree.
+		if common := strings.TrimSpace(g.Out); filepath.Base(common) == ".git" {
+			if canon := filepath.Dir(common); canon != top && validID(filepath.Base(canon)) {
+				wt, name = name, filepath.Base(canon)
+			}
+		}
+	}
 	// --show-prefix comes from git itself, so symlinked checkout roots
 	// (/var vs /private/var) still map onto the right subdirectory.
 	rel := ""
@@ -756,38 +777,124 @@ func (a *App) localRepo(ctx context.Context, cwd string) *repoResolution {
 			url = ""
 		}
 	}
-	return &repoResolution{name: name, url: url, rel: rel}
+	repo := &repoResolution{name: name, url: url, rel: rel, wt: wt, localRoot: filepath.Dir(top)}
+	if wt != "" {
+		if g := a.call(ctx, "git", "-C", cwd, "branch", "--show-current"); g.Code == 0 {
+			repo.branch = strings.TrimSpace(g.Out)
+		}
+		if g := a.call(ctx, "git", "-C", cwd, "rev-parse", "HEAD"); g.Code == 0 {
+			repo.head = strings.TrimSpace(g.Out)
+		}
+	}
+	return repo
+}
+
+// remotePlan is where a job runs on a target and what must exist there
+// first: the repo clone under root, and for a linked local worktree the
+// matching worktree beside it.
+type remotePlan struct {
+	cwd      string
+	repo     *repoResolution // clone to ensure; nil when nothing is prepared
+	worktree string          // remote worktree directory to prepare; "" for none
 }
 
 // remoteDir maps the job cwd onto the target. An explicit cwd_map entry stays
-// the per-path override; otherwise the repo clone convention applies:
-// $HOME/work/<repo> on the target, cloned when missing.
-func remoteDir(h map[string]any, cwd string, repo *repoResolution) (string, *repoResolution) {
+// authoritative for the path; otherwise the repo convention applies: the
+// host's work root (derived from its cwd_map entries, else $HOME/work) holds
+// the clone and, for a linked local worktree, the worktree next to it.
+func remoteDir(h map[string]any, cwd string, repo *repoResolution) (remotePlan, error) {
 	if mapped := mappedCWD(h["cwd_map"], cwd); mapped != "" {
-		return mapped, nil
+		if repo == nil || repo.wt == "" {
+			return remotePlan{cwd: mapped}, nil
+		}
+		wtDir := strings.TrimSuffix(mapped, "/"+repo.rel)
+		clone := *repo
+		clone.root = path.Dir(wtDir)
+		return remotePlan{cwd: mapped, repo: &clone, worktree: wtDir}, nil
 	}
 	if repo == nil {
-		return "", nil
+		return remotePlan{}, nil
 	}
-	dir := "~/work/" + repo.name
+	root, err := remoteWorkRoot(h, repo.localRoot)
+	if err != nil {
+		return remotePlan{}, err
+	}
+	clone := *repo
+	clone.root = root
+	dir := root + "/" + repo.name
+	plan := remotePlan{repo: &clone}
+	if repo.wt != "" {
+		dir = root + "/" + repo.wt
+		plan.worktree = dir
+	}
 	if repo.rel != "" {
 		dir += "/" + repo.rel
 	}
-	return dir, repo
+	plan.cwd = dir
+	return plan, nil
 }
 
-func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, repo *repoResolution) error {
+// remoteWorkRoot derives the target's work root from its cwd_map entries that
+// map a checkout living directly under the local work root, so a host with
+// explicit entries keeps its layout for paths they do not cover. Without
+// such entries it is ~/work.
+func remoteWorkRoot(h map[string]any, localRoot string) (string, error) {
+	mapping, _ := h["cwd_map"].(map[string]any)
+	roots := map[string]bool{}
+	for from, v := range mapping {
+		to, ok := v.(string)
+		if !ok || (!strings.HasPrefix(to, "/") && !strings.HasPrefix(to, "~/")) {
+			continue
+		}
+		from, to = path.Clean(from), path.Clean(to)
+		switch {
+		case from == localRoot:
+			roots[to] = true
+		case path.Dir(from) == localRoot:
+			roots[path.Dir(to)] = true
+		}
+	}
+	switch len(roots) {
+	case 0:
+		return "~/work", nil
+	case 1:
+		for r := range roots {
+			return r, nil
+		}
+	}
+	return "", fail(exitConfig, "cwd_map entries disagree on the remote work root; add an explicit entry for this path")
+}
+
+// remotePath renders a remote path for an ssh command line: a leading ~ is
+// left to the remote $HOME, everything else is single-quoted.
+func remotePath(p string) string {
+	if p == "~" {
+		return `"$HOME"`
+	}
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		return `"$HOME"` + shellQuote("/"+rest)
+	}
+	return shellQuote(p)
+}
+
+func (a *App) sshRun(ctx context.Context, h map[string]any, host, script string, opts ...string) Result {
 	target := str(h, "ssh")
 	if target == "" {
 		target = host
 	}
-	dir := `"$HOME/work/` + repo.name + `"`
-	r := a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "test -d "+dir)
+	args := append([]string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5"}, opts...)
+	return a.call(ctx, "ssh", append(args, "--", target, script)...)
+}
+
+func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, repo *repoResolution) error {
+	root := firstNonempty(repo.root, "~/work")
+	dir := remotePath(root + "/" + repo.name)
+	r := a.sshRun(ctx, h, host, "test -d "+dir)
 	if r.Code == 0 {
 		if repo.url == "" {
 			return nil
 		}
-		o := a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "git -C "+dir+" remote get-url origin")
+		o := a.sshRun(ctx, h, host, "git -C "+dir+" remote get-url origin")
 		if o.Code == exitUnreachable {
 			return fail(exitUnreachable, "repo origin check unreachable")
 		}
@@ -802,7 +909,7 @@ func (a *App) ensureRepo(ctx context.Context, h map[string]any, host string, rep
 	if repo.url == "" {
 		return fail(exitConfig, "repo %s missing on %s and no origin URL to clone", repo.name, host)
 	}
-	r = a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "--", target, `mkdir -p "$HOME/work" && git clone -- `+shellQuote(repo.url)+" "+dir)
+	r = a.sshRun(ctx, h, host, "mkdir -p "+remotePath(root)+" && git clone -- "+shellQuote(repo.url)+" "+dir, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
 	if r.Code == exitUnreachable {
 		return fail(exitUnreachable, "repo clone unreachable")
 	}
@@ -826,7 +933,11 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 		}
 		return candResult{rc: exitConfig, note: "via_hub_unsupported"}
 	}
-	cwd, clone := remoteDir(h, s.CWD, repo)
+	plan, e := remoteDir(h, s.CWD, repo)
+	if e != nil {
+		return candResult{stop: e}
+	}
+	cwd := plan.cwd
 	if cwd == "" {
 		return candResult{note: "repo_unmappable"}
 	}
@@ -838,10 +949,19 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 		fmt.Fprintf(a.Out, "dry-run host=%s profile=%s role=%s job=%s\n%s\n", c.name, s.Profile, s.Role, s.Job, payload)
 		return candResult{ok: true}
 	}
-	if clone != nil {
-		if e := a.ensureRepo(ctx, h, c.name, clone); e != nil {
+	if plan.repo != nil {
+		e := a.ensureRepo(ctx, h, c.name, plan.repo)
+		if e == nil && plan.worktree != "" {
+			e = a.ensureWorktree(ctx, h, c.name, plan.repo, plan.worktree)
+		}
+		if e != nil {
 			if exitCode(e) == exitUnreachable {
 				return candResult{unreachable: true, note: "repo:" + e.Error()}
+			}
+			if plan.worktree != "" {
+				// A job from a linked worktree must run on that branch: fail
+				// closed rather than try another host or fall back to local.
+				return candResult{stop: e}
 			}
 			return candResult{rc: exitCode(e), note: "repo:" + e.Error()}
 		}
@@ -950,13 +1070,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		if err != nil {
 			return candResult{rc: exitCode(err), note: "quota_" + j.Outcome}
 		}
-		if s.DryRun {
-			return a.spawnRemote(ctx, s, brief, c, resolveRepo(), false)
-		}
-		if mappedCWD(c.cfg["cwd_map"], s.CWD) == "" {
-			resolveRepo()
-		}
-		return a.spawnRemote(ctx, s, brief, c, repo, false)
+		return a.spawnRemote(ctx, s, brief, c, resolveRepo(), false)
 	}
 	emit := func(chosen string) map[string]any {
 		rec := p.record(chosen)

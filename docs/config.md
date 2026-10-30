@@ -107,7 +107,7 @@ Panewire owns authentication and relay transport; runtug never prints credential
 | `via` | `ssh` | `ssh` or legacy `hub`; legacy hub spawn is refused until the hub can invoke runtug. |
 | `herdr_session` | `workers` | Remote HERDR_SESSION. |
 | `workspace` | spawn `-w` | Remote workspace. |
-| `cwd_map` | explicit override | Inline table of local prefix → remote prefix; longest prefix wins. Only needed as an exception: the default remote cwd is `$HOME/work/<repo>` on the target, cloned when missing. |
+| `cwd_map` | explicit override | Inline table of local prefix → remote prefix; longest prefix wins. Only needed as an exception: the default remote cwd is `$HOME/work/<repo>` on the target, cloned when missing. For a job run from a linked git worktree the default is `<work root>/<worktree dir>`, where the work root is derived from entries that map a checkout directly under the local work root (else `$HOME/work`). |
 | `cwd_keys` | legacy | Kept for legacy hub configurations; not used by SSH. |
 | `tags` | unset | Capability tags offered by this host. A job's required `--tags` must be a subset for the host to be a placement candidate. |
 | `presence_id` | host `NAME` | Identity this host uses in pacelever host-presence records. |
@@ -117,6 +117,18 @@ Panewire owns authentication and relay transport; runtug never prints credential
 | `wake_hold` | `10` | Burst hold in minutes. |
 | `wake_wait` | `90` | Burst command timeout in seconds; wake refusal returns 81. |
 | `brief_policy`, `brief_preamble` | host policy default | Optional initiator-side preview settings for this host; deploy matching policy on the execution host. |
+
+When the job cwd is a linked git worktree and placement picks a remote host,
+runtug prepares the same worktree there before spawning: it ensures the repo
+clone (from the local `origin` URL) under the host's work root, runs
+`git fetch origin`, and runs `git worktree add` for the local branch, tracking
+`origin/<branch>` when it exists (a PR head) and otherwise creating it from
+origin's default branch. An existing remote worktree is reused when it is on
+that branch; a different branch, a detached local HEAD, local commits missing
+on the target or any failing step refuses the spawn with exit 81 — it never
+tries another host or falls back to local. An explicit `cwd_map` entry decides
+the worktree path (its clone is the canonical repo name beside it); an
+unreachable host is skipped as before. `--dry-run` prepares nothing.
 
 `--host auto` runs the local placement policy: required `--tags` must be a
 subset of a host's tags (a job with no tags may go anywhere), hosts with fresh
@@ -315,7 +327,7 @@ silently enables automatic pruning.
 | 77 | Role/seat/grade/family/E6 refusal; quota gate exit 5 is remapped here. |
 | 79 | Mock isolation refusal. |
 | 80 | Local spawning disabled/unavailable without a remote fallback. |
-| 81 | Wake/capacity placement failure. |
+| 81 | Wake/capacity placement failure, or the remote worktree for a linked-worktree job could not be prepared. |
 | 82 | Builder pane committed but lane unregistered under strict lane reporting. |
 | 83 | `spawn --wait`: the job escalated. |
 | 84 | `spawn --wait`: the job was lost or revoked. |
