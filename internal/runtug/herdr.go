@@ -588,5 +588,9 @@ func (a *App) hubGate(ctx context.Context, cwd, gate string) error {
 // ".exe" suffix (in any case): Claude Code's native installer links claude to claude.exe, so the
 // foreground process can report either name.
 func procName(argv0 string) string {
-	return strings.TrimSuffix(strings.ToLower(filepath.Base(argv0)), ".exe")
+	name := argv0
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.TrimSuffix(strings.ToLower(name), ".exe")
 }
