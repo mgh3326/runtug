@@ -61,7 +61,7 @@ func (r ExecRunner) Run(ctx context.Context, c Command) Result {
 // TestExitCodesDocumented keeps the two in step. Always pass one of these to
 // fail rather than a literal number.
 const (
-	exitFailure             = 1   // generic failure (find/name-sync selection, restore receipt)
+	exitFailure             = 1   // generic failure (find selection, name-sync apply, restore receipt)
 	exitUsage               = 2   // usage, task or policy target refusal
 	exitUploadTimeout       = 3   // artifact upload confirmation timed out
 	exitEvictionUnconfirmed = 4   // artifact Drive eviction unconfirmed

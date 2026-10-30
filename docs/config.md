@@ -312,7 +312,7 @@ pruning. `--queue-key` remains an audit label, not a durable retry reservation.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success or preview. |
-| 1 | Generic failure: no, ambiguous or multiple `find`/`name-sync` matches; restore receipt failure after reclaim. |
+| 1 | Generic failure: no, ambiguous or multiple `find` matches; restore receipt failure after reclaim. |
 | 2 | Usage/task/policy target refusal. |
 | 3 / 4 | Quota-tool refusal, unchanged; artifacts use 3 for upload confirmation timeout and 4 for unconfirmed Drive eviction. |
 | 5 / 6 | Hub quota denial / authentication refusal. |

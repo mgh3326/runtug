@@ -14,8 +14,9 @@ import (
 	"time"
 )
 
-// parsePackage parses the package's non-test sources.
-func parsePackage(t *testing.T) (*token.FileSet, []*ast.File) {
+// parsePackage parses the package's sources; withTests includes _test.go
+// files (they legitimately use literals the non-test rules forbid).
+func parsePackage(t *testing.T, withTests bool) (*token.FileSet, []*ast.File) {
 	t.Helper()
 	fset := token.NewFileSet()
 	names, e := filepath.Glob("*.go")
@@ -24,7 +25,7 @@ func parsePackage(t *testing.T) (*token.FileSet, []*ast.File) {
 	}
 	var files []*ast.File
 	for _, name := range names {
-		if strings.HasSuffix(name, "_test.go") {
+		if !withTests && strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		f, e := parser.ParseFile(fset, name, nil, 0)
@@ -39,7 +40,7 @@ func parsePackage(t *testing.T) (*token.FileSet, []*ast.File) {
 // TestExitCodesNamed keeps exit statuses symbolic: fail and candResult take
 // one of the exit* constants, never a literal number.
 func TestExitCodesNamed(t *testing.T) {
-	fset, files := parsePackage(t)
+	fset, files := parsePackage(t, false)
 	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
@@ -64,7 +65,7 @@ func TestExitCodesNamed(t *testing.T) {
 // TestExitCodesDocumented requires every exit* constant to have a row in the
 // docs/config.md exit status table, and every row to name a known status.
 func TestExitCodesDocumented(t *testing.T) {
-	_, files := parsePackage(t)
+	_, files := parsePackage(t, false)
 	consts := map[int]string{}
 	for _, f := range files {
 		for _, d := range f.Decls {

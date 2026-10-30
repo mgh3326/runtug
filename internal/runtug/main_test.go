@@ -36,9 +36,9 @@ func TestMain(m *testing.M) {
 }
 
 // TestEnvReadsAreHermetic requires every literal environment variable name the
-// package reads to be cleared by TestMain.
+// package reads, test sources included, to be cleared by TestMain.
 func TestEnvReadsAreHermetic(t *testing.T) {
-	fset, files := parsePackage(t)
+	fset, files := parsePackage(t, true)
 	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
 			lit, ok := n.(*ast.BasicLit)
