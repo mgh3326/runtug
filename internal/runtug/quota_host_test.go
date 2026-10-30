@@ -144,7 +144,13 @@ func TestPlacementTargetAccountUnavailable(t *testing.T) {
 	for _, mode := range []string{"missing presence", "stale presence", "ambiguous presence", "missing observation", "stale observation", "degraded observation", "wrong account", "read error", "presence error", "unknown pool"} {
 		for _, host := range []string{"auto", "host-a"} {
 			t.Run(mode+"/"+host, func(t *testing.T) {
-				a, s, f := remoteFixture(t, &fakePlacementSource{}, &fakeWaker{}, "2026-01-01T00:00:00Z", func(string) Result { t.Error("unavailable account reached SSH"); return Result{} })
+				a, s, f := remoteFixture(t, &fakePlacementSource{}, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
+					if strings.Contains(args, "pacelever refresh") {
+						return Result{Code: 1}
+					}
+					t.Error("unavailable account reached SSH")
+					return Result{}
+				})
 				const key = "claude:0123456789abcdef"
 				s.Host = host
 				a.Config.Hosts = map[string]map[string]any{"host-a": {}}
@@ -183,7 +189,7 @@ func TestPlacementTargetAccountUnavailable(t *testing.T) {
 					t.Fatal("unavailable target admitted")
 				}
 				for _, c := range f.Calls {
-					if c.Name == "ssh" || c.Name == "git" {
+					if (c.Name == "ssh" && !strings.Contains(strings.Join(c.Args, " "), "pacelever refresh")) || c.Name == "git" {
 						t.Fatalf("quota refusal happened after remote preparation: %+v", c)
 					}
 				}

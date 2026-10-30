@@ -141,6 +141,15 @@ placement tries the next candidate. Local placement keeps the local gate path.
 The selection's `quota_gates` and placement candidate's `quota_gate` record the
 host, account key, evidence source, outcome and exit code of each attempt.
 
+When the target's shared observation is missing or stale and the spawning host
+does not hold that account (no `[quota.accounts]` pin or local presence record
+for the key), pacelever cannot refresh it on demand. runtug then runs
+`pacelever refresh POOL` on the target over SSH, bounded by `measure_timeout_s`,
+re-reads the shared observation and judges it. A failed, timed-out or
+unpublished measurement keeps the refusal; `quota_gates` records
+`measured` (`ok` or `failed`) and a `measure_*` reason. A gate that reports its
+`gate_basis` is also recorded as `basis`.
+
 The spawning host needs a pacelever version that supports account-bound gate
 receipts. A successful response must confirm the requested `account_key` and
 pool; versions that silently ignore the flag are refused. The target still
@@ -173,6 +182,7 @@ overrides.
 | `credential_env` | `HANDOFFKEEP_TOKEN` | Name of the environment variable holding the bearer token. |
 | `presence_ttl_s` | `86400` | How recent a host-presence record must be to count as login evidence. |
 | `fresh_ttl_s` | `300` | How recent a shared observation must be to count as fresh. |
+| `measure_timeout_s` | `60` | Bound on the on-target `pacelever refresh` run for a remote account the spawning host does not hold. |
 | `accounts` | unset | Optional pool → 16-hex account-fingerprint table for exact account keys. |
 
 Automatic model selection (`spawn` with `-m` omitted or `-m auto`) reads the
@@ -193,7 +203,7 @@ keys use it, both defaulting to 100:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `waste_below_projected_pct` | `100` | A non-credit subscription pool projected below this at reset is WASTE: the rest is lost at reset, so it is spent before credit and ranked pools. Without a projection the quota status `verdict.waste` flag decides. An explicit `0` disables projected waste. |
-| `exclude_at_projected_pct` | `100` | A pool (free pools included) projected at or above this is dropped as `projected_exhaust`, whatever its tier. Must be above 0 and not below `waste_below_projected_pct`. An over-consumed reading (used above 100%) still projects, so it is excluded. |
+| `exclude_at_projected_pct` | `100` | A pool projected at or above this is dropped as `projected_exhaust`. A free-tier rung is kept for admission instead and survives only when the gate's `gate_basis` is a free bucket (`free-bucket:…`); any other basis drops it as `projected_exhaust`. Must be above 0 and not below `waste_below_projected_pct`. An over-consumed reading (used above 100%) still projects, so it is excluded. |
 
 Non-free candidates additionally need a
 readable `ok` nonstale spend status; every candidate needs fresh
