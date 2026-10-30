@@ -32,10 +32,10 @@ func (a *App) afterSpawn(ctx context.Context, s Spawn) error {
 
 // waitDeadline resolves --wait-timeout, then the RUNTUG_COMPLETION_TIMEOUT_S
 // convention used by the completion watcher, then a one-hour default.
-func waitDeadline(s Spawn) (time.Duration, error) {
+func (a *App) waitDeadline(s Spawn) (time.Duration, error) {
 	raw := s.WaitTimeout
 	if raw == "" {
-		raw = os.Getenv("RUNTUG_COMPLETION_TIMEOUT_S")
+		raw = a.envOr("RUNTUG_COMPLETION_TIMEOUT_S", "WRK_COMPLETION_TIMEOUT_S")
 	}
 	if raw == "" {
 		return time.Hour, nil
@@ -57,7 +57,7 @@ func waitDeadline(s Spawn) (time.Duration, error) {
 // codes carry the outcome: 0 done/ready/joined/handed_off, 83 escalate,
 // 84 lost/revoked, 85 timeout.
 func (a *App) waitJob(ctx context.Context, s Spawn) error {
-	timeout, e := waitDeadline(s)
+	timeout, e := a.waitDeadline(s)
 	if e != nil {
 		return e
 	}

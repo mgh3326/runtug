@@ -17,6 +17,7 @@ type App struct {
 	Runner       Runner
 	Quota        QuotaGate
 	Config       Config
+	ConfigPath   string
 	Policy       Policy
 	Out, Err     io.Writer
 	Jobs, Home   string
@@ -44,7 +45,8 @@ func Main(ctx context.Context, args []string, out, errout io.Writer) int {
 	return 0
 }
 func New(out, errout io.Writer) (*App, error) {
-	c, e := LoadConfig(configPath(errout))
+	path := configPath(errout)
+	c, e := LoadConfig(path)
 	if e != nil {
 		return nil, e
 	}
@@ -53,7 +55,7 @@ func New(out, errout io.Writer) (*App, error) {
 		return nil, e
 	}
 	h, _ := os.UserHomeDir()
-	a := &App{Runner: ExecRunner{}, Config: c, Policy: p, Out: out, Err: errout, Home: h, Jobs: filepath.Join(h, "work", "herdr-inbox", "jobs"), Now: time.Now, Sleep: sleepContext, Bins: map[string]string{}}
+	a := &App{Runner: ExecRunner{}, Config: c, ConfigPath: path, Policy: p, Out: out, Err: errout, Home: h, Jobs: filepath.Join(h, "work", "herdr-inbox", "jobs"), Now: time.Now, Sleep: sleepContext, Bins: map[string]string{}}
 	if v := os.Getenv("ARBITER_INBOX_ROOT"); v != "" {
 		a.Jobs = v
 	}
@@ -64,6 +66,9 @@ func New(out, errout io.Writer) (*App, error) {
 		}
 	}
 	// The quota CLI is pacelever; RUNTUG_QUOTA_BIN is an explicit override.
+	if os.Getenv("SCOPEFUEL_BIN") != "" && os.Getenv("RUNTUG_QUOTA_BIN") == "" {
+		fmt.Fprintln(errout, "runtug: warning: SCOPEFUEL_BIN is retired and ignored; the quota CLI defaults to pacelever, override it with RUNTUG_QUOTA_BIN")
+	}
 	quota := "pacelever"
 	if v := os.Getenv("RUNTUG_QUOTA_BIN"); v != "" {
 		quota = v
@@ -94,6 +99,19 @@ func (a *App) call(ctx context.Context, bin string, args ...string) Result {
 }
 func (a *App) must(ctx context.Context, bin string, args ...string) error {
 	return check(a.call(ctx, bin, args...), bin)
+}
+
+// envOr reads a renamed environment variable. For one release the retired
+// name still applies, with a one-line warning to switch.
+func (a *App) envOr(name, retired string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	if v := os.Getenv(retired); v != "" {
+		a.warn("%s is retired; set %s instead", retired, name)
+		return v
+	}
+	return ""
 }
 func (a *App) warn(format string, args ...any) {
 	fmt.Fprintf(a.Err, "runtug: warning: "+format+"\n", args...)
