@@ -14,3 +14,12 @@ func TestProcNameStripsExeSuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessNameFallsBackWhenArgv0Missing(t *testing.T) {
+	if got := procName(firstNonEmpty("", firstArg([]string{"claude", "--model", "sonnet"}), "claude")); got != "claude" {
+		t.Fatalf("argv fallback = %q", got)
+	}
+	if got := procName(firstNonEmpty("", firstArg(nil), "claude")); got != "claude" {
+		t.Fatalf("name fallback = %q", got)
+	}
+}
