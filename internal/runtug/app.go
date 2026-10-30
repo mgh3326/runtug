@@ -67,7 +67,7 @@ func New(out, errout io.Writer) (*App, error) {
 		}
 	}
 	// The quota CLI is pacelever; RUNTUG_QUOTA_BIN is an explicit override.
-	if os.Getenv("SCOPEFUEL_BIN") != "" && os.Getenv("RUNTUG_QUOTA_BIN") == "" {
+	if os.Getenv("SCOPEFUEL_BIN") != "" {
 		fmt.Fprintln(errout, "runtug: warning: SCOPEFUEL_BIN is retired and ignored; the quota CLI defaults to pacelever, override it with RUNTUG_QUOTA_BIN")
 	}
 	quota := "pacelever"

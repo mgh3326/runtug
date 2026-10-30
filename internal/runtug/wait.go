@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -53,7 +54,7 @@ func timeoutValue(raw string) (time.Duration, bool) {
 	if d, e := duration(raw); e == nil && d > 0 {
 		return d, true
 	}
-	if n, e := strconv.Atoi(raw); e == nil && n > 0 {
+	if n, e := strconv.Atoi(raw); e == nil && n > 0 && int64(n) <= math.MaxInt64/int64(time.Second) {
 		return time.Duration(n) * time.Second, true
 	}
 	return 0, false
