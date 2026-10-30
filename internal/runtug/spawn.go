@@ -21,10 +21,15 @@ type Spawn struct {
 	// hosts placement must not pick. Delegated marks a spawn delivered by
 	// another initiator. Sel carries the selection decision record; all four
 	// are initiator-local and never cross the delegation wire.
-	Tags         string         `json:"-"`
-	ExcludeHosts string         `json:"-"`
-	Delegated    bool           `json:"-"`
-	Sel          map[string]any `json:"-"`
+	Tags         string `json:"-"`
+	ExcludeHosts string `json:"-"`
+	// BuilderFamily and BuilderJob name the author's family and job for a
+	// reviewer or tester whose builder job ran on another host, so its
+	// metadata is not readable here (--parent-job needs local metadata).
+	BuilderFamily string         `json:"-"`
+	BuilderJob    string         `json:"-"`
+	Delegated     bool           `json:"-"`
+	Sel           map[string]any `json:"-"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -33,7 +38,7 @@ func parseSpawn(args []string) (Spawn, error) {
 	for _, p := range []struct {
 		k string
 		v *string
-	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"exclude-host", &s.ExcludeHosts}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}, {"urgency", &s.Urgency}} {
+	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"exclude-host", &s.ExcludeHosts}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}, {"urgency", &s.Urgency}, {"builder-family", &s.BuilderFamily}, {"builder-job", &s.BuilderJob}} {
 		f.StringVar(p.v, p.k, *p.v, "")
 	}
 	f.BoolVar(&s.Keep, "keep", false, "")
@@ -151,6 +156,16 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		if _, e := a.waitDeadline(s); e != nil {
 			return e
 		}
+	}
+	if s.BuilderFamily != "" || s.BuilderJob != "" {
+		if s.BuilderFamily == "" || !validID(s.BuilderJob) || s.ParentJob != "" || s.Task == "" || (s.Role != "reviewer" && s.Role != "tester") {
+			return fail(exitUsage, "--builder-family and --builder-job go together, with --task and --role reviewer|tester, not --parent-job")
+		}
+		if s.Report == "" && s.ReportRelative == "" {
+			return fail(exitUsage, "--builder-job requires --report")
+		}
+		s.ParentFamily = s.BuilderFamily
+		s.Inherited = s.BuilderJob
 	}
 	if s.ParentJob == "" && s.Task == "" {
 		s.ParentJob = os.Getenv("ARBITER_JOB")
