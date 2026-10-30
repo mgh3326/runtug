@@ -82,7 +82,7 @@ func TestSeatPolicy(t *testing.T) {
 	}
 }
 func TestHostsConfigFailClosed(t *testing.T) {
-	for _, input := range []string{"[local]\nspawn = 'true'", "[local]\nspawn=true\nspawn=false", "[local]\nheavy_max=-1", "[hub]\nquota_gate='typo'", "[hub]\nhub_token_env='TOKEN'", "spawn=true", "[local]\npi_anthropic=1"} {
+	for _, input := range []string{"[local]\nspawn = 'true'", "[local]\nspawn=true\nspawn=false", "[hub]\nquota_gate='typo'", "[hub]\nhub_token_env='TOKEN'", "spawn=true", "[local]\npi_anthropic=1"} {
 		t.Run(input, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hosts.toml")
 			if e := os.WriteFile(path, []byte(input), 0600); e != nil {
@@ -92,6 +92,19 @@ func TestHostsConfigFailClosed(t *testing.T) {
 				t.Fatalf("expected 70: %v", e)
 			}
 		})
+	}
+}
+
+// TestRetiredHeavyKeysAreIgnored keeps old hosts.toml files loading: the
+// removed heavy command's keys are accepted as inert data, never errors.
+func TestRetiredHeavyKeysAreIgnored(t *testing.T) {
+	input := "[local]\nheavy_max = 2\nheavy_load_wait = true\n[hosts.box]\nheavy = true\n"
+	path := filepath.Join(t.TempDir(), "hosts.toml")
+	if e := os.WriteFile(path, []byte(input), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := LoadConfig(path); e != nil {
+		t.Fatalf("retired heavy keys must load without error: %v", e)
 	}
 }
 func TestR02InstalledCatalogOwnsModelsEffortsAndGrades(t *testing.T) {

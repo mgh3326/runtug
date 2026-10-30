@@ -149,13 +149,6 @@ an entire unverified split tab. Lane removal uses expected machine and pane
 conditions. Optional worktree removal requires a clean linked worktree whose
 HEAD is merged into origin/main and uses git without force.
 
-`heavy` uses the existing wrk host lock namespace and kernel flock, supports
-multiple slots and a load wait, runs at nice 10 and passes the lock descriptor
-to descendants. Process exit releases the lock only when descendants close
-their inherited copies. Status does not create slot files. Advanced legacy
-CI-priority/FIFO/requeue ticket scheduling is outside this initial lock engine;
-`--queue-key` is retained as an audit label.
-
 Artifact move copies/hash-checks files in bounded batches, requires two fresh
 Drive upload confirmations at least 120 seconds apart, records them through
 handoffkeep, then evicts Drive copies. Original files remain. Remote pulls use
@@ -201,10 +194,10 @@ package keeps to these rules; the tests named here enforce them:
 | `--report` completion watcher | Implemented; stable report, loss and expiry handling |
 | done / escalate / restore | Implemented; reports, deduplication, parent relay and verified recovery |
 | reap / prune / worktree-reap | Implemented as previews; worktrees folded into reap |
-| heavy / heavy status | Kernel slot lock implemented; advanced legacy queue fairness not carried over |
+| heavy / heavy status | Removed; placement is load-based only, no host slot lock |
 | lanes-missing / hosts / profiles / find / name-sync | Implemented; ambiguous finds fail |
 | artifacts move / sweep / classify / mark-final | Move/sweep implemented; classification internal; no separate mark-final command |
-| usage | Host build/load view folded into heavy; no standalone disk alert |
+| usage | Not carried over; no standalone disk alert |
 | rounds / o3 / joined / takeovers / grants / landing-strict | Deliberately excluded; mergewake owns review/landing |
 
 1. Keep wrk and its existing policy pins unchanged. Validate runtug configuration
@@ -220,8 +213,8 @@ package keeps to these rules; the tests named here enforce them:
    binary name in the core spawn/done/reap paths. Keep review/round callers on
    mergewake. No rollout is performed by this build task.
 5. Expand only after comparing receipts, completion relay, quota release and
-   cleanup. Retain wrk for legacy hub transport and any advanced heavy queue
-   users until those boundaries are migrated. Roll back by restoring callers
+   cleanup. Retain wrk for legacy hub transport until that boundary is
+   migrated. Roll back by restoring callers
    to wrk; arbiter remains the shared ledger throughout.
 
 Inventory risks R1/R3/R4/R6/R9/R10/R11 remain external-service boundaries;

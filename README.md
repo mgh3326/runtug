@@ -75,8 +75,6 @@ runtug restore task42-worker
 runtug reap --include-builders                   # preview
 runtug reap --include-builders --apply           # close verified terminal panes
 runtug prune --stale-age 24h                     # preview stale absent-pane jobs
-runtug heavy -- go test ./internal/changed -run TestChanged
-runtug heavy status
 runtug hosts
 runtug profiles
 runtug find task42-worker
@@ -122,5 +120,4 @@ same live task twice. The repository's mergewake policy has `enabled: false`.
 The v0.1 transport supports local and SSH runtug hosts. Legacy `via="hub"`
 spawn endpoints still invoke wrk and are refused until the hub supports runtug.
 Old rollback aliases require matching catalog rows; there is no embedded model
-fallback. Advanced wrk heavy queue fairness/requeue tickets are not implemented;
-the interoperable host slot lock, load wait and inherited lock lifetime are.
+fallback.

@@ -28,7 +28,6 @@ func (a *App) hygiene(ctx context.Context, kind string, args []string) error {
 	f.BoolVar(builders, "include-captains", false, "")
 	worktrees := f.Bool("worktrees", false, "")
 	stale := f.String("stale-age", "24h", "")
-	_ = f.String("heavy-age", "24h", "")
 	_ = f.String("policy", "", "")
 	if e := f.Parse(args); e != nil {
 		return fail(exitUsage, "%v", e)
@@ -215,7 +214,7 @@ func (a *App) diagnostics(ctx context.Context, kind string, args []string) error
 		if len(args) > 0 {
 			return fail(exitUsage, "hosts accepts no arguments")
 		}
-		fmt.Fprintf(a.Out, "config=%s\nlocal spawn=%t heavy_max=%d heavy_load_wait=%t\n", configPath(), boolean(a.Config.Local, "spawn", true), integer(a.Config.Local, "heavy_max", 1), boolean(a.Config.Local, "heavy_load_wait", true))
+		fmt.Fprintf(a.Out, "config=%s\nlocal spawn=%t\n", configPath(), boolean(a.Config.Local, "spawn", true))
 		for _, host := range slices.Sorted(maps.Keys(a.Config.Hosts)) {
 			h := a.Config.Hosts[host]
 			fmt.Fprintf(a.Out, "host=%s via=%s capacity=%d\n", host, str(h, "via"), integer(h, "capacity", 0))

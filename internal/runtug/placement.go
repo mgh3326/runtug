@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -197,6 +199,29 @@ func (a *App) placementTTL(key string, def int64) time.Duration {
 		return time.Duration(n) * time.Second
 	}
 	return time.Duration(def) * time.Second
+}
+
+func (a *App) loadRatio(ctx context.Context) (float64, error) {
+	var text string
+	if runtime.GOOS == "linux" {
+		b, e := os.ReadFile("/proc/loadavg")
+		if e != nil {
+			return 0, e
+		}
+		text = string(b)
+	} else {
+		r := a.call(ctx, "sysctl", "-n", "vm.loadavg")
+		if e := check(r, "load measurement"); e != nil {
+			return 0, e
+		}
+		text = r.Out
+	}
+	fields := strings.Fields(strings.Trim(text, "{} \n"))
+	if len(fields) < 2 {
+		return 0, fail(exitConfig, "host load unavailable")
+	}
+	load, e := strconv.ParseFloat(fields[1], 64)
+	return load / float64(runtime.NumCPU()), e
 }
 
 func (a *App) localLoad(ctx context.Context) *float64 {

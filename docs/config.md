@@ -13,8 +13,6 @@ machine_id = "host-a"
 spawn = true
 max_load_ratio = 1.5
 max_active = 4
-heavy_max = 1
-heavy_load_wait = true
 shell_ready_timeout_ms = 120000
 pi_anthropic = false
 cmd_dsflash41 = false
@@ -67,8 +65,8 @@ local_delete_at = "drive_confirmed"
 | `spawn` | `true` | Literal boolean; `false` refuses local admission with 80, including explicit local requests. |
 | `max_load_ratio` | unset | Nonnegative load5 / CPU threshold for fallback spillover when hub placement is unavailable. |
 | `max_active` | unset | Nonnegative active-agent threshold for fallback spillover. |
-| `heavy_max` | `1` | Concurrent host build slots; `0` refuses builds with 78. |
-| `heavy_load_wait` | `true` | Literal boolean; wait for load5 / CPU below 1 before the build. |
+| `heavy_max` | legacy | Accepted and ignored; the `heavy` command was removed. |
+| `heavy_load_wait` | legacy | Accepted and ignored; the `heavy` command was removed. |
 | `shell_ready_timeout_ms` | `120000` | Startup readiness window, integer 30000–300000. |
 | `pi_anthropic` | `false` | Literal capability opt-in required by pi policy rows. |
 | `cmd_dsflash41` | `false` | Literal capability opt-in required by cmd policy rows. The provisioned cmd account must have no persisted MCP servers. |
@@ -114,6 +112,7 @@ Panewire owns authentication and relay transport; runtug never prints credential
 | `tags` | unset | Capability tags offered by this host. A job's required `--tags` must be a subset for the host to be a placement candidate. |
 | `presence_id` | host `NAME` | Identity this host uses in pacelever host-presence records. |
 | `capacity` | unset | Inventory value displayed by hosts. Authoritative capacity comes from panewire placement and remote admission. |
+| `heavy` | legacy | Accepted and ignored; the `heavy` command and its host lock were removed. |
 | `wake` | off | `"panewire"` marks the host wakeable: the placement policy may request `panewire node wake` when asleep, then waits for the node to connect. |
 | `wake_hold` | `10` | Burst hold in minutes. |
 | `wake_wait` | `90` | Burst command timeout in seconds; wake refusal returns 81. |
@@ -296,16 +295,9 @@ for ownership and distribution.
 | `KIMI_CODE_HOME` | Kimi config home; thinking effort is verified. |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME` | Harness config homes for selected-workspace trust; mock Codex uses its private job home. |
 | `KIMI_CODE_LOW_HOME`, `KIMI_CODE_HIGH_HOME`, `KIMI_CODE_MAX_HOME` | Pinned clone homes; default ~/.local/share/kimi-code-EFFORT. |
-| `WRK_HEAVY_LOCK` | Host lock path; default temporary-directory/wrk-heavy-HOST.lock, shared with wrk. |
-| `WRK_HEAVY_MAX` | Nonnegative per-invocation slot limit override. |
-| `WRK_HEAVY_CLASS` | `ci` or `lane` audit label; no priority scheduling in v0.1. |
-| `WRK_HEAVY_WAIT_CAP` | Slot/load wait cap in seconds, default 1200; expiry returns 75. |
-| `WRK_HEAVY_HELD_FD` | Internally inherited fd:slot-path for verified nested builds. |
-| `WRK_HEAVY_LOG` | Append-only build audit log, default ~/.local/state/wrk/heavy.log. |
 
-Legacy heavy CI/LANE defer limits, durable queue tickets and periodic prune
-environment switches are not read. Runtug never silently enables automatic
-pruning. `--queue-key` remains an audit label, not a durable retry reservation.
+Legacy periodic prune environment switches are not read. Runtug never
+silently enables automatic pruning.
 
 ## Exit statuses
 
@@ -318,10 +310,9 @@ pruning. `--queue-key` remains an audit label, not a durable retry reservation.
 | 5 / 6 | Hub quota denial / authentication refusal. |
 | 70 | Configuration, trust or unverified admission evidence. |
 | 74 | Active job duplicate. |
-| 75 | Unreadable duplicate state, changed artifact or heavy wait cap. |
+| 75 | Unreadable duplicate state or changed artifact. |
 | 76 | Initial brief submission unconfirmed after one key retry. |
 | 77 | Role/seat/grade/family/E6 refusal; quota gate exit 5 is remapped here. |
-| 78 | Heavy configuration refusal. |
 | 79 | Mock isolation refusal. |
 | 80 | Local spawning disabled/unavailable without a remote fallback. |
 | 81 | Wake/capacity placement failure. |

@@ -73,14 +73,14 @@ func LoadConfig(path string) (Config, error) {
 	for _, m := range regexp.MustCompile(`(?m)^\s*\[hosts\.([A-Za-z0-9._-]+)\]\s*(?:#.*)?$`).FindAllStringSubmatch(string(b), -1) {
 		c.HostOrder = append(c.HostOrder, m[1])
 	}
-	for _, k := range []string{"spawn", "pi_anthropic", "cmd_dsflash41", "heavy_load_wait"} {
+	for _, k := range []string{"spawn", "pi_anthropic", "cmd_dsflash41"} {
 		if v, ok := c.Local[k]; ok {
 			if _, ok = v.(bool); !ok {
 				return c, fail(exitConfig, "local.%s must be a boolean", k)
 			}
 		}
 	}
-	for _, k := range []string{"heavy_max", "max_active", "shell_ready_timeout_ms", "fleet_usage_alert_gb"} {
+	for _, k := range []string{"max_active", "shell_ready_timeout_ms", "fleet_usage_alert_gb"} {
 		if v, ok := c.Local[k]; ok {
 			if n, ok := v.(int64); !ok || n < 0 {
 				return c, fail(exitConfig, "local.%s must be a nonnegative integer", k)
