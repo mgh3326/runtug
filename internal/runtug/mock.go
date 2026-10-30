@@ -22,10 +22,10 @@ func (a *App) mock(_ context.Context, s Spawn, seat Seat) ([]string, error) {
 	if os.Getenv("MOCK_MCP_PROFILE") == "" {
 		return nil, fail(exitMockRefused, "mock requires MOCK_MCP_PROFILE")
 	}
-	path := os.Getenv("WRK_MOCK_MCP_CONFIG")
+	path := a.envOr("RUNTUG_MOCK_MCP_CONFIG", "WRK_MOCK_MCP_CONFIG")
 	b, e := os.ReadFile(path)
 	if e != nil {
-		return nil, fail(exitMockRefused, "mock requires readable WRK_MOCK_MCP_CONFIG")
+		return nil, fail(exitMockRefused, "mock requires readable RUNTUG_MOCK_MCP_CONFIG")
 	}
 	var config struct {
 		Servers map[string]struct {

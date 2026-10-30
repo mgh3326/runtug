@@ -17,12 +17,14 @@ type App struct {
 	Runner       Runner
 	Quota        QuotaGate
 	Config       Config
+	ConfigPath   string
 	Policy       Policy
 	Out, Err     io.Writer
 	Jobs, Home   string
 	Sleep        func(context.Context, time.Duration) error
 	Now          func() time.Time
 	Bins         map[string]string
+	warned       map[string]bool
 	Source       PlacementSource
 	Wake         Waker
 	LoadRatio    func(context.Context) (float64, error)
@@ -44,7 +46,8 @@ func Main(ctx context.Context, args []string, out, errout io.Writer) int {
 	return 0
 }
 func New(out, errout io.Writer) (*App, error) {
-	c, e := LoadConfig(configPath())
+	path := configPath(errout)
+	c, e := LoadConfig(path)
 	if e != nil {
 		return nil, e
 	}
@@ -53,25 +56,25 @@ func New(out, errout io.Writer) (*App, error) {
 		return nil, e
 	}
 	h, _ := os.UserHomeDir()
-	a := &App{Runner: ExecRunner{}, Config: c, Policy: p, Out: out, Err: errout, Home: h, Jobs: filepath.Join(h, "work", "herdr-inbox", "jobs"), Now: time.Now, Sleep: sleepContext, Bins: map[string]string{}}
+	a := &App{Runner: ExecRunner{}, Config: c, ConfigPath: path, Policy: p, Out: out, Err: errout, Home: h, Jobs: filepath.Join(h, "work", "herdr-inbox", "jobs"), Now: time.Now, Sleep: sleepContext, Bins: map[string]string{}}
 	if v := os.Getenv("ARBITER_INBOX_ROOT"); v != "" {
 		a.Jobs = v
 	}
-	for bin, env := range map[string]string{"herdr": "HERDR_BIN", "arbiter": "ARBITER_BIN", "handoffkeep": "HANDOFFKEEP_BIN", "panewire": "PANEWIRE_BIN", "scopefuel": "SCOPEFUEL_BIN"} {
+	for bin, env := range map[string]string{"herdr": "HERDR_BIN", "arbiter": "ARBITER_BIN", "handoffkeep": "HANDOFFKEEP_BIN", "panewire": "PANEWIRE_BIN"} {
 		a.Bins[bin] = bin
 		if v := os.Getenv(env); v != "" {
 			a.Bins[bin] = v
 		}
 	}
-	// The quota CLI is pacelever; scopefuel is retired. SCOPEFUEL_BIN and
-	// RUNTUG_QUOTA_BIN stay as explicit overrides.
-	if os.Getenv("SCOPEFUEL_BIN") == "" {
-		a.Bins["scopefuel"] = "pacelever"
+	// The quota CLI is pacelever; RUNTUG_QUOTA_BIN is an explicit override.
+	if os.Getenv("SCOPEFUEL_BIN") != "" {
+		fmt.Fprintln(errout, "runtug: warning: SCOPEFUEL_BIN is retired and ignored; the quota CLI defaults to pacelever, override it with RUNTUG_QUOTA_BIN")
 	}
+	quota := "pacelever"
 	if v := os.Getenv("RUNTUG_QUOTA_BIN"); v != "" {
-		a.Bins["scopefuel"] = v
+		quota = v
 	}
-	a.Quota = CLIQuota{a.Runner, a.Bins["scopefuel"]}
+	a.Quota = CLIQuota{a.Runner, quota}
 	a.Source = fleetSource{a}
 	a.Wake = cliWaker{a}
 	a.LoadRatio = a.loadRatio
@@ -97,6 +100,26 @@ func (a *App) call(ctx context.Context, bin string, args ...string) Result {
 }
 func (a *App) must(ctx context.Context, bin string, args ...string) error {
 	return check(a.call(ctx, bin, args...), bin)
+}
+
+// envOr reads a renamed environment variable. For one release the retired
+// name still applies, with a one-line warning to switch, emitted once per
+// name so selection loops do not repeat it.
+func (a *App) envOr(name, retired string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	if v := os.Getenv(retired); v != "" {
+		if a.warned == nil {
+			a.warned = map[string]bool{}
+		}
+		if !a.warned[retired] {
+			a.warned[retired] = true
+			a.warn("%s is retired; set %s instead", retired, name)
+		}
+		return v
+	}
+	return ""
 }
 func (a *App) warn(format string, args ...any) {
 	fmt.Fprintf(a.Err, "runtug: warning: "+format+"\n", args...)

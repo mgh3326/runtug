@@ -1,7 +1,14 @@
 # Configuration
 
-Runtug reads `~/.config/wrk/hosts.toml`. `WRK_HOSTS_CONFIG` overrides the file;
-otherwise `XDG_CONFIG_HOME/wrk/hosts.toml` is used when XDG_CONFIG_HOME is set.
+Runtug reads `~/.config/fleet/hosts.toml`. `FLEET_HOSTS_CONFIG` overrides the file;
+otherwise `XDG_CONFIG_HOME/fleet/hosts.toml` is used when XDG_CONFIG_HOME is set.
+For one release a config found only at the retired `~/.config/wrk/hosts.toml`
+path (or through `WRK_HOSTS_CONFIG`) still loads with a one-line warning naming
+the new location. The same applies to retired environment names: `WRK_LANE_STRICT`,
+`WRK_COMPLETION_TIMEOUT_S`, `WRK_MOCK_MCP_CONFIG` and `SCOPEFUEL_E6_ARM` fall back
+to their `RUNTUG_*` replacements with a warning; a set `SCOPEFUEL_BIN` is ignored
+with a warning. The workspace trust lock stays `.wrk.lock` until old spawner
+binaries are drained from every host.
 A missing file means a local host with standard harnesses. Malformed TOML,
 duplicate keys, root assignments, BOMs, invalid safety booleans and contradictory
 hub quota settings refuse with exit 70. Existing tables keep their key names.
@@ -76,7 +83,7 @@ local_delete_at = "drive_confirmed"
 | `brief_policy` | embedded policy | Path to the versioned brief-policy JSON; leading `~/` expands. |
 | `brief_preamble` | selected policy block | Explicit named preamble block for this host. |
 | `pool_policy` | embedded pool-order policy | Path to the versioned pool-order JSON used by automatic model selection. |
-| `fleet_usage_alert_gb` | legacy/read-only | Retained config key; standalone wrk disk alerts are not emitted in v0.1. |
+| `fleet_usage_alert_gb` | legacy/read-only | Retained config key; standalone disk alerts are not emitted in v0.1. |
 
 Additional boolean capabilities can be named by custom seat policy rows. A
 missing or nonboolean capability fails closed. `standard` in seat policy means
@@ -261,7 +268,7 @@ record.
 | `scratch_dir` | `~/.local/share/fleet-upload/scratch` | Temporary per-batch remote staging; removed after the batch or on error. |
 | `free_floor_bytes` | 20 GiB | Space that must remain after remote batch staging. |
 | `local_delete_at` | `drive_confirmed` | Sweep hatch: `drive_confirmed`, or `uploaded` for uploaded nonevidence rows without a mirror requirement. |
-| `state_dir` | legacy | Existing wrk uploader state is left untouched. Runtug uses handoffkeep records. |
+| `state_dir` | legacy | Retired uploader state is left untouched. Runtug uses handoffkeep records. |
 | `alert_lane` | legacy | Existing value is retained; runtug returns explicit confirmation failure instead of sending uploader alerts. |
 
 Artifact policy is the embedded
@@ -305,15 +312,14 @@ for ownership and distribution.
 | `RUNTUG_POOL_POLICY` | Overrides the pool-order policy used by `spawn` automatic model selection; `[local].pool_policy` takes precedence. |
 | `HERDR_BIN`, `PANEWIRE_BIN` | CLI executable overrides. |
 | `HANDOFFKEEP_BIN`, `ARBITER_BIN` | Must resolve to the canonical current-user ~/.local/bin executable in production. |
-| `SCOPEFUEL_BIN` | Quota executable; default `scopefuel`. |
-| `RUNTUG_QUOTA_BIN` | Preferred compatible quota executable override, e.g. `pacelever`. |
+| `RUNTUG_QUOTA_BIN` | Quota executable override; default `pacelever`. |
 | `ARBITER_INBOX_ROOT` | Jobs root; production guard requires the canonical inbox. |
 | `HERDR_SESSION` | Herdr session passed through or selected for remote execution. |
-| `SCOPEFUEL_E6_ARM` | Exact canon@effort experiment marker when policy requires one. |
+| `RUNTUG_E6_ARM` | Exact canon@effort experiment marker when policy requires one. |
 | `ARBITER_JOB`, `HK_TASK_ID` | Calling job/task inheritance; populated in spawned panes. |
-| `WRK_LANE_STRICT=1` | A committed builder with unregistered lane returns 82. |
-| `WRK_COMPLETION_TIMEOUT_S` | Positive watcher lifetime in seconds; default 3600. Expiry retains the job. |
-| `MOCK_MCP_PROFILE`, `WRK_MOCK_MCP_CONFIG` | Required reviewed mock profile name and exclusive stdio mcpServers JSON. |
+| `RUNTUG_LANE_STRICT=1` | A committed builder with unregistered lane returns 82. |
+| `RUNTUG_COMPLETION_TIMEOUT_S` | Positive watcher lifetime; duration or bare seconds, default 1h. Expiry retains the job. |
+| `MOCK_MCP_PROFILE`, `RUNTUG_MOCK_MCP_CONFIG` | Required reviewed mock profile name and exclusive stdio mcpServers JSON. |
 | `KIMI_CODE_HOME` | Kimi config home; thinking effort is verified. |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME` | Harness config homes for selected-workspace trust; mock Codex uses its private job home. |
 | `KIMI_CODE_LOW_HOME`, `KIMI_CODE_HIGH_HOME`, `KIMI_CODE_MAX_HOME` | Pinned clone homes; default ~/.local/share/kimi-code-EFFORT. |

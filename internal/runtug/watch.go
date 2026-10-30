@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
@@ -50,15 +49,15 @@ func (a *App) watch(ctx context.Context, args []string) error {
 	if !tryLock(lock) {
 		return nil
 	}
-	timeout := 3600
-	if v := os.Getenv("WRK_COMPLETION_TIMEOUT_S"); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n <= 0 {
+	timeout := time.Hour
+	if v := a.envOr("RUNTUG_COMPLETION_TIMEOUT_S", "WRK_COMPLETION_TIMEOUT_S"); v != "" {
+		d, ok := timeoutValue(v)
+		if !ok {
 			return fail(exitUsage, "invalid completion timeout")
 		}
-		timeout = n
+		timeout = d
 	}
-	deadline := a.Now().Add(time.Duration(timeout) * time.Second)
+	deadline := a.Now().Add(timeout)
 	var size int64 = -1
 	var modified time.Time
 	pending := false

@@ -3,7 +3,7 @@
 runtug owns launch and supervision. It orchestrates existing CLIs through a
 `Runner` boundary; unit tests substitute fakes for all external services.
 `QuotaGate` separates profile launch resolution from quota admission, so the
-scopefuel implementation can be replaced by pacelever without changing spawn.
+quota implementation stays behind the pacelever CLI contract.
 Models, effort and grades always come from `policy launch PROFILE --effort E
 --role R --json`. A missing or malformed catalog answer refuses admission.
 
@@ -66,7 +66,7 @@ harness; the key file is read at spawn time and handed only to the pane.
 `standard` is the policy sentinel for harnesses with no special host capability.
 API-backed pi and cmd seats require literal `pi_anthropic=true` or
 `cmd_dsflash41=true`; routed `cc-*` seats require `clinepass=true`. Unknown capabilities are denied. E6 aliases require the
-exact `SCOPEFUEL_E6_ARM=CANON@EFFORT` marker unless their policy row says otherwise.
+exact `RUNTUG_E6_ARM=CANON@EFFORT` marker unless their policy row says otherwise.
 
 ## Standard brief preamble: the single source of fleet rules
 
@@ -96,7 +96,7 @@ original brief, preventing double preambles.
 
 ## Harness startup and submission
 
-Claude, Codex, Devin, Grok, Kimi, pi and Command Code use the wrk launch shapes.
+Claude, Codex, Devin, Grok, Kimi, pi and Command Code share the launch shapes runtug inherited.
 The catalog supplies model IDs; Kimi's effort must match its clone-home config.
 Devin and cmd use `pane run` and detection/rename; other harnesses use
 `agent start --kind`. Before launch, an exact output token proves that the
@@ -179,15 +179,15 @@ package keeps to these rules; the tests named here enforce them:
   reads, and `TestEnvReadsAreHermetic` fails when a new variable is outside
   that list. Set variables in a test with `t.Setenv`.
 
-## wrk → runtug parity and migration
+## Parity and migration from the retired spawner
 
-| wrk feature | runtug v0.1 status |
+| retired feature | runtug v0.1 status |
 | --- | --- |
 | Core spawn flags, roles, owner, task/parent binding | Implemented; new `--dry-run` preview |
 | Profile catalog, grade/effort, E6, seat policy | Canon resolution plus versioned policy data; no model fallbacks |
 | Local quota / hub quota / role exit 77 | Implemented; fail closed on missing evidence |
 | Local and SSH placement; pressure and wake request | Implemented as a local policy engine: capability `--tags`, presence/quota reads (degraded = unknown), hub load5/ncpu ordering, `$HOME/work/<repo>` clone convention (plus a matching remote `git worktree` for linked-worktree jobs) with `cwd_map` kept as explicit override, documented wake rules through a `Waker` interface, decision recorded as `job.placement` |
-| `via=hub` spawn | Refused while the hub still invokes wrk; requires a runtug-capable upstream adapter |
+| `via=hub` spawn | Refused until the hub gains a runtug-capable upstream adapter |
 | Harness launch and proof | Implemented for the seven core harnesses; extra catalog aliases fail closed if unavailable |
 | cmd long brief submission | Fixed: explicit submit, status verification, one key retry |
 | Mock lane | Exclusive Claude/Codex stdio descriptors; unsupported/remote seats refused |
@@ -200,8 +200,9 @@ package keeps to these rules; the tests named here enforce them:
 | usage | Not carried over; no standalone disk alert |
 | rounds / o3 / joined / takeovers / grants / landing-strict | Deliberately excluded; mergewake owns review/landing |
 
-1. Keep wrk and its existing policy pins unchanged. Validate runtug configuration
-   and `spawn --dry-run` beside it. Do not replace a pinned wrk binary.
+1. Validate runtug configuration and `spawn --dry-run` beside the pinned
+   spawner on each host. Do not replace the pinned binary before the hub
+   transport has migrated; hub-launched jobs still depend on it.
 2. Rebaseline trust receipts through the merge/release policy before changing
    skills or wrappers. The repository's mergewake policy is shadow only and
    names the exact CI checks; it authorizes no automatic merge or rollout.
@@ -213,9 +214,8 @@ package keeps to these rules; the tests named here enforce them:
    binary name in the core spawn/done/reap paths. Keep review/round callers on
    mergewake. No rollout is performed by this build task.
 5. Expand only after comparing receipts, completion relay, quota release and
-   cleanup. Retain wrk for legacy hub transport until that boundary is
-   migrated. Roll back by restoring callers
-   to wrk; arbiter remains the shared ledger throughout.
+   cleanup. Retain the previous spawner for legacy hub transport until that
+   boundary is migrated; arbiter remains the shared ledger throughout.
 
 Inventory risks R1/R3/R4/R6/R9/R10/R11 remain external-service boundaries;
 runtug neither removes their routes, wrappers, provider pools nor attachment

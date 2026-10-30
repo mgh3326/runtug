@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"regexp"
 	"slices"
@@ -46,7 +47,7 @@ type CatalogRow struct {
 	RetiredAt *string  `json:"retired_at"`
 }
 
-// PoolView is one quota pool's status from the quota CLI's scopefuel.v1
+// PoolView is one quota pool's status from the quota CLI's status
 // status document. Waste carries the subscription use-it-or-lose-it flag when
 // the adapter reports verdicts; Blocking is the constraining used percentage
 // (verdict.blocking_pct, else the highest account-scope bucket reading).
@@ -62,8 +63,8 @@ type PoolView struct {
 	Projected *float64
 }
 
-// QuotaGate is deliberately independent of the scopefuel executable name.
-// pacelever can implement this interface or the same CLI/JSON contract.
+// QuotaGate is deliberately independent of the executable name; pacelever
+// can implement this interface or the same CLI/JSON contract.
 type QuotaGate interface {
 	Launch(context.Context, QuotaRequest) (Launch, error)
 	Gate(context.Context, QuotaRequest) (string, error)
@@ -223,7 +224,7 @@ func (a *App) localAccountKeys(ctx context.Context, pool string) []string {
 func (a *App) measureTarget(ctx context.Context, host, pool string) error {
 	h, ok := a.Config.Hosts[host]
 	if !ok || !validID(pool) || str(h, "via") == "hub" {
-		return fail(exitConfig, "target %s cannot be measured", host)
+		return fail(exitConfig, "target %s pool %s cannot be measured", host, pool)
 	}
 	target := firstNonempty(str(h, "ssh"), host)
 	if strings.HasPrefix(target, "-") || strings.ContainsAny(target, "\r\n") {
@@ -237,9 +238,9 @@ func (a *App) measureTarget(ctx context.Context, host, pool string) error {
 	defer cancel()
 	r := a.Runner.Run(ctx, Command{Name: "ssh", Args: []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "pacelever refresh " + shellQuote(pool)}})
 	if ctx.Err() != nil {
-		return fail(exitTimeout, "measurement timed out")
+		return fail(exitTimeout, "measurement of pool %s on host %s timed out", pool, host)
 	}
-	return check(r, "target measurement")
+	return check(r, fmt.Sprintf("measurement of pool %s on host %s", pool, host))
 }
 
 func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
@@ -393,7 +394,7 @@ func parseCatalogText(out string) ([]CatalogRow, error) {
 	return rows, nil
 }
 
-// Pools reads the quota CLI's scopefuel.v1 status document and reduces it to
+// Pools reads the quota CLI's status document and reduces it to
 // the per-pool signals the selection order needs. An absent verdict means the
 // adapter does not report waste flags or a blocking percentage; the selector
 // degrades those inputs rather than inventing them.

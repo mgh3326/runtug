@@ -930,7 +930,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	}
 	if str(h, "via") == "hub" {
 		if forced {
-			return candResult{stop: fail(exitConfig, "hub spawn transport still targets wrk; use an SSH target running runtug")}
+			return candResult{stop: fail(exitConfig, "hub spawn transport is unsupported; use an SSH target running runtug")}
 		}
 		return candResult{rc: exitConfig, note: "via_hub_unsupported"}
 	}
