@@ -860,3 +860,10 @@ func TestParseSpawnExcludeHost(t *testing.T) {
 		t.Fatalf("%+v %v", s, e)
 	}
 }
+
+func TestParseSpawnBuilderFamilyFlags(t *testing.T) {
+	s, e := parseSpawn([]string{"--builder-family", "anthropic", "--builder-job", "wk-7", "--task", "12", "--role", "reviewer"})
+	if e != nil || s.BuilderFamily != "anthropic" || s.BuilderJob != "wk-7" || s.Task != "12" {
+		t.Fatalf("%+v %v", s, e)
+	}
+}
