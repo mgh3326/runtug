@@ -66,7 +66,7 @@ prints a one-line summary and exits: 0 done/ready/joined, 83 escalate,
 84 lost/revoked, 85 timeout. The watcher reads durable job events and the
 lane inbox with bounded backoff — a plain blocking CLI, no resident process.
 `--wait-timeout` requires `--wait`; without it the bound falls back to
-`WRK_COMPLETION_TIMEOUT_S`, then one hour. `--wait` refuses `--dry-run`.
+`RUNTUG_COMPLETION_TIMEOUT_S`, then one hour. `--wait` refuses `--dry-run`.
 
 ```sh
 runtug done task42-worker --report ~/work/herdr-inbox/jobs/task42-worker/report.md
@@ -97,7 +97,7 @@ curl -fsSLo /tmp/runtug-install.sh https://raw.githubusercontent.com/mgh3326/run
 sh /tmp/runtug-install.sh --tag v0.1.0 --bin-dir ~/.local/bin
 ```
 
-Installation is explicit. The project never replaces `wrk` or updates a service
+Installation is explicit. The project never replaces another tool or updates a service
 automatically. For source builds, Go 1.27 is required:
 
 ```sh
@@ -105,19 +105,20 @@ CGO_ENABLED=0 go build -trimpath -o dist/runtug ./cmd/runtug
 ```
 
 Dependencies are installed separately: herdr, handoffkeep, arbiter, panewire and
-`scopefuel` (or a compatible `pacelever` adapter). No database server is needed
+`pacelever` (or a compatible quota CLI). No database server is needed
 by runtug. Artifact upload confirmation additionally uses the operator's Drive
 client and `fpbulk`; SSH transfers use rsync.
 
-Existing `~/.config/wrk/hosts.toml` is read in place. See
+The hosts config lives at `~/.config/fleet/hosts.toml`; a config left only at the
+retired `~/.config/wrk/hosts.toml` still loads for one release with a warning. See
 [every configuration key](docs/config.md), the [design and parity table](DESIGN.md),
 and the [versioned safety preamble](internal/runtug/brief-policy.json).
 
-Start migration in shadow: inspect `spawn --dry-run`, compare profiles and hosts,
-then use distinct job IDs for isolated runtug runs beside wrk. Never submit the
+Inspect `spawn --dry-run`, compare profiles and hosts,
+then use distinct job IDs for isolated runtug runs. Never submit the
 same live task twice. The repository's mergewake policy has `enabled: false`.
 
 The v0.1 transport supports local and SSH runtug hosts. Legacy `via="hub"`
-spawn endpoints still invoke wrk and are refused until the hub supports runtug.
+spawn endpoints are refused until the hub supports runtug.
 Old rollback aliases require matching catalog rows; there is no embedded model
 fallback.

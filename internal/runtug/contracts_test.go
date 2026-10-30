@@ -258,7 +258,7 @@ func TestR14MockIsolationRequiresExclusiveDescriptor(t *testing.T) {
 	dir := t.TempDir()
 	config := filepath.Join(dir, "mcp.json")
 	t.Setenv("MOCK_MCP_PROFILE", "reviewed")
-	t.Setenv("WRK_MOCK_MCP_CONFIG", config)
+	t.Setenv("RUNTUG_MOCK_MCP_CONFIG", config)
 	for _, body := range []string{`{"mcpServers":{"x":{"url":"https://example.invalid"}}}`, `{"mcpServers":{"x":{"command":"relative"}}}`, `{"mcpServers":{}}`} {
 		if e := os.WriteFile(config, []byte(body), 0600); e != nil {
 			t.Fatal(e)
@@ -308,5 +308,3 @@ func TestLockOwnerRule(t *testing.T) {
 		}
 	}
 }
-
-

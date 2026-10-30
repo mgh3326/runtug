@@ -132,7 +132,7 @@ func TestWaitTimeoutDistinctCode(t *testing.T) {
 func TestWaitTimeoutEnvFallback(t *testing.T) {
 	a, s := waitApp(t)
 	s.WaitTimeout = ""
-	t.Setenv("WRK_COMPLETION_TIMEOUT_S", "30")
+	t.Setenv("RUNTUG_COMPLETION_TIMEOUT_S", "30")
 	if code(a.waitJob(context.Background(), s)) != 85 {
 		t.Fatal("env timeout must exit 85")
 	}
