@@ -28,6 +28,7 @@ func (a *App) hygiene(ctx context.Context, kind string, args []string) error {
 	f.BoolVar(builders, "include-captains", false, "")
 	worktrees := f.Bool("worktrees", false, "")
 	stale := f.String("stale-age", "24h", "")
+	_ = f.String("heavy-age", "24h", "")
 	_ = f.String("policy", "", "")
 	if e := f.Parse(args); e != nil {
 		return fail(exitUsage, "%v", e)
