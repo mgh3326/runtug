@@ -43,22 +43,27 @@ func expand(p string) string {
 // XDG_CONFIG_HOME|~/.config/fleet/hosts.toml. For one release the retired
 // wrk env var and path still load, each with a one-line migration warning.
 func configPath(errw io.Writer) string {
-	if v := os.Getenv("FLEET_HOSTS_CONFIG"); v != "" {
-		return v
-	}
-	if v := os.Getenv("WRK_HOSTS_CONFIG"); v != "" {
-		fmt.Fprintf(errw, "runtug: warning: WRK_HOSTS_CONFIG is retired; move the hosts config to ~/.config/fleet/hosts.toml or set FLEET_HOSTS_CONFIG\n")
-		return v
-	}
 	p := os.Getenv("XDG_CONFIG_HOME")
 	if p == "" {
 		p = expand("~/.config")
 	}
 	next := filepath.Join(p, "fleet", "hosts.toml")
+	if v := os.Getenv("FLEET_HOSTS_CONFIG"); v != "" {
+		return v
+	}
+	if v := os.Getenv("WRK_HOSTS_CONFIG"); v != "" {
+		fmt.Fprintf(errw, "runtug: warning: WRK_HOSTS_CONFIG is retired; move the hosts config to %s or set FLEET_HOSTS_CONFIG, then unset WRK_HOSTS_CONFIG\n", next)
+		return v
+	}
 	old := filepath.Join(p, "wrk", "hosts.toml")
 	if _, e := os.Stat(next); os.IsNotExist(e) {
 		if _, e = os.Stat(old); e == nil {
 			fmt.Fprintf(errw, "runtug: warning: hosts config still at %s; move it to %s\n", old, next)
+			return old
+		} else if !os.IsNotExist(e) {
+			// An unreadable retired path (e.g. EACCES) must not silently
+			// fall through to an empty fleet config: returning it lets
+			// LoadConfig surface the read error.
 			return old
 		}
 	}
