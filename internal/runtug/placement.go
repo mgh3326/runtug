@@ -116,6 +116,24 @@ func parseTags(raw string) ([]string, error) {
 	return out, nil
 }
 
+// parseHosts reads the comma-separated --exclude-host list.
+func parseHosts(raw string) ([]string, error) {
+	var out []string
+	for _, h := range strings.Split(raw, ",") {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if !validID(h) {
+			return nil, fail(exitUsage, "invalid excluded host %q", h)
+		}
+		if !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
 func exitCode(e error) int {
 	var x *ExitError
 	if errors.As(e, &x) {
@@ -351,6 +369,10 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 	if e != nil {
 		return nil, e
 	}
+	excluded, e := parseHosts(s.ExcludeHosts)
+	if e != nil {
+		return nil, e
+	}
 	threshold := a.loadThreshold()
 	hub, degraded := a.hostViews(ctx, s.CWD)
 	var presence []PresenceRecord
@@ -465,6 +487,9 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 	}
 	for i := range enum {
 		c := &enum[i]
+		if c.excluded == "" && slices.Contains(excluded, c.name) {
+			c.excluded = "excluded_host"
+		}
 		for _, t := range required {
 			if !slices.Contains(c.tags, t) {
 				c.missing = append(c.missing, t)

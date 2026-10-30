@@ -151,6 +151,13 @@ waits for the node and places the job. Explicit `--host NAME` stays a forced
 override; an unreachable wakeable target is woken once. Every decision is
 recorded as a `job.placement` event in the job record.
 
+`--exclude-host a,b` removes the named hosts from `--host auto` placement: an
+excluded host — the local machine included, by its machine id — is never
+ordered, gated or woken, and its candidate records `excluded_host`. When no
+candidate remains the spawn fails with the usual placement refusal. An explicit
+`--host NAME` (or `--host local`) that names an excluded host is refused with
+exit 2. The list is initiator-local and is not sent to a delegated host.
+
 Before trying a remote candidate (including an explicit `--host NAME`), runtug
 resolves that host's most recent fresh presence for the launch pool, then asks
 `pacelever gate --account-key POOL:FINGERPRINT --json` to judge its shared
