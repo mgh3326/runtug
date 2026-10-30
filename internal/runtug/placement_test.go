@@ -820,3 +820,43 @@ func TestQuotaBinaryDefaultsToPacelever(t *testing.T) {
 		t.Fatalf("RUNTUG_QUOTA_BIN must override: %+v %v", a.Quota, e)
 	}
 }
+
+func TestPlacementExcludedHostsAreNeverCandidates(t *testing.T) {
+	a := placementApp(t, &fakePlacementSource{})
+	a.Config.Local = map[string]any{"machine_id": "home"}
+	a.Config.Hosts = map[string]map[string]any{"desk-1": {}, "desk-2": {}, "sleeper": {"wake": "panewire"}}
+	a.Config.HostOrder = []string{"desk-1", "desk-2", "sleeper"}
+	p, e := a.plan(context.Background(), Spawn{ExcludeHosts: "home, desk-1,sleeper"}, "", 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got := strings.Join(orderNames(p), ","); got != "desk-2" || len(p.sleepers) != 0 {
+		t.Fatalf("excluded hosts, local included, must not be ordered or woken: %v sleepers=%d", got, len(p.sleepers))
+	}
+	for _, c := range p.candidates {
+		if c.name != "desk-2" && c.outcome != "excluded_host" {
+			t.Fatalf("the exclusion must be recorded on the candidate: %+v", c)
+		}
+	}
+	if _, e = a.plan(context.Background(), Spawn{ExcludeHosts: "bad host"}, "", 0); code(e) != 2 {
+		t.Fatalf("an invalid host name must refuse 2: %v", e)
+	}
+}
+
+func TestSpawnForcedHostExcludedRefuses(t *testing.T) {
+	for _, host := range []string{"local", "home"} {
+		a, s, _, _ := cmdFixture(t)
+		a.Config.Local["machine_id"] = "home"
+		s.Host, s.ExcludeHosts = host, "home"
+		if e := a.Spawn(context.Background(), s); code(e) != 2 || !strings.Contains(e.Error(), "excluded") {
+			t.Fatalf("--host %s on an excluded host must refuse 2: %v", host, e)
+		}
+	}
+}
+
+func TestParseSpawnExcludeHost(t *testing.T) {
+	s, e := parseSpawn([]string{"--exclude-host", "desk-1,desk-2"})
+	if e != nil || s.ExcludeHosts != "desk-1,desk-2" {
+		t.Fatalf("%+v %v", s, e)
+	}
+}

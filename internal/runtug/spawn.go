@@ -17,13 +17,14 @@ type Spawn struct {
 	OverrideReason, WaitTimeout, Urgency                                                                                                                                                              string
 	Keep, DupOK, Bypass, DryRun, Wait, AllowEscalation                                                                                                                                                bool
 	Inherited, ParentFamily                                                                                                                                                                           string
-	// Tags lists the capability tags a host must carry. Delegated marks a
-	// spawn delivered by another initiator. Sel carries the selection
-	// decision record; all three are initiator-local and never cross the
-	// delegation wire.
-	Tags      string         `json:"-"`
-	Delegated bool           `json:"-"`
-	Sel       map[string]any `json:"-"`
+	// Tags lists the capability tags a host must carry and ExcludeHosts the
+	// hosts placement must not pick. Delegated marks a spawn delivered by
+	// another initiator. Sel carries the selection decision record; all four
+	// are initiator-local and never cross the delegation wire.
+	Tags         string         `json:"-"`
+	ExcludeHosts string         `json:"-"`
+	Delegated    bool           `json:"-"`
+	Sel          map[string]any `json:"-"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -32,7 +33,7 @@ func parseSpawn(args []string) (Spawn, error) {
 	for _, p := range []struct {
 		k string
 		v *string
-	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}, {"urgency", &s.Urgency}} {
+	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"exclude-host", &s.ExcludeHosts}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}, {"urgency", &s.Urgency}} {
 		f.StringVar(p.v, p.k, *p.v, "")
 	}
 	f.BoolVar(&s.Keep, "keep", false, "")
@@ -184,6 +185,18 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	if _, e := parseTags(s.Tags); e != nil {
 		return e
+	}
+	excluded, e := parseHosts(s.ExcludeHosts)
+	if e != nil {
+		return e
+	}
+	if forced := s.Host; forced != "auto" {
+		if forced == "local" {
+			forced = a.machine()
+		}
+		if slices.Contains(excluded, forced) {
+			return fail(exitUsage, "--host %s is excluded by --exclude-host", s.Host)
+		}
 	}
 	brief, e := os.ReadFile(expand(s.Prompt))
 	if e != nil {
