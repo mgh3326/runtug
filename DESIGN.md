@@ -186,7 +186,7 @@ package keeps to these rules; the tests named here enforce them:
 | Core spawn flags, roles, owner, task/parent binding | Implemented; new `--dry-run` preview |
 | Profile catalog, grade/effort, E6, seat policy | Canon resolution plus versioned policy data; no model fallbacks |
 | Local quota / hub quota / role exit 77 | Implemented; fail closed on missing evidence |
-| Local and SSH placement; pressure and wake request | Implemented as a local policy engine: capability `--tags`, presence/quota reads (degraded = unknown), hub load5/ncpu ordering, `$HOME/work/<repo>` clone convention with `cwd_map` kept as explicit override, documented wake rules through a `Waker` interface, decision recorded as `job.placement` |
+| Local and SSH placement; pressure and wake request | Implemented as a local policy engine: capability `--tags`, presence/quota reads (degraded = unknown), hub load5/ncpu ordering, `$HOME/work/<repo>` clone convention (plus a matching remote `git worktree` for linked-worktree jobs) with `cwd_map` kept as explicit override, documented wake rules through a `Waker` interface, decision recorded as `job.placement` |
 | `via=hub` spawn | Refused while the hub still invokes wrk; requires a runtug-capable upstream adapter |
 | Harness launch and proof | Implemented for the seven core harnesses; extra catalog aliases fail closed if unavailable |
 | cmd long brief submission | Fixed: explicit submit, status verification, one key retry |
