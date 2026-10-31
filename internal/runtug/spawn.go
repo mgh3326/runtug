@@ -83,6 +83,16 @@ type Task struct {
 	Priority  any            `json:"priority"`
 }
 
+// unlinkedReviewer is a reviewer that names the author's family but no
+// builder job: it reviews a task it neither inherits nor claims, so several
+// passes can run on the same task.
+// unlinkedReviewer reads the resolved fields that cross the ssh envelope
+// (ParentFamily, Inherited, ParentJob); BuilderFamily/BuilderJob do not, so a
+// test of those would read false on the receiving host.
+func (s Spawn) unlinkedReviewer() bool {
+	return s.Role == "reviewer" && s.ParentFamily != "" && s.Inherited == "" && s.ParentJob == ""
+}
+
 func (a *App) taskPrecheck(ctx context.Context, s Spawn) (Task, bool, error) {
 	r := a.call(ctx, "handoffkeep", "tasks", "show", s.Task)
 	var t Task
@@ -101,7 +111,7 @@ func (a *App) taskPrecheck(ctx context.Context, s Spawn) (Task, bool, error) {
 	if t.ID != nil && scalar(t.ID) != s.Task {
 		return t, false, fail(exitConfig, "task response ID mismatch")
 	}
-	if s.Inherited != "" {
+	if s.Inherited != "" || s.unlinkedReviewer() {
 		return t, false, nil
 	}
 	if slices.Contains([]string{"merged", "dropped", "hold", "needs_decision"}, t.State) {
@@ -117,7 +127,10 @@ func (a *App) taskPrecheck(ctx context.Context, s Spawn) (Task, bool, error) {
 }
 func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 	status := "inherited"
-	if s.Inherited == "" {
+	if s.unlinkedReviewer() {
+		// No claim: the task stays bound to whatever it was bound to.
+		status = "unlinked"
+	} else if s.Inherited == "" {
 		r := a.call(ctx, "handoffkeep", "tasks", "claim", s.Task, "--by", s.Label, "--job-id", s.Job)
 		var t Task
 		if r.Code != 0 {
@@ -169,10 +182,13 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		}
 	}
 	if s.BuilderFamily != "" || s.BuilderJob != "" {
-		if s.BuilderFamily == "" || !validID(s.BuilderJob) || s.ParentJob != "" || s.Task == "" || (s.Role != "reviewer" && s.Role != "tester") {
-			return fail(exitUsage, "--builder-family and --builder-job go together, with --task and --role reviewer|tester, not --parent-job")
+		// A reviewer may name only the author's family: the author's job is
+		// not bound to the task (not launched through runtug), so there is
+		// nothing to inherit, and the pass runs as a top-level job.
+		if s.BuilderFamily == "" || (s.BuilderJob == "" && s.Role != "reviewer") || (s.BuilderJob != "" && !validID(s.BuilderJob)) || s.ParentJob != "" || s.Task == "" || (s.Role != "reviewer" && s.Role != "tester") {
+			return fail(exitUsage, "--builder-family and --builder-job go together (--builder-family alone only with --role reviewer), with --task and --role reviewer|tester, not --parent-job")
 		}
-		if s.Report == "" && s.ReportRelative == "" {
+		if s.BuilderJob != "" && s.Report == "" && s.ReportRelative == "" {
 			return fail(exitUsage, "--builder-job requires --report")
 		}
 		s.ParentFamily = s.BuilderFamily

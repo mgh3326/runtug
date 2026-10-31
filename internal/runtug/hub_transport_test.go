@@ -213,11 +213,11 @@ func TestHubSpawnArgs(t *testing.T) {
 }
 
 func TestHubArgsParentJobReplacesTask(t *testing.T) {
-	args, e := hubArgs(Spawn{Profile: "sonnet", Job: "j", Task: "42", ParentJob: "job-b", Report: "/r/report.md"})
+	args, e := hubArgs("/r", Spawn{Profile: "sonnet", Job: "j", Task: "42", ParentJob: "job-b", Report: "/r/report.md"})
 	if e != nil {
 		t.Fatal(e)
 	}
-	if slices.Contains(args, "--task") || !reflect.DeepEqual(args[len(args)-4:], []string{"--parent-job", "job-b", "--report", "/r/report.md"}) {
+	if slices.Contains(args, "--task") || !reflect.DeepEqual(args[len(args)-4:], []string{"--parent-job", "job-b", "--report-relative", "report.md"}) {
 		t.Fatalf("%v", args)
 	}
 }
@@ -227,7 +227,7 @@ func TestHubArgsRefuseWhatTheAllowlistCannotCarry(t *testing.T) {
 		"keep": {Keep: true}, "dup": {DupOK: true}, "bypass": {Bypass: true}, "escalation": {AllowEscalation: true},
 		"operator request": {OperatorRequest: "x"}, "requested by": {RequestedBy: "x"}, "purpose": {Purpose: "x"}, "lane defer": {LaneDefer: "h"},
 	} {
-		if _, e := hubArgs(s); e == nil {
+		if _, e := hubArgs("/r", s); e == nil {
 			t.Errorf("%s was dropped silently", name)
 		}
 	}
@@ -570,16 +570,51 @@ func TestHubRefusesWhatItCannotMap(t *testing.T) {
 func TestHubReportMustStayUnderJobsRoot(t *testing.T) {
 	a, s, _, hub, _ := hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
 	s.Report = "/elsewhere/report.md"
-	if _, _, e := a.placeAuto(context.Background(), s, "brief"); e == nil || len(hub.spawns) != 0 {
-		t.Fatalf("%v", e)
+	if _, _, e := a.placeAuto(context.Background(), s, "brief"); e == nil || exitCode(e) != exitUsage || len(hub.spawns) != 0 {
+		t.Fatalf("report outside the jobs root: %v", e)
 	}
 	a, s, _, hub, _ = hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
 	s.Report = filepath.Join(a.Jobs, "job-a", "report.md")
 	if _, _, e := a.placeAuto(context.Background(), s, "brief"); e != nil {
 		t.Fatal(e)
 	}
-	if i := indexArg(hub.spawns[0].Args, "--report"); i < 0 || hub.spawns[0].Args[i+1] != s.Report {
-		t.Fatalf("%v", hub.spawns[0].Args)
+	args := hub.spawns[0].Args
+	if i := indexArg(args, "--report-relative"); i < 0 || args[i+1] != "job-a/report.md" || indexArg(args, "--report") >= 0 {
+		t.Fatalf("a report under the jobs root must cross as --report-relative only: %v", args)
+	}
+}
+
+func TestHubCallerReportRelativeReachesTheHub(t *testing.T) {
+	a, s, _, hub, _ := hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
+	s.ReportRelative = "reviews/x/report.md"
+	if _, _, e := a.placeAuto(context.Background(), s, "brief"); e != nil {
+		t.Fatal(e)
+	}
+	args := hub.spawns[0].Args
+	if i := indexArg(args, "--report-relative"); i < 0 || args[i+1] != "reviews/x/report.md" || indexArg(args, "--report") >= 0 {
+		t.Fatalf("%v", args)
+	}
+	for _, bad := range []string{"/abs/report.md", "../x", "a/../../b"} {
+		a, s, _, hub, _ = hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
+		s.ReportRelative = bad
+		if _, _, e := a.placeAuto(context.Background(), s, "brief"); e == nil || exitCode(e) != exitUsage || len(hub.spawns) != 0 {
+			t.Errorf("--report-relative %q: %v", bad, e)
+		}
+	}
+}
+
+func TestHubWithoutReportRelativeNamesTheMissingCapability(t *testing.T) {
+	a, s, _, hub, _ := hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
+	s.Report = filepath.Join(a.Jobs, "job-a", "report.md")
+	hub.node = func(HubSpawnRequest) (HubSpawnReply, error) {
+		return HubSpawnReply{}, &HubError{Kind: hubRejected, Status: http.StatusBadRequest, Code: "invalid_request"}
+	}
+	_, _, e := a.placeAuto(context.Background(), s, "brief")
+	if e == nil || !strings.Contains(e.Error(), "--report-relative") || !strings.Contains(e.Error(), "capability") {
+		t.Fatalf("error must name the missing capability: %v", e)
+	}
+	if len(hub.spawns) != 1 {
+		t.Fatalf("no retry with an absolute --report: %d hub requests", len(hub.spawns))
 	}
 }
 
@@ -764,5 +799,39 @@ func TestHubConfigKeys(t *testing.T) {
 	}
 	if _, e := LoadConfig(p); e != nil {
 		t.Fatal(e)
+	}
+}
+
+// A 400 with another hub code keeps its own cause instead of blaming the
+// --report-relative capability.
+func TestHubOtherBadRequestIsNotBlamedOnReportRelative(t *testing.T) {
+	a, s, _, hub, _ := hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
+	s.Report = filepath.Join(a.Jobs, "job-a", "report.md")
+	hub.node = func(HubSpawnRequest) (HubSpawnReply, error) {
+		return HubSpawnReply{}, &HubError{Kind: hubRejected, Status: http.StatusBadRequest, Code: "machine_unknown"}
+	}
+	_, _, e := a.placeAuto(context.Background(), s, "brief")
+	if e != nil && strings.Contains(e.Error(), "--report-relative capability") {
+		t.Fatalf("a non-invalid_request 400 was blamed on --report-relative: %v", e)
+	}
+}
+
+// The relative report path follows panewire's validHubSpawnDocKey: ':' and
+// '@' and dot segments are refused before the hub, "report..md" is a name.
+func TestHubReportRelativeMatchesPanewireRule(t *testing.T) {
+	for rel, ok := range map[string]bool{
+		"job-a/report.md":   true,
+		"job-a/report..md":  true,
+		"job-a/rep:ort.md":  false,
+		"job-a/r@port.md":   false,
+		"job-a/../x.md":     false,
+		"job-a//report.md":  false,
+		"/job-a/report.md":  false,
+		"job-a/report.md/":  false,
+		"./job-a/report.md": false,
+	} {
+		if got := hubReportRelativeOK(rel); got != ok {
+			t.Errorf("%q: got %v want %v", rel, got, ok)
+		}
 	}
 }
