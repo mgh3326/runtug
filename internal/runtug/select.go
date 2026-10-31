@@ -448,11 +448,11 @@ type selPresence struct {
 	presTTL   time.Duration
 	now       time.Time
 	degraded  []string
-	refreshed map[string]string
+	refreshed map[string]accountRefresh
 }
 
 func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *selPresence {
-	sp := &selPresence{a: a, now: a.Now(), presTTL: a.placementTTL("presence_ttl_s", 86400), accounts: map[string]SharedAccount{}, refreshed: map[string]string{}}
+	sp := &selPresence{a: a, now: a.Now(), presTTL: a.placementTTL("presence_ttl_s", 86400), accounts: map[string]SharedAccount{}, refreshed: map[string]accountRefresh{}}
 	sp.hub, sp.degraded = a.hostViews(ctx, s.CWD)
 	if a.Source == nil {
 		sp.presErr = true
@@ -631,7 +631,9 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			p.cands = append(p.cands, &x)
 			acc := pres.account(ctx, binding.key, row.Pool, binding.hosts, false)
 			if why := sharedReason(binding.key, acc); why != "" || acc.Quota == nil {
-				x.reason, x.code, x.outcome = "quota_unknown", outcomeQuotaUnknown, "dropped:quota_unknown"
+				x.code = pres.accountFailureCode(binding.key)
+				x.reason = strings.ToLower(x.code)
+				x.outcome = "dropped:" + x.reason
 				x.judgments = []quotaJudgment{pres.unknownJudgment(binding, why)}
 				continue
 			}
@@ -641,6 +643,9 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 				if sharedReason(binding.key, acc) == "" && acc.Quota != nil {
 					x.reason, x.code, x.outcome = "", "", ""
 					p.classify(&x, *acc.Quota)
+				} else {
+					x.code = pres.accountFailureCode(binding.key)
+					x.reason, x.outcome = strings.ToLower(x.code), "dropped:"+strings.ToLower(x.code)
 				}
 			}
 			if x.reason == "" {
@@ -656,8 +661,8 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			continue
 		}
 		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose, AccountKey: c.accountKey}
-		j, err := pres.admitAccount(ctx, qr, c, p)
-		c.judgments = append(c.judgments, j)
+		judgments, err := pres.admitAccount(ctx, qr, c, p)
+		c.judgments = append(c.judgments, judgments...)
 		if err != nil {
 			if c.reason == "" {
 				c.reason, c.code = fmt.Sprintf("gate_refused:%d", exitCode(err)), gateOutcome(err)
@@ -668,7 +673,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			}
 			continue
 		}
-		c.host, c.outcome, c.code = j.Host, "chosen", outcomeAdmitted
+		c.host, c.outcome, c.code = judgments[len(judgments)-1].Host, "chosen", outcomeAdmitted
 		p.chosen, p.outcome = c, outcomeAdmitted
 	}
 	if p.chosen == nil {

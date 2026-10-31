@@ -113,7 +113,11 @@ func TestSelectMeasurementFailureRefuses(t *testing.T) {
 				t.Fatalf("gate ran without fresh evidence: %+v", q.Calls)
 			}
 			c := sel.cands[0]
-			if len(c.judgments) != 1 || c.judgments[0].Outcome != "unknown" || c.judgments[0].ExitCode != exitEvictionUnconfirmed {
+			wantStatus, wantCode := exitEvictionUnconfirmed, outcomeQuotaUnknown
+			if name != "unpublished" {
+				wantStatus, wantCode = res.Code, outcomeNoEligibleHost
+			}
+			if len(c.judgments) != 1 || c.judgments[0].Outcome != "unknown" || c.judgments[0].ExitCode != wantStatus || sel.outcome != wantCode {
 				t.Fatalf("judgments: %+v", c.judgments)
 			}
 			if name == "unpublished" && c.judgments[0].Reason != "measure_not_observed" && c.judgments[0].Reason != "measure_stale" {

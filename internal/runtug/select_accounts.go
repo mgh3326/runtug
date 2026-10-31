@@ -70,8 +70,17 @@ func (sp *selPresence) bindings(seat *Seat, pool string) []accountBinding {
 	return bindings
 }
 
-// account refreshes unknown evidence once per account for the entire round,
-// including all its profiles and hosts. It never refreshes a different login.
+// accountRefresh is one bounded refresh operation. A transport failure can
+// move it to another holder; a completed measurement ends the operation.
+type accountRefresh struct {
+	measured string
+	host     string
+	err      error
+}
+
+// account caches both the reading and the refresh cause per account, so a
+// second profile cannot repeat a measurement or disguise an infrastructure
+// failure as missing quota evidence.
 func (sp *selPresence) account(ctx context.Context, key, pool string, hosts []selHost, force bool) SharedAccount {
 	acc, read := sp.accounts[key]
 	if !read {
@@ -82,57 +91,93 @@ func (sp *selPresence) account(ctx context.Context, key, pool string, hosts []se
 		}
 		sp.accounts[key] = acc
 	}
-	_, refreshed := sp.refreshed[key]
-	if !refreshed && (force || sharedReason(key, acc) != "" || acc.Quota == nil) {
-		sp.refreshed[key] = "failed"
-		h := hosts[0]
-		for _, local := range sp.hosts {
-			if local.local && hostAccount(sp.presence, pool, local.presence, sp.now, sp.presTTL) == key {
-				h = local
-				break
-			}
+	if _, refreshed := sp.refreshed[key]; refreshed || !force && sharedReason(key, acc) == "" && acc.Quota != nil {
+		return acc
+	}
+	ordered := slices.Clone(hosts)
+	for _, local := range sp.hosts {
+		if local.local && hostAccount(sp.presence, pool, local.presence, sp.now, sp.presTTL) == key {
+			ordered = slices.DeleteFunc(ordered, func(h selHost) bool { return h.name == local.name })
+			ordered = append([]selHost{local}, ordered...)
+			break
 		}
-		var err error
+	}
+	refresh, cancel := context.WithTimeout(ctx, sp.a.placementTTL("measure_timeout_s", 60))
+	defer cancel()
+	result := accountRefresh{measured: "failed"}
+	for _, h := range ordered {
+		result.host = h.name
 		if h.local {
 			binary := "pacelever"
 			if q, ok := sp.a.Quota.(CLIQuota); ok {
 				binary = q.Binary
 			}
-			timeout := sp.a.placementTTL("measure_timeout_s", 60)
-			refresh, cancel := context.WithTimeout(ctx, timeout)
-			err = check(sp.a.Runner.Run(refresh, Command{Name: binary, Args: []string{"refresh", pool}}), "account measurement")
-			if refresh.Err() != nil {
-				err = refresh.Err()
-			}
-			cancel()
+			result.err = check(sp.a.Runner.Run(refresh, Command{Name: binary, Args: []string{"refresh", pool}}), "account measurement")
 		} else {
-			err = sp.a.measureTarget(ctx, h.name, pool)
+			result.err = sp.a.measureTarget(refresh, h.name, pool)
 		}
-		if err == nil {
-			sp.refreshed[key] = "ok"
-			acc, err = sp.a.Source.SharedAccount(ctx, key)
+		if refresh.Err() != nil {
+			result.err = fail(exitTimeout, "account measurement deadline expired")
+			break
+		}
+		if result.err == nil {
+			result.measured = "ok"
+			var err error
+			acc, err = sp.a.Source.SharedAccount(refresh, key)
+			if refresh.Err() != nil {
+				result.measured, result.err = "failed", fail(exitTimeout, "account measurement deadline expired during observation read")
+				acc = SharedAccount{Key: key, Degraded: true}
+				sp.refreshed[key], sp.accounts[key] = result, acc
+				return acc
+			}
 			if err != nil {
 				acc = SharedAccount{Key: key, Degraded: true}
 			}
-		} else {
-			acc = SharedAccount{Key: key, Degraded: true}
+			sp.refreshed[key], sp.accounts[key] = result, acc
+			return acc
 		}
-		sp.accounts[key] = acc
+		if !hostGateFailure(result.err) {
+			break
+		}
 	}
+	acc = SharedAccount{Key: key, Degraded: true}
+	sp.refreshed[key], sp.accounts[key] = result, acc
 	return acc
+}
+
+func (sp *selPresence) accountFailureCode(key string) string {
+	if err := sp.refreshed[key].err; err != nil {
+		return gateOutcome(err)
+	}
+	return outcomeQuotaUnknown
 }
 
 func (sp *selPresence) unknownJudgment(b accountBinding, why string) quotaJudgment {
 	if why == "" {
 		why = "no_account_reading"
 	}
-	if measured := sp.refreshed[b.key]; measured != "" {
+	host, status := b.hosts[0], exitEvictionUnconfirmed
+	r := sp.refreshed[b.key]
+	if r.measured != "" {
 		why = "measure_" + why
-		if measured == "failed" {
+		if r.measured == "failed" {
 			why = "measure_failed"
 		}
+		for _, h := range b.hosts {
+			if h.name == r.host {
+				host = h
+				break
+			}
+		}
+		if r.err != nil {
+			status = exitCode(r.err)
+		}
 	}
-	return quotaJudgment{Host: b.hosts[0].name, AccountKey: b.key, Source: "shared", Outcome: "unknown", ExitCode: exitEvictionUnconfirmed, Reason: why, Measured: sp.refreshed[b.key]}
+	source := "shared"
+	if host.local {
+		source = "local"
+	}
+	return quotaJudgment{Host: host.name, AccountKey: b.key, Source: source, Outcome: "unknown", ExitCode: status, Reason: why, Measured: r.measured}
 }
 
 func (p *selPlan) classify(c *selCand, v PoolView) {
@@ -167,39 +212,91 @@ func gateOutcome(err error) string {
 			return outcomeQuotaExhausted
 		}
 		return outcomeNoRoleCandidate
+	case exitEvictionUnconfirmed:
+		return outcomeQuotaUnknown
 	case 6:
 		return outcomeAuthUnavailable
 	case exitSeatRefused:
 		return outcomeNoRoleCandidate
-	case exitConfig:
-		return outcomePolicyUnavailable
+	case exitUnreachable, exitTimeout, exitPlacement, exitLocalDisabled:
+		return outcomeNoEligibleHost
 	default:
-		return outcomeQuotaUnknown
+		return outcomePolicyUnavailable
 	}
 }
 
-func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *selCand, p *selPlan) (quotaJudgment, error) {
-	h := c.hosts[0]
+func hostGateFailure(err error) bool {
+	code := gateOutcome(err)
+	return code == outcomeNoEligibleHost || code == outcomePolicyUnavailable
+}
+
+func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *selCand, p *selPlan) ([]quotaJudgment, error) {
+	ordered := slices.Clone(c.hosts)
+	// A holder that just completed the refresh is known reachable.
+	if host := sp.refreshed[c.accountKey].host; host != "" {
+		if i := slices.IndexFunc(ordered, func(h selHost) bool { return h.name == host }); i > 0 {
+			ordered[0], ordered[i] = ordered[i], ordered[0]
+		}
+	}
+	// An earlier rung may have refreshed this account after candidates were
+	// ranked. Reuse its current reading before admitting another rung.
 	acc := sp.accounts[c.accountKey]
-	j, err := sp.a.judgeHost(ctx, qr, c.row.Pool, h.name, false, c.accountKey, acc)
-	if err != nil && gateOutcome(err) == outcomeQuotaUnknown {
-		if _, refreshed := sp.refreshed[c.accountKey]; !refreshed {
-			acc = sp.account(ctx, c.accountKey, c.row.Pool, c.hosts, true)
-			if sharedReason(c.accountKey, acc) == "" && acc.Quota != nil {
-				p.classify(c, *acc.Quota)
-				if c.reason == "" {
-					j, err = sp.a.judgeHost(ctx, qr, c.row.Pool, h.name, false, c.accountKey, acc)
+	if why := sharedReason(c.accountKey, acc); why != "" || acc.Quota == nil {
+		c.code = sp.accountFailureCode(c.accountKey)
+		c.reason = strings.ToLower(c.code)
+		j := sp.unknownJudgment(accountBinding{key: c.accountKey, hosts: ordered}, why)
+		if cause := sp.refreshed[c.accountKey].err; cause != nil {
+			return []quotaJudgment{j}, cause
+		}
+		return []quotaJudgment{j}, fail(exitEvictionUnconfirmed, "account quota remains unknown after refresh")
+	}
+	p.classify(c, *acc.Quota)
+	if c.reason != "" {
+		j := quotaJudgment{Host: ordered[0].name, AccountKey: c.accountKey, Source: "shared", Outcome: "unknown", ExitCode: exitEvictionUnconfirmed, Reason: c.reason}
+		if ordered[0].local {
+			j.Source = "local"
+		}
+		if c.code == outcomeQuotaExhausted {
+			j.Outcome, j.ExitCode = "refused", 3
+		}
+		return []quotaJudgment{j}, fail(j.ExitCode, "%s: %s", c.code, c.reason)
+	}
+	var judgments []quotaJudgment
+	var last error
+	for _, h := range ordered {
+		acc := sp.accounts[c.accountKey]
+		j, err := sp.a.judgeHost(ctx, qr, c.row.Pool, h.name, h.local, c.accountKey, acc)
+		if err != nil && gateOutcome(err) == outcomeQuotaUnknown {
+			if _, refreshed := sp.refreshed[c.accountKey]; !refreshed {
+				acc = sp.account(ctx, c.accountKey, c.row.Pool, c.hosts, true)
+				if cause := sp.refreshed[c.accountKey].err; cause != nil {
+					j.Reason, j.Measured, j.ExitCode = "measure_failed", "failed", exitCode(cause)
+					return append(judgments, j), cause
+				}
+				if sharedReason(c.accountKey, acc) == "" && acc.Quota != nil {
+					p.classify(c, *acc.Quota)
+					if c.reason == "" {
+						j, err = sp.a.judgeHost(ctx, qr, c.row.Pool, h.name, h.local, c.accountKey, acc)
+					}
 				}
 			}
 		}
+		j.Measured = sp.refreshed[c.accountKey].measured
+		if err == nil && c.exhausted && !strings.HasPrefix(j.Basis, freeBasisPrefix) {
+			c.reason, c.code = "projected_exhaust", outcomeQuotaExhausted
+			j.Outcome, j.ExitCode = "refused", exitSeatRefused
+			err = fail(exitSeatRefused, "projected_exhaust: gate basis %q is not a free bucket", j.Basis)
+		}
+		judgments = append(judgments, j)
+		if err == nil {
+			return judgments, nil
+		}
+		last = err
+		if !hostGateFailure(err) {
+			return judgments, err
+		}
 	}
-	j.Measured = sp.refreshed[c.accountKey]
-	if err == nil && c.exhausted && !strings.HasPrefix(j.Basis, freeBasisPrefix) {
-		c.reason, c.code = "projected_exhaust", outcomeQuotaExhausted
-		j.Outcome, j.ExitCode = "refused", exitSeatRefused
-		err = fail(exitSeatRefused, "projected_exhaust: gate basis %q is not a free bucket", j.Basis)
-	}
-	return j, err
+	return judgments, last
 }
 
 func (a *App) selectionRefused(ctx context.Context, s Spawn, req selReq, p *selPlan) (*selPlan, error) {

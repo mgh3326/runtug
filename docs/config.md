@@ -566,9 +566,14 @@ quota. Provider-level status never exhausts an unrelated account.
 
 Each account's shared observation supplies its projection, waste risk, and
 quota ranking. Unknown observations receive one bounded refresh per account
-for the selection round. If the observation remains unknown, selection
+for the selection round. A transport or host-tool failure can move that
+refresh to another holder within the same deadline. A completed measurement
+ends the refresh operation. If the observation remains unknown, selection
 cannot call it exhausted. The exact profile's account-bound gate remains
-the final check, including model and free buckets.
+the final check, including model and free buckets. A host-scoped gate failure
+tries the next holder of that account. An account-scoped quota refusal ends
+that account attempt without retrying the same quota on another host. Local
+judgments retain `source=local` and the selected account key.
 
 After choosing an account, placement considers only hosts holding it. The
 executing host checks the current binding again before launch. An explicit
@@ -587,8 +592,8 @@ When no candidate is admitted, the codes are distinct:
 | `QUOTA_EXHAUSTED` | 86 or 87 | Every eligible account is measured exhausted. Exit 86 retains wait semantics; exit 87 retains escalation semantics. |
 | `QUOTA_UNKNOWN` | 89 | At least one eligible account remains unknown after a bounded refresh. |
 | `AUTH_UNAVAILABLE` | 88 | Eligible hosts have no usable current account binding. |
-| `NO_ELIGIBLE_HOST` | 81 | Host, tag, capability, connectivity, or exclusion constraints leave no eligible host. |
-| `POLICY_UNAVAILABLE` | 70 | Required policy or catalog evidence is unavailable. |
+| `NO_ELIGIBLE_HOST` | 81 | Host, tag, capability, connectivity, exclusion, or transport constraints leave no eligible host. |
+| `POLICY_UNAVAILABLE` | 70 | Required policy, catalog evidence, or gate-tool configuration is unavailable. |
 | `NO_ROLE_CANDIDATE` | 77 | No active profile passes the role and static admission constraints. |
 
 Unknown evidence, missing logins, and absent hosts never count as measured

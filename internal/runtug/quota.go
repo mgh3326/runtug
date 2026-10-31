@@ -261,7 +261,7 @@ func (a *App) measureTarget(ctx context.Context, host, pool string) error {
 }
 
 func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
-	j := quotaJudgment{Host: host, Source: "local", Outcome: "unknown", ExitCode: 4}
+	j := quotaJudgment{Host: host, AccountKey: r.AccountKey, Source: "local", Outcome: "unknown", ExitCode: 4}
 	if !local {
 		j.Source, j.AccountKey = "shared", key
 		j.Reason = sharedReason(key, acc)
