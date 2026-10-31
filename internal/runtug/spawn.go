@@ -74,7 +74,7 @@ func parseSpawn(args []string) (Spawn, error) {
 	if s.Role == "captain" {
 		s.Role = "builder"
 	}
-	if s.Grade != "" && (topRoutingRole(builtinRoleMap[s.Role]) || topRoutingRole(s.RoutingRole)) {
+	if flagPassed(f, "grade") && (topRoutingRole(builtinRoleMap[s.Role]) || topRoutingRole(s.RoutingRole)) {
 		return s, fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
 	}
 	return s, nil

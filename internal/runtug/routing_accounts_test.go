@@ -93,6 +93,23 @@ func TestLeadConsultRejectExplicitGrade(t *testing.T) {
 	}
 }
 
+func TestLeadConsultRejectEmptyGradeFlag(t *testing.T) {
+	for _, args := range [][]string{
+		{"spawn", "--role", "builder", "--grade="},
+		{"spawn", "--role", "counsel", "--grade="},
+		{"plan", "--role", "builder", "--t", "T1", "--grade="},
+		{"plan", "--role", "counsel", "--t", "T1", "--grade="},
+		{"resolve", "--role", "lead", "--grade="},
+		{"resolve", "--role", "consult", "--grade="},
+	} {
+		a, _, _, _ := accountLeadFixture(t)
+		err := a.Run(context.Background(), args)
+		if exitCode(err) != exitConfig || !strings.Contains(err.Error(), noLeadGradeRule) {
+			t.Fatalf("%v: an explicit empty grade must still refuse: %v", args, err)
+		}
+	}
+}
+
 func TestExplicitProfileCannotBypassLeadOrRetirement(t *testing.T) {
 	for _, retired := range []bool{false, true} {
 		a, s, fr, _ := cmdFixture(t)

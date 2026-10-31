@@ -179,6 +179,16 @@ func flags(name string) *flag.FlagSet {
 	return f
 }
 
+func flagPassed(f *flag.FlagSet, name string) bool {
+	passed := false
+	f.Visit(func(p *flag.Flag) {
+		if p.Name == name {
+			passed = true
+		}
+	})
+	return passed
+}
+
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 func validID(s string) bool { return idPattern.MatchString(s) && s != "." && s != ".." }

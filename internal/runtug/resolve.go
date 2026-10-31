@@ -62,7 +62,7 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		return fail(exitUsage, "resolve needs --role %s", strings.Join(routingRoles, "|"))
 	}
 	grade = strings.ToUpper(grade)
-	if topRoutingRole(role) && grade != "" {
+	if topRoutingRole(role) && flagPassed(f, "grade") {
 		return fail(exitConfig, "%s: --grade is not accepted for %s", noLeadGradeRule, role)
 	}
 	if grade == "" && !topRoutingRole(role) {

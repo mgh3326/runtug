@@ -55,7 +55,7 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 	}
 	o.grade = strings.ToUpper(o.grade)
 	top := topRoutingRole(builtinRoleMap[o.role]) || topRoutingRole(o.routingRole)
-	if top && o.grade != "" {
+	if top && flagPassed(f, "grade") {
 		return fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
 	}
 	if _, ok := gradeOrder[o.grade]; !ok && !top {
