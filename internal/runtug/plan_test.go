@@ -125,3 +125,34 @@ func TestPlanJSONAndExitCodes(t *testing.T) {
 		}
 	}
 }
+
+// A disabled local host is excluded by the shared plan() before planHosts
+// walks the ordered candidates, so even a local launch and gate that would
+// admit never yield a local placement: the remote host is chosen, and the
+// local row records the exclusion.
+func TestPlanNeverPlacesOnDisabledLocal(t *testing.T) {
+	a, _, _, _, out := planFixture(t)
+	if e := a.planCmd(context.Background(), []string{"--grade", "A", "--t", "T1", "--json"}); e != nil {
+		t.Fatal(e)
+	}
+	var doc map[string]any
+	if e := json.Unmarshal(out.Bytes(), &doc); e != nil {
+		t.Fatal(e)
+	}
+	if host := doc["chosen"].(map[string]any)["host"]; host != "host-b" {
+		t.Fatalf("a disabled local host must not be chosen: %v", host)
+	}
+	found := false
+	for _, c := range doc["placement"].(map[string]any)["candidates"].([]any) {
+		row := c.(map[string]any)
+		if row["local"] == true {
+			found = true
+			if row["outcome"] != "spawn_disabled" || row["chosen"] == true {
+				t.Fatalf("local row: %v", row)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("placement record lacks the local candidate")
+	}
+}
