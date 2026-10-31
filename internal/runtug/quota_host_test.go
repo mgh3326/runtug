@@ -418,6 +418,7 @@ func TestPlacementRanksByHubScoreThenLoad(t *testing.T) {
 		{"fast busy host beats slow idle host", ptrF(10), ptrF(50), "host-b"},
 		{"without scores the lower load wins", nil, nil, "host-a"},
 		{"a missing score falls back to load", ptrF(10), nil, "host-a"},
+		{"a missing score on the faster host still falls back to load", nil, ptrF(50), "host-a"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, s, _ := remoteFixture(t, &fakePlacementSource{}, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {

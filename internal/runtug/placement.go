@@ -528,6 +528,14 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		}
 	}
 	p.candidates = enum
+	// One metric for the whole list: mixing score and load per pair would make
+	// the comparator intransitive when only some hosts carry a hub score.
+	byScore := len(p.ordered) > 0
+	for _, c := range p.ordered {
+		if c.score == nil {
+			byScore = false
+		}
+	}
 	slices.SortStableFunc(p.ordered, func(x, y *placeCandidate) int {
 		if bx, by := placeBucket(*x, threshold), placeBucket(*y, threshold); bx != by {
 			return bx - by
@@ -537,8 +545,8 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		}
 		// The hub score already folds load and host speed together, so a
 		// fast machine at moderate load beats a slow idle one. Raw load is
-		// the fallback when either side has no score.
-		if x.score != nil && y.score != nil {
+		// the fallback when any candidate has no score.
+		if byScore {
 			if c := cmp.Compare(*y.score, *x.score); c != 0 {
 				return c
 			}
