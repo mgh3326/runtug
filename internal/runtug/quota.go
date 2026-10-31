@@ -53,14 +53,21 @@ type CatalogRow struct {
 // (verdict.blocking_pct, else the highest account-scope bucket reading).
 // Projected is the highest account-scope bucket's used percentage projected
 // to its reset at the current pace (pacelever's Pace: used / elapsed window
-// fraction); nil when no bucket can be paced yet.
+// fraction); nil when no bucket can be paced yet. Urgency is the pool's
+// waste urgency — the unused projected share (100 − projected) of the
+// pool's longest account window (7d, monthly) per hour until that window's
+// reset. Sub-daily windows (e.g. a 5h rate window) never rank a pool: they
+// stay admission gates only. ResetHours is that window's time to reset.
+// Both are nil when the longest window cannot be paced.
 type PoolView struct {
-	Status    string
-	Stale     bool
-	Class     string
-	Waste     *bool
-	Blocking  *float64
-	Projected *float64
+	Status     string
+	Stale      bool
+	Class      string
+	Waste      *bool
+	Blocking   *float64
+	Projected  *float64
+	Urgency    *float64
+	ResetHours *float64
 }
 
 // QuotaGate is deliberately independent of the executable name; pacelever
@@ -453,6 +460,10 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 			src = idx
 		}
 		v := PoolView{}
+		// Ranking windows: only the pool's longest account window of a day or
+		// more sets waste urgency; a longer unpaceable window clears any
+		// urgency a shorter window produced.
+		var longestW time.Duration
 		for n, i := range src {
 			p := doc.Providers[i]
 			if n == 0 {
@@ -476,8 +487,26 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 				if b.UsedPct != nil && (v.Blocking == nil || *b.UsedPct > *v.Blocking) {
 					v.Blocking = b.UsedPct
 				}
-				if x := projectAtReset(b.UsedPct, b.Window, b.ResetsAt, now); x != nil && (v.Projected == nil || *x > *v.Projected) {
-					v.Projected = x
+				w, werr := windowDuration(b.Window)
+				ranking := werr == nil && w >= 24*time.Hour
+				if ranking && w > longestW {
+					longestW = w
+					v.Urgency, v.ResetHours = nil, nil
+				}
+				if x := projectAtReset(b.UsedPct, b.Window, b.ResetsAt, now); x != nil {
+					if v.Projected == nil || *x > *v.Projected {
+						v.Projected = x
+					}
+					if ranking && w == longestW {
+						if reset, e := time.Parse(time.RFC3339Nano, b.ResetsAt); e == nil {
+							if hours := reset.Sub(now).Hours(); hours > 0 {
+								if u := (100 - *x) / hours; v.Urgency == nil || u > *v.Urgency {
+									urg, left := u, hours
+									v.Urgency, v.ResetHours = &urg, &left
+								}
+							}
+						}
+					}
 				}
 			}
 		}
