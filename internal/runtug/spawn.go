@@ -2,6 +2,7 @@ package runtug
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -473,11 +474,15 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e = a.start(ctx, s, seat, launch, pane, argv); e != nil {
 		return e
 	}
-	if e = a.deliver(ctx, seat.Kind, pane, payload); e != nil {
+	pointer, e := a.writeDeliveredBrief(s.Job, payload)
+	if e != nil {
+		return e
+	}
+	if e = a.deliver(ctx, seat.Kind, pane, pointer); e != nil {
 		return e
 	}
 	if seat.Kind == "pi" || seat.Kind == "cmd" {
-		if e = a.modelProof(ctx, seat, launch, s.CWD, pane, payload); e != nil {
+		if e = a.modelProof(ctx, seat, launch, s.CWD, pane, pointer); e != nil {
 			return e
 		}
 	}
@@ -640,4 +645,21 @@ func noSymlinks(path string) error {
 		}
 	}
 	return nil
+}
+
+// writeDeliveredBrief stores the full brief in the job dir on this host and
+// returns the one-line pointer that is typed into the pane instead. Typing the
+// whole brief lost everything past about 1 KB on a remote host, and the pane
+// still reported a landed brief; a file has no such limit.
+func (a *App) writeDeliveredBrief(job, payload string) (string, error) {
+	dir := filepath.Join(a.Jobs, job)
+	if e := os.MkdirAll(dir, 0700); e != nil {
+		return "", e
+	}
+	path := filepath.Join(dir, "brief-delivered.md")
+	if e := os.WriteFile(path, []byte(payload), 0600); e != nil {
+		return "", e
+	}
+	sum := sha256.Sum256([]byte(payload))
+	return fmt.Sprintf("Your brief is the file %s (%d bytes, sha256 %x). Read the whole file now, then follow it exactly; it is your only instruction.", path, len(payload), sum[:6]), nil
 }
