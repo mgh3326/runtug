@@ -47,15 +47,20 @@ func paceStatus(now time.Time, pools map[string]pace) string {
 }
 
 // TestSelectionPolicyScenarios is the operator selection policy as a table:
-// free first, then subscription quota that would be wasted by reset, then
-// credit, then ranked; never a pool projected to run out; the lowest grade
-// that fits the task, then the lower projection, then the smaller effort.
+// a paid pool at waste risk (>= 20% projected unused at its reset) first, by
+// waste urgency; otherwise free first, then subscription quota that would be
+// wasted by reset, then credit, then ranked; never a pool projected to run
+// out; the lowest grade that fits the task, then the lower projection, then
+// the smaller effort.
 // Seats come from policy.json and the pool order and projection thresholds
 // from the shipped pool-order policy.
 func TestSelectionPolicyScenarios(t *testing.T) {
 	// The credit pool has no automated balance reading yet (policy/quota-stop),
 	// so it is unknown and dropped unless a row gives it one.
 	roomy := map[string]pace{"devin": {10, 0.5}, "claude": {15, 0.5}, "codex": {20, 0.5}}
+	// Paid pools near their projected cap: under 20% unused at reset, so not
+	// at waste risk.
+	tight := map[string]pace{"devin": {10, 0.5}, "claude": {45, 0.5}, "codex": {42, 0.5}}
 	with := func(over map[string]pace) map[string]pace {
 		m := map[string]pace{}
 		for k, v := range roomy {
@@ -76,18 +81,23 @@ func TestSelectionPolicyScenarios(t *testing.T) {
 		wantPool  string
 		wantTier  string
 	}{
-		{"B task, SWE-2 free has room → SWE-2", "B", "T2", "3", roomy,
+		{"B task, SWE-2 free has room, paid pools not at waste risk → SWE-2", "B", "T2", "3", tight,
 			"devin-swe2-medium@medium", "devin", "free"},
-		{"urgent B task, SWE-2 free has room → still SWE-2 (free first, always)", "B", "T2", "1", roomy,
+		{"urgent B task, SWE-2 free has room, paid pools not at waste risk → still SWE-2", "B", "T2", "1", tight,
 			"devin-swe2-medium@medium", "devin", "free"},
+		{"B task, SWE-2 free has room, claude 70% / codex 60% unused at reset → claude (waste risk before free, higher urgency)", "B", "T2", "3", roomy,
+			"sonnet@medium", "claude", "waste"},
 		{"B task, SWE-2 exhausted, claude 16% / codex 42% projected → claude B fit, not S+", "B", "T2", "3",
 			with(map[string]pace{"devin": exhausted, "claude": {8, 0.5}, "codex": {21, 0.5}}),
 			"sonnet@medium", "claude", "waste"},
 		{"urgent B task, SWE-2 exhausted, claude 16% / codex 42% → claude B fit, not S+", "B", "T2", "1",
 			with(map[string]pace{"devin": exhausted, "claude": {8, 0.5}, "codex": {21, 0.5}}),
 			"sonnet@medium", "claude", "waste"},
-		{"B task, all paid pools roomy, codex lower → lowest sufficient grade before lower projection", "B", "T2", "3",
+		{"B task, all paid pools at waste risk, codex more unused → codex by waste urgency before grade fit", "B", "T2", "3",
 			with(map[string]pace{"devin": exhausted, "claude": {30, 0.5}, "codex": {5, 0.5}}),
+			"codex-sol@high", "codex", "waste"},
+		{"B task, paid pools not at waste risk, codex lower → lowest sufficient grade before lower projection", "B", "T2", "3",
+			with(map[string]pace{"devin": exhausted, "claude": {45, 0.5}, "codex": {41, 0.5}}),
 			"sonnet@medium", "claude", "waste"},
 		{"A task, all paid pools roomy → A on the lower projection, not S+", "A", "T2", "3",
 			with(map[string]pace{"devin": exhausted, "claude": {30, 0.5}, "codex": {5, 0.5}}),
@@ -103,8 +113,11 @@ func TestSelectionPolicyScenarios(t *testing.T) {
 			"sonnet@medium", "claude", "waste"},
 		{"T3 S task, all roomy → S-grade profile, not S+", "S", "T3", "3", roomy,
 			"opus@high", "claude", "waste"},
-		{"urgent T3 S task, codex lower → still the S fit on claude", "S", "T3", "1",
+		{"urgent T3 S task, codex more unused → codex S+ by waste urgency", "S", "T3", "1",
 			with(map[string]pace{"claude": {30, 0.5}, "codex": {5, 0.5}}),
+			"codex-sol@max", "codex", "waste"},
+		{"urgent T3 S task, neither paid pool at waste risk, codex lower → the S fit on claude", "S", "T3", "1",
+			with(map[string]pace{"devin": exhausted, "claude": {45, 0.5}, "codex": {41, 0.5}}),
 			"opus@high", "claude", "waste"},
 	}
 	policy, e := LoadPoolPolicy("")
