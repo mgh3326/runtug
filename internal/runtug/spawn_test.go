@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,14 +26,19 @@ type fakeQuota struct {
 	PoolViews   map[string]PoolView
 	PoolsErr    error
 	Calls       []QuotaRequest
+	mu          sync.Mutex // delegate --panel asks the gate from several goroutines
 }
 
 func (q *fakeQuota) Launch(_ context.Context, r QuotaRequest) (Launch, error) {
+	q.mu.Lock()
 	q.Calls = append(q.Calls, r)
+	q.mu.Unlock()
 	return q.LaunchValue, q.LaunchErr
 }
 func (q *fakeQuota) Gate(_ context.Context, r QuotaRequest) (string, error) {
+	q.mu.Lock()
 	q.Calls = append(q.Calls, r)
+	q.mu.Unlock()
 	if q.GateDo != nil {
 		return q.GateDo(r)
 	}

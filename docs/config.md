@@ -487,6 +487,116 @@ placement record.
 
 A local launch or gate refusal keeps its own code, as in `spawn`.
 
+## Delegation
+
+`runtug delegate` is the one-call form of "ask another model": a lead session
+(Claude Code, Codex) hands over reading, verification or a cross-check and gets
+one answer back. In-session subagents run only on their own vendor's models;
+`delegate` reaches any seat in the policy, so the work can run on free or
+spare-quota models. It reuses the spawn, wait and job-result machinery and
+writes nothing in the caller's tree.
+
+```sh
+runtug delegate --role reader|verifier|reviewer --prompt FILE [--grade G] [--cwd DIR]
+  [--timeout D] [--headless] [--patch] [--panel 2..4] [--family F] [--workspace W] [--json]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--role` | `reader` reads and answers, `verifier` runs only the acceptance commands in the prompt, `reviewer` reviews. Reader and verifier use `worker` seats; `reviewer` uses `reviewer` seats and excludes the caller's model family. |
+| `--prompt FILE` | The task. The role preamble and the steps for filing the answer are put in front of it. |
+| `--grade G` | The catalog grade the seat must cover (`C`, `B`, `A`, `A+`, `S`, `S+`; default `C`). The task title is not read. |
+| `--cwd DIR` | The tree the delegate reads (default: the current directory). |
+| `--timeout D` | A duration or seconds, default 15m: the pane wait, or the headless CLI call. |
+| `--headless` | Run the selected seat's CLI once on this host with the brief, instead of a pane. |
+| `--patch` | The delegate works in a temporary detached worktree and the result carries a patch path (below). |
+| `--panel N` | N from 2 to 4: see Panel. |
+| `--family F` | The caller's model family, for a reviewer outside a runtug job. Inside a job the job's own family is used. |
+| `--workspace W` | The herdr workspace for the pane, or `[local] workspace`. Not needed with `--headless`. |
+| `--json` | Print one JSON document instead of text. |
+
+**Selection.** The seat is chosen by the same code as `spawn` auto-selection
+and `runtug plan`: catalog rungs that cover the grade and the role, ordered by
+the pool policy (waste-risk pools first, then the tier order), admitted through
+presence and the quota gate. Free models are one tier of that policy, not a
+default target. A reviewer drops every seat of the caller's family.
+
+**Job record.** Each delegation is a job: `delegate-<parent>-<n>`, where
+`<parent>` is the enclosing job (`ARBITER_JOB`; `delegate-<n>` outside a job)
+and `<n>` the next free number. It is claimed in hk and the local ledger,
+holds a quota lease, carries the parent job, task and owner lane, and ends with
+`done`, so placement, quota and hk records match any other job. A task is
+required: run inside a runtug job or set `HK_TASK_ID`. The job directory holds
+`brief.md`, `result.json`, `report.md` and, with `--patch`, `changes.patch`.
+
+**Pane mode (default).** `delegate` runs `spawn --wait` with automatic
+selection (the pane may be placed on another host), reads the `result` of the
+hk job record, which the delegate files with `runtug done JOB --result`
+(`{"answer": TEXT}`), then closes the pane after checking it is still the one
+the job spawned. If only the report exists because the completion watcher
+finished the job first, the report text is the answer. A delegate placed on
+another host is answered the same way; its pane is left for that host's `reap`.
+When the wait fails (escalated, lost, timeout), the pane stays for
+`runtug reap` and nothing is printed on stdout.
+
+**Headless mode.** The seat's CLI runs once, in `--cwd`, with the brief and a
+deadline of `--timeout`; its output is the answer. The job is claimed, leased
+and completed with the same `done` call. Kinds with a one-shot form: `claude`,
+`codex`, `devin`, `cmd`, `pi`, `grok`, `opencode`; any other kind is refused
+with exit 70 before anything is claimed. The one-shot flags are fixed in code
+and have been exercised only against a fake runner.
+
+**No writes.** The role preambles forbid editing: `reader` and `reviewer` run
+read-only commands, `verifier` runs only the acceptance commands it was given.
+A role that must try a change uses `--patch`: delegate adds a detached worktree
+of `--cwd` in a temporary directory (at `HEAD` plus the caller's uncommitted
+tracked changes), runs the delegate there, writes `git diff` against that base
+to `changes.patch` in the job directory and removes the worktree. The result
+carries `patch` (omitted when nothing changed). The caller decides whether to
+apply it (`git apply`). The worktree registration in `--cwd`'s `.git` is added
+and removed; no file in the tree changes.
+
+**Panel.** `--panel N` picks N seats of N distinct model families, then runs
+all N at once, each as its own delegate job (pane or `--headless`, and its own
+scratch tree with `--patch`). Families are chosen one selection at a time with
+the families already chosen excluded, so the panel is the N best admitted
+families under the normal policy. When fewer than N are admitted, the panel
+runs with those and says why (`reason`, and a warning on stderr). A member that
+fails, is lost or times out does not stop the others; it is listed as `failed`
+with its exit status. The panel tells each model to file `verdict` (one word)
+and `points` (short claims, `file:line` where they have one) next to its
+`answer`; without points, lines of the answer are compared. The table lists:
+
+- **agreements** — points two or more members made (word overlap of at least
+  half);
+- **disagreements** — differing verdicts, and `file:line` locations that members
+  cite with different claims;
+- **unique** — points only one member made.
+
+**Output.** The answer is the last thing printed. Text: a header line
+`delegate job=… role=… mode=… profile=…`, `patch=PATH` when there is one, then
+the answer. Spawn and wait chatter goes to stderr. `--json` prints one object:
+`job`, `role`, `mode` (`pane` or `headless`), `profile`, `family`, `patch`,
+`result` (the filed object) and `answer`. A panel prints a header line, each
+member (`== A job=… profile=… family=… status=answered ==` and its answer),
+then `== side by side ==` with verdicts, agreements, disagreements and unique
+points last. Its `--json` object has `requested`, `answered`, `reason`,
+`members` (each the single-call object plus `label`, `status`, `exit`, `error`)
+and `table`.
+
+**Exit statuses.** 0 the answer was printed (a panel: at least one member
+answered; check `answered` and `reason` for a short panel). 2 usage. 70
+configuration, or a seat kind with no headless form. 75 the parent job is
+unreadable. 77 or 81 no seat or host was admitted (a panel with no admitted
+family at all). 83, 84, 85 the pane job escalated, was lost or timed out. 124
+the headless CLI hit `--timeout`. 1 the job finished without an answer, or
+the headless CLI failed. Spawn and quota refusals keep their own statuses. A
+panel with no answered member returns the first failed member's status.
+
+**When to delegate.** Delegate reading, verification and cross-family review.
+Keep tight design loops, where the next step depends on the last answer, in
+the session's own subagents.
+
 ## `[artifacts]`
 
 | Key | Default | Meaning |
@@ -646,7 +756,7 @@ Behaviour differences from the script:
 | 80 | Local spawning disabled/unavailable without a remote fallback. |
 | 81 | Wake/capacity placement failure, the remote worktree for a linked-worktree job could not be prepared (also a `via = "hub"` checkout refusal), or the hub is unavailable for a forced `via = "hub"` host. |
 | 82 | Builder pane committed but lane unregistered under strict lane reporting. |
-| 83 | `spawn --wait`: the job escalated. |
+| 83 | `spawn --wait` (and `delegate`): the job escalated. |
 | 84 | `spawn --wait`: the job was lost or revoked. |
 | 85 | `spawn --wait`: the wait deadline expired; the job is retained. |
 | 124 | A time-bounded CLI call reached its context deadline. |

@@ -37,6 +37,8 @@ type App struct {
 	// Hub carries via="hub" spawns and quota refreshes; nil builds the HTTP
 	// client from [hub] on first use.
 	Hub HubTransport
+	// spawnFn replaces Spawn where delegate starts its pane; tests only.
+	spawnFn func(context.Context, *App, Spawn) error
 }
 
 func Main(ctx context.Context, args []string, out, errout io.Writer) int {
@@ -168,13 +170,13 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 func validID(s string) bool { return idPattern.MatchString(s) && s != "." && s != ".." }
 func (a *App) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(a.Out, "Usage: runtug <spawn|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts|simulate|plan> [options]")
+		fmt.Fprintln(a.Out, "Usage: runtug <spawn|delegate|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts|simulate|plan> [options]")
 		return nil
 	}
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
 		return a.help(args[0])
 	}
-	if a.EnforceTrust && (args[0] == "spawn" || args[0] == "plan" || args[0] == "_spawn-stdin" || args[0] == "done" || args[0] == "escalate" || args[0] == "restore" || args[0] == "reap" || args[0] == "prune" || args[0] == "gc" || args[0] == "artifacts" || args[0] == "_watch") {
+	if a.EnforceTrust && (args[0] == "spawn" || args[0] == "delegate" || args[0] == "plan" || args[0] == "_spawn-stdin" || args[0] == "done" || args[0] == "escalate" || args[0] == "restore" || args[0] == "reap" || args[0] == "prune" || args[0] == "gc" || args[0] == "artifacts" || args[0] == "_watch") {
 		if e := a.trust(); e != nil {
 			return e
 		}
@@ -200,6 +202,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.simulate(ctx, args[1:])
 	case "plan":
 		return a.planCmd(ctx, args[1:])
+	case "delegate":
+		return a.delegate(ctx, args[1:])
 	case "_artifact-inventory":
 		return a.artifactInventory()
 	case "_watch":
@@ -228,6 +232,8 @@ func (a *App) help(cmd string) error {
 		fmt.Fprintln(a.Out, "Usage: runtug artifacts move SRC --dest DEST [--source-host HOST] [--apply] | sweep [--job JOB] [--age 7d] [--policy FILE] [--apply]")
 	case "simulate":
 		fmt.Fprintln(a.Out, "Usage: runtug simulate --selection FILE [--now RFC3339] [--policy FILE] [--policy-set key=value] ... [--set pool:used=N,reset=RFC3339|+Nh[,window=D][,projected=N]] ... (rank a recorded selection input; no quota reads, no spawn)")
+	case "delegate":
+		fmt.Fprintln(a.Out, "Usage: runtug delegate --role reader|verifier|reviewer --prompt FILE [--grade G] [--cwd DIR] [--timeout D] [--headless] [--patch] [--panel 2..4] [--family F] [--workspace W] [--json] (hand one bounded reading, verifying or cross-checking task to a free or spare-quota model; the answer is the last thing printed)")
 	case "plan":
 		fmt.Fprintln(a.Out, "Usage: runtug plan --grade G --t T0..T3 [--role R] [--tags a,b] [--effort E] [--urgency normal|urgent] [--exclude-host a,b] [--builder-family F] [--allow-escalation] [--json] (live, read-only: the host and model a spawn would get now; no task, spawn or job write)")
 	default:
