@@ -3,6 +3,7 @@ package runtug
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -177,8 +178,22 @@ func TestCmdLongBriefSubmissionRequiresStatusAndRetriesOnce(t *testing.T) {
 	for _, c := range f.Calls {
 		if len(c.Args) > 1 && c.Args[0] == "pane" && c.Args[1] == "send-text" {
 			pastes++
-			if !strings.Contains(c.Args[3], "Host safety (fleet-v1)") {
-				t.Fatal("safety preamble omitted")
+			// The pane gets a short pointer; the full brief, preamble included,
+			// is the file it names. Typed text past ~1 KB was lost on a remote host.
+			path := filepath.Join(a.Jobs, s.Job, "brief-delivered.md")
+			if len(c.Args[3]) > 400 || !strings.Contains(c.Args[3], path) || strings.Contains(c.Args[3], "Host safety (fleet-v1)") {
+				t.Fatalf("typed text is not a short pointer to %s: %q", path, c.Args[3])
+			}
+			b, e := os.ReadFile(path)
+			if e != nil || !strings.Contains(string(b), "Host safety (fleet-v1)") {
+				t.Fatalf("delivered brief file: %v", e)
+			}
+			if raw, _ := os.ReadFile(s.Prompt); !strings.Contains(string(b), strings.TrimSpace(string(raw))) {
+				t.Fatal("delivered brief file lacks the full brief")
+			}
+			sum := sha256.Sum256(b)
+			if !strings.Contains(c.Args[3], fmt.Sprintf("%d bytes, sha256 %x", len(b), sum[:6])) {
+				t.Fatalf("pointer does not name size and hash: %q", c.Args[3])
 			}
 		}
 	}
