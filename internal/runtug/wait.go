@@ -83,9 +83,10 @@ func (a *App) waitJob(ctx context.Context, s Spawn, delegated ...bool) error {
 	deadline := a.Now().Add(timeout)
 	delay := 2 * time.Second
 	warned := false
+	hkWarned := false
 	hkWatch := len(delegated) > 0 && delegated[0]
 	for {
-		out := a.waitOutcome(ctx, s, lane, &warned, hkWatch)
+		out := a.waitOutcome(ctx, s, lane, &warned, &hkWarned, hkWatch)
 		if out.name != "" {
 			fmt.Fprintf(a.Out, "wait job=%s outcome=%s report=%s pane=%s\n", s.Job, out.name, out.report, out.pane)
 			switch out.name {
@@ -112,7 +113,7 @@ func (a *App) waitJob(ctx context.Context, s Spawn, delegated ...bool) error {
 // waitOutcome scans the job's durable event artifacts first, then the lane
 // inbox when the hub is configured. Event reads tolerate a missing dir (a
 // delegated job only has the initiator-side placement record here).
-func (a *App) waitOutcome(ctx context.Context, s Spawn, lane string, warned *bool, hkWatch ...bool) waitOutcome {
+func (a *App) waitOutcome(ctx context.Context, s Spawn, lane string, warned, hkWarned *bool, hkWatch bool) waitOutcome {
 	evs, e := a.events(s.Job)
 	if e != nil && !errors.Is(e, os.ErrNotExist) && !*warned {
 		*warned = true
@@ -137,8 +138,8 @@ func (a *App) waitOutcome(ctx context.Context, s Spawn, lane string, warned *boo
 			}
 		}
 	}
-	if len(hkWatch) > 0 && hkWatch[0] {
-		if out := a.jobRecordOutcome(ctx, s.Job, warned); out.name != "" {
+	if hkWatch {
+		if out := a.jobRecordOutcome(ctx, s.Job, hkWarned); out.name != "" {
 			return out
 		}
 	}

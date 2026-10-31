@@ -654,6 +654,41 @@ func TestWaitDelegatedHKRows(t *testing.T) {
 	}
 }
 
+// A refused task id never reaches the wire as task_id=0.
+func TestJobClaimRejectsNonNumericTaskBeforePost(t *testing.T) {
+	h := newFakeHK(t)
+	e := h.client().Claim(context.Background(), "j", "not-a-number", "test-host")
+	if e == nil {
+		t.Fatal("non-numeric task must refuse")
+	}
+	for _, c := range hkCalls(h) {
+		if strings.HasPrefix(c, "POST ") {
+			t.Fatal("a refused claim was still POSTed")
+		}
+	}
+}
+
+// The hk-unavailable warning has its own one-shot flag: a prior unrelated
+// wait warning must not suppress it.
+func TestWaitDelegatedHKWarnSurvivesEarlierWarnings(t *testing.T) {
+	a := testApp(t)
+	a.Config.Hub = map[string]any{"hub_url": "https://hub.invalid"}
+	a.Runner = &fakeRunner{Do: func(c Command) Result {
+		return Result{Code: 1, Err: "inbox down"}
+	}}
+	h := newFakeHK(t)
+	h.down = true
+	a.JobStore = h.client()
+	s := Spawn{Job: "j", Role: "worker", WaitTimeout: "5s"}
+	if code(a.waitJob(context.Background(), s, true)) != 85 {
+		t.Fatal("unreadable hk must bound and fall back")
+	}
+	errs := a.Err.(interface{ String() string }).String()
+	if !strings.Contains(errs, "hk-unavailable") || !strings.Contains(errs, "lane inbox read failed") {
+		t.Fatalf("warnings=%q", errs)
+	}
+}
+
 func TestWaitDelegatedHKUnavailableWarnsOnce(t *testing.T) {
 	a := testApp(t)
 	h := newFakeHK(t)

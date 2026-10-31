@@ -51,7 +51,10 @@ func jobError(e error) error {
 }
 
 func (j *hkJobs) Claim(ctx context.Context, jobID, taskID, host string) error {
-	task, _ := strconv.ParseInt(taskID, 10, 64)
+	task, e := strconv.ParseInt(taskID, 10, 64)
+	if e != nil {
+		return fmt.Errorf("job record claim needs a numeric task id")
+	}
 	return jobError(j.q.request(ctx, http.MethodPost, "/v1/jobs", map[string]any{"job_id": jobID, "task_id": task, "host": host}, nil))
 }
 func (j *hkJobs) Put(ctx context.Context, jobID string, fields map[string]any) error {
@@ -301,21 +304,24 @@ func jobFromRecord(id string, rec map[string]any) Job {
 // jobRecordOutcome maps a delegated job's hk record to a wait outcome — the
 // W4 rule in the design: a terminal record state answers the wait; a pending
 // or missing record and an unreadable hk answer nothing, and the caller's
-// bound and local signals decide.
+// bound and local signals decide. warned is dedicated to the hk-unavailable
+// message so an earlier unrelated wait warning cannot suppress it.
 func (a *App) jobRecordOutcome(ctx context.Context, id string, warned *bool) waitOutcome {
-	store, e := a.jobStore()
-	if e != nil {
+	hkWarn := func() {
 		if !*warned {
 			*warned = true
 			a.warn("job record unreadable; watching local signals (reason hk-unavailable)")
 		}
+	}
+	store, e := a.jobStore()
+	if e != nil {
+		hkWarn()
 		return waitOutcome{}
 	}
 	rec, e := store.Get(ctx, id)
 	if e != nil {
-		if !errors.Is(e, errJobNotFound) && !*warned {
-			*warned = true
-			a.warn("job record unreadable; watching local signals (reason hk-unavailable)")
+		if !errors.Is(e, errJobNotFound) {
+			hkWarn()
 		}
 		return waitOutcome{}
 	}
