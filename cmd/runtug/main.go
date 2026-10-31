@@ -20,5 +20,6 @@ func main() {
 		fmt.Printf("runtug %s (%s)\n", version, commit)
 		return
 	}
+	runtug.BuildVersion, runtug.BuildCommit = version, commit
 	os.Exit(runtug.Main(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }

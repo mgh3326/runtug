@@ -103,6 +103,19 @@ keep tight design loops in the session's own subagents. Roles, exit codes and
 the output format are in [docs/config.md](docs/config.md#delegation).
 
 ```sh
+runtug preflight [--host NAME] [--pool P] [--json]
+```
+
+`runtug preflight` is the read-only remote-spawn preflight: for each remote
+host it reports hub acceptance, the age of the shared quota observation
+against `fresh_ttl_s`, whether the remote `[quota]` setting suits the hk URL
+scheme, hub load and memory reasons, whether the mergewake review config is
+present, and runtug/panewire version skew, each failure with a named reason.
+Exit 0 means every host is good, 78 means at least one is not. `runtug plan`
+prints the same result per host, and `--host auto` records the reasons on
+each refused candidate in the placement record. See `docs/config.md`.
+
+```sh
 runtug spawn -c ~/work/project.task42 -m cmd-dsflash41 \
   -p brief.md -w workers -l task42-worker --t T1 \
   --task 42 --owner project-builder --job task42-worker --host local \

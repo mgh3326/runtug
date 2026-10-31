@@ -597,6 +597,49 @@ panel with no answered member returns the first failed member's status.
 Keep tight design loops, where the next step depends on the last answer, in
 the session's own subagents.
 
+`plan` also prints the remote-spawn preflight (below) of every remote host it
+evaluated, as `preflight host=NAME ok=… reasons=…` lines and, with `--json`, a
+`preflight` array. It is informational and never changes the plan's exit status.
+
+### `runtug preflight`
+
+`runtug preflight [--host NAME] [--pool P] [--json]` answers "would a remote
+spawn to this host work" before one is tried. Six remote-spawn failures each
+needed their own fix; the preflight reports all of them per host, each with a
+named reason. It is read-only: it reads the hub host list, hk presence and the
+shared observation, and makes one SSH probe per host that tests two paths,
+reads one boolean from the remote `hosts.toml` and asks `runtug` and `panewire`
+for their versions. It never prints a URL or a file's contents, and writes no
+task, job or event.
+
+| Check | Fails with | Meaning |
+| --- | --- | --- |
+| `hub_acceptance` | `hub_unavailable`, `not_listed`, `not_accepting`, `disconnected` | The hub lists the host, it is connected and not `not_accepting`; the detail carries the hub's reason string. |
+| `quota_observation` | `POOL:no_usable_presence`, `POOL:degraded`, `POOL:not_observed`, `POOL:stale`, `presence_unavailable` | Per pool the host's presence names (or `--pool`), the shared observation of its account exists and is no older than `fresh_ttl_s`; the detail shows `age=` against `fresh_ttl=`. |
+| `quota_transport` | `hk_url_unset`, `hk_url_invalid`, `plaintext_non_tailnet`, `plaintext_tailnet_not_allowed`, `remote_config_missing` | With an `https` hk URL nothing is needed. A plain-`http` tailnet URL needs `[quota] allow_plaintext_tailnet = true` in the remote `hosts.toml`. |
+| `hub_load` | `load_unknown`, `memory_pressure`, `load_over_threshold` | The hub has a load reading for the host (its metrics source lists it), reports no memory, swap or pressure reason, and the load is under `placement.load_threshold`. The memory match is on the hub's reason string and is a heuristic. |
+| `review_config` | `absent` | `~/.config/mergewake/config.yaml` exists on the host (existence only; the file is not read). |
+| `version_skew` | `runtug_skew`, `panewire_skew`, `runtug_missing`, `panewire_missing`, `*_local_unknown` | `runtug --version` and `panewire --version` on the host equal this machine's. |
+
+A host that cannot run the probe (`unreachable`, `via_hub_unsupported`,
+`invalid_ssh_target`, `probe_failed_rcN`) fails the checks that need it
+(`quota_transport` when the URL is plain http, `review_config`,
+`version_skew`).
+
+The text output is one `preflight host=NAME ok=… [reasons=check:reason,…]`
+line and one indented `check NAME ok|refused reason=… detail=…` line per check.
+`--json` prints `{"mode": "preflight", "ok", "hosts": [{"host", "ok",
+"checks": [{"name", "ok", "reason", "detail"}]}]}`. Exit 0 when every checked
+host passes, 78 when any fails, 2 for usage or an unknown `--host`, 70 when no
+remote host is configured.
+
+`--host auto` runs the same preflight for each remote candidate it refused and
+records it on that candidate's row of the `job.placement` record as
+`preflight: {ok, reasons, failed}`. A host the quota gate refused was never
+contacted, so its SSH-probe checks are `skipped` and only the hub and hk
+checks report. When no host accepts, the reasons are also appended to the
+placement error, because a failed spawn writes no placement record.
+
 ## `[artifacts]`
 
 | Key | Default | Meaning |
@@ -752,6 +795,7 @@ Behaviour differences from the script:
 | 75 | Unreadable duplicate state (the ledger's record of a duplicate job has no state or an unreadable `job.spawned` receipt; a released job has no receipt and is reclaimed), changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
 | 76 | Initial brief submission unconfirmed after one key retry. |
 | 77 | Role/seat/grade/family/E6 refusal; quota gate exit 5 is remapped here. |
+| 78 | `preflight`: at least one checked remote host failed a check; the reasons are on stdout and in the error. |
 | 79 | Mock isolation refusal. |
 | 80 | Local spawning disabled/unavailable without a remote fallback. |
 | 81 | Wake/capacity placement failure, the remote worktree for a linked-worktree job could not be prepared (also a `via = "hub"` checkout refusal), or the hub is unavailable for a forced `via = "hub"` host. |
