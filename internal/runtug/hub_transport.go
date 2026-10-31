@@ -231,9 +231,12 @@ func classify(status int, data []byte) *HubError {
 		return &HubError{Kind: hubNoSpawnV2, Status: status, Code: er.Error}
 	case status == http.StatusServiceUnavailable && er.Error == "node_unavailable":
 		return &HubError{Kind: hubNoCapacity, Status: status, Code: er.Error}
-	case status == http.StatusGatewayTimeout && er.Error == "":
-		// A spawn 504 carries {"status":"pending"}; a node command 504
-		// carries error=node_timeout, handled by the caller.
+	case status == http.StatusGatewayTimeout:
+		// Every 504 for a spawn means the request may already be running on
+		// the node, whatever the body says (the hub's own carries
+		// {"status":"pending"}, a proxy's may carry any error). The caller
+		// stops instead of trying another host. Refresh handles its own 504
+		// before it gets here.
 		return &HubError{Kind: hubPending, Status: status}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return &HubError{Kind: hubAuth, Status: status, Code: er.Error}

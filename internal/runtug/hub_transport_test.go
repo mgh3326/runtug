@@ -660,6 +660,8 @@ func TestHubHTTPClient(t *testing.T) {
 		{503, `{"error":"spawn_capability_required","capability":"spawn_v2"}`, hubNoSpawnV2},
 		{503, `{"error":"node_unavailable","state":"disconnected"}`, hubNoCapacity},
 		{504, `{"request_id":"r","status":"pending"}`, hubPending},
+		{504, `{"error":"node_timeout"}`, hubPending},
+		{504, `<html>gateway timeout</html>`, hubPending},
 		{401, `{}`, hubAuth},
 		{403, `{}`, hubAuth},
 		{400, `{"error":"invalid_request"}`, hubRejected},
