@@ -243,9 +243,9 @@ decide (the unreadable case warns once with reason `hk-unavailable`).
 Automatic model selection (`spawn` with `-m` omitted or `-m auto`) reads the
 live bench catalog and pool status from the quota CLI, then orders candidates
 under the versioned pool-order policy (`[local].pool_policy` or
-`RUNTUG_POOL_POLICY`, else the embedded copy): free pool/model sets first,
-then WASTE subscription pools, then named credit pools, then ranked spend
-pools. Inside a tier the lowest catalog grade that satisfies the task wins,
+`RUNTUG_POOL_POLICY`, else the embedded copy): paid pools at waste risk
+first (see below), then free pool/model sets, then WASTE subscription pools,
+then named credit pools, then ranked spend pools. Inside a tier the lowest catalog grade that satisfies the task wins,
 then the pool with the higher waste urgency — the unused projected share
 (100 − projected) per hour until its longest account window's reset (7d,
 monthly; sub-daily windows such as a 5h rate window never rank a pool, they
@@ -263,7 +263,34 @@ keys use it, both defaulting to 100:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `waste_below_projected_pct` | `100` | A non-credit subscription pool projected below this at reset is WASTE: the rest is lost at reset, so it is spent before credit and ranked pools. Without a projection the quota status `verdict.waste` flag decides. An explicit `0` disables projected waste. |
-| `exclude_at_projected_pct` | `100` | A pool projected at or above this is dropped as `projected_exhaust`. A free-tier rung is kept for admission instead and survives only when the gate's `gate_basis` is a free bucket (`free-bucket:…`); any other basis drops it as `projected_exhaust`. Must be above 0 and not below `waste_below_projected_pct`. An over-consumed reading (used above 100%) still projects, so it is excluded. |
+| `exclude_at_projected_pct` | `100` | A pool projected at or above this is dropped as `projected_exhaust` (a waste-risk pool: projected over its windows of a day or more only, see below). A free-tier rung is kept for admission instead and survives only when the gate's `gate_basis` is a free bucket (`free-bucket:…`); any other basis drops it as `projected_exhaust`. Must be above 0 and not below `waste_below_projected_pct`. An over-consumed reading (used above 100%) still projects, so it is excluded. |
+
+A paid pool is at **waste risk** when the projected unused share of its
+longest window (a day or more) at that window's reset — waste urgency ×
+hours to reset, i.e. 100 − its projection — is at least
+`waste_risk.min_unused_pct`, however far the reset is. Free seats and
+`credit_pools` are never at waste risk, and neither is a pool whose
+longest window cannot be paced (for example the first 5% of a fresh
+window). Waste-risk pools rank ahead of every tier, free included, and
+among themselves by waste urgency first (a pool resetting sooner with the
+same unused share comes first), then grade fit, effort and score; every
+other pool keeps the tier order above. For a waste-risk pool sub-daily
+windows (e.g. 5h) are used up rather than paced: they never contribute to
+its `projected_exhaust` check and refuse it only when exhausted — used at
+or above 100% (dropped as `window_exhausted`) or the quota gate's own
+exhausted refusal. A pool not at waste risk keeps the pace-based
+projection over all its windows. The quota gate itself never refuses on
+pace (pacelever: "pace ranks and warns; it never denies"), so no gate flag
+is passed.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `waste_risk.min_unused_pct` | `20` | Minimum projected unused share (percent) of the longest window at its reset for a paid pool to be at waste risk. `0`–`100`. |
+| `waste_risk.horizon_hours` | `0` | Optional: when above 0 the longest window must also reset within this many hours. `0` means no horizon limit. |
+
+Both keys live in the pool-order policy under `"waste_risk": {...}`; absent
+keys take the defaults, and `runtug simulate --policy`/`--policy-set` try
+other values before the policy is changed.
 
 Non-free candidates additionally need a
 readable `ok` nonstale spend status; every candidate needs fresh
@@ -281,22 +308,27 @@ Selection records urgency. `spawn --urgency normal|urgent` sets it; when the
 flag is omitted the bound hk task's `priority` is read from the existing task
 precheck (priority 1 or 2 resolves to urgent, anything else or unreadable to
 normal), and an explicit flag always wins. Urgency does not change the
-order: the policy `order` and the grade-fit rule apply to every task
-(policy/quota-stop: free first, always), and urgent work reaches a paid pool
-when the free rung is refused or excluded. The `job.placement` selection
+order: the waste-risk override, the policy `order` and the grade-fit rule
+apply to every task, and urgent work reaches a paid pool that is not at
+waste risk when the free rung is refused or excluded. The `job.placement` selection
 record carries `urgency`, `urgency_source` (`flag`, `task-priority` or
 `default`), the `tiers` order used, a one-line `decision`, the ordering
-`rule` with both thresholds, `projected_pct` and `used_pct` per candidate,
+`rule` with both thresholds and the waste-risk rule, `waste_risk` (the
+`horizon_hours`/`min_unused_pct` in force), `projected_pct` and `used_pct`
+per candidate, `waste_risk` (`true`/`false`) on every candidate and
+`unused_at_reset_pct` (its input) whenever the longest window could be
+paced,
 `waste_urgency`, `reset_hours` and `waste_order` (`reset` or
 `projected_fallback`) per ranked candidate,
-and on `chosen` its `tier`, `grade`, `projected_pct`, `waste_urgency` and a
-one-line `why`;
+and on `chosen` its `tier`, `grade`, `waste_risk`, `projected_pct`,
+`waste_urgency` and a one-line `why`;
 `--dry-run` prints `urgency=<v> source=<s> tiers=<a>><b>...` before the full
 record.
 
 ### `runtug simulate`
 
-`runtug simulate --selection FILE [--now RFC3339] [--set
+`runtug simulate --selection FILE [--now RFC3339] [--policy FILE]
+[--policy-set key=value] ... [--set
 pool:used=N,reset=RFC3339|+Nh[,window=D][,projected=N]] ...` replays the
 selection ranking on a recorded input and prints the decision record
 (`mode: "simulate"`). It is hermetic: no quota reads, no gate calls, no
@@ -342,6 +374,59 @@ the catalog row fields plus `seat`; a recorded `job.placement` selection's
 table is rebuilt from the candidate rows' `used_pct`/`projected_pct` — with
 no recorded reset those pools rank by the projected fallback until `--set
 pool:reset=…` supplies one.
+
+A pool's `resets_at` must be an RFC3339 instant or `+Nh`/`+Nd`, and a
+non-empty `window` a quota duration; anything else fails with exit 70
+instead of silently ranking by the projected fallback. A sub-daily `window`
+is a short window (it gates a waste-risk pool only when `used_pct` reaches
+100); any other window is the pool's longest.
+
+`--policy FILE` loads the pool-order policy for this run instead of
+`[local].pool_policy`/`RUNTUG_POOL_POLICY`. `--policy-set key=value`
+(repeatable, applied after `--policy`) overrides one threshold:
+`waste_risk.horizon_hours`, `waste_risk.min_unused_pct`,
+`waste_below_projected_pct` or `exclude_at_projected_pct`. A malformed
+term or unknown key exits 2; a value the policy rejects exits 70. The record
+carries `policy_file` and `policy_overrides`.
+
+### `runtug plan`
+
+`runtug plan --grade G --t T0..T3 [--role R] [--tags a,b] [--effort E]
+[--urgency normal|urgent] [--exclude-host a,b] [--builder-family F]
+[--allow-escalation] [--json]` answers "right now, which host and which
+model would a spawn get" without a task or brief. It is live and read-only:
+it runs the spawn's selection core (catalog, pool status, presence and each
+host's quota gate) with the grade from `--grade` instead of a task title,
+then walks the same placement plan for the chosen seat — the local launch
+resolution, seat check and gate for this host, the shared-account quota
+gate for each remote host — and stops at the first host that admits it. It
+never spawns, wakes a host, claims an arbiter job, writes an hk task or job
+record or emits a job event; a stale remote account is measured on its
+host (`pacelever refresh`) exactly as a spawn would. Remote-only spawn
+checks (repository mapping, the remote seat check) are not run.
+
+The text output is `plan …` (request), `chosen host=… seat=…@… model=…
+pool=… grade=… tier=… waste_risk=…`, one `runner-up …` line per other ranked
+rung in rank order, one `dropped …@… pool=… reason=…` line per filtered
+rung, one `host NAME outcome=…` line per placement candidate (`would_spawn`,
+`quota_refused`, `missing_tags:…`, `not_tried`, …), `would_wake [...]` when
+only a host a spawn would wake remains, and `result refused exit=N: …` on
+failure. `--json` prints `{"mode": "plan", "selection": {...},
+"placement": {...}, "chosen": {"host", "seat", "model_id", "effort",
+"pool", "tier", "grade", "waste_risk"}}` (plus `error`), where `selection`
+is the spawn selection record with `mode: "plan"` and `placement` the
+placement record.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | A host and model were found. |
+| 2 | Usage: missing or invalid `--grade`/`--t`/`--role`/`--urgency`/tags, or `--builder-family` without tester/reviewer (or the reverse). |
+| 70 | Configuration, unreadable catalog or policy. |
+| 77 | No catalog rung was admitted. |
+| 80 | Local spawning is disabled and no remote host admitted the seat. |
+| 81 | No host admitted the seat; hosts a spawn would wake are listed. |
+
+A local launch or gate refusal keeps its own code, as in `spawn`.
 
 ## `[artifacts]`
 

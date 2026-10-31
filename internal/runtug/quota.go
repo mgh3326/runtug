@@ -59,15 +59,22 @@ type CatalogRow struct {
 // reset. Sub-daily windows (e.g. a 5h rate window) never rank a pool: they
 // stay admission gates only. ResetHours is that window's time to reset.
 // Both are nil when the longest window cannot be paced.
+//
+// LongProjected is the highest projection among windows of a day or more and
+// ShortUsed the highest used share among sub-daily windows; a waste-risk pool
+// is excluded on those (a sub-daily window only when exhausted) instead of on
+// Projected, which also carries the sub-daily windows' pace.
 type PoolView struct {
-	Status     string
-	Stale      bool
-	Class      string
-	Waste      *bool
-	Blocking   *float64
-	Projected  *float64
-	Urgency    *float64
-	ResetHours *float64
+	Status        string
+	Stale         bool
+	Class         string
+	Waste         *bool
+	Blocking      *float64
+	Projected     *float64
+	Urgency       *float64
+	ResetHours    *float64
+	LongProjected *float64
+	ShortUsed     *float64
 }
 
 // QuotaGate is deliberately independent of the executable name; pacelever
@@ -493,9 +500,15 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 					longestW = w
 					v.Urgency, v.ResetHours = nil, nil
 				}
+				if werr == nil && !ranking && b.UsedPct != nil && (v.ShortUsed == nil || *b.UsedPct > *v.ShortUsed) {
+					v.ShortUsed = b.UsedPct
+				}
 				if x := projectAtReset(b.UsedPct, b.Window, b.ResetsAt, now); x != nil {
 					if v.Projected == nil || *x > *v.Projected {
 						v.Projected = x
+					}
+					if ranking && (v.LongProjected == nil || *x > *v.LongProjected) {
+						v.LongProjected = x
 					}
 					if ranking && w == longestW {
 						if reset, e := time.Parse(time.RFC3339Nano, b.ResetsAt); e == nil {

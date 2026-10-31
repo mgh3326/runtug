@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -25,15 +26,36 @@ var defaultPoolOrder []byte
 // promoted to waste because the rest is lost at reset. A pool projected at or
 // above "exclude_at_projected_pct" is never selected. Both default to 100
 // when absent; an explicit 0 waste threshold disables projected waste.
+//
+// "waste_risk" names when a paid pool is about to lose quota at its longest
+// window's reset: the projected unused share at that reset is at least
+// min_unused_pct (default 20), however far the reset is. An optional
+// horizon_hours (default 0 = no limit) additionally requires the reset to
+// fall within that many hours. Such a pool ranks ahead of the free seats by
+// waste urgency, and its sub-daily windows refuse only when exhausted.
 type PoolPolicy struct {
-	Version     int       `json:"version"`
-	SourceDoc   string    `json:"source_doc"`
-	Order       []string  `json:"order"`
-	Free        []FreeSet `json:"free"`
-	CreditPools []string  `json:"credit_pools"`
-	WasteBelow  *float64  `json:"waste_below_projected_pct"`
-	ExcludeAt   *float64  `json:"exclude_at_projected_pct"`
+	Version     int              `json:"version"`
+	SourceDoc   string           `json:"source_doc"`
+	Order       []string         `json:"order"`
+	Free        []FreeSet        `json:"free"`
+	CreditPools []string         `json:"credit_pools"`
+	WasteBelow  *float64         `json:"waste_below_projected_pct"`
+	ExcludeAt   *float64         `json:"exclude_at_projected_pct"`
+	WasteRisk   *WasteRiskPolicy `json:"waste_risk"`
 }
+
+// WasteRiskPolicy holds the waste-risk override thresholds; absent fields
+// take their defaults.
+type WasteRiskPolicy struct {
+	HorizonHours *float64 `json:"horizon_hours"`
+	MinUnusedPct *float64 `json:"min_unused_pct"`
+}
+
+const (
+	defaultWasteRiskHorizonHours = 0.0
+	defaultWasteRiskMinUnusedPct = 20.0
+)
+
 type FreeSet struct {
 	Pool   string   `json:"pool"`
 	Models []string `json:"models"`
@@ -57,27 +79,35 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 	if e := decode(b, &p); e != nil {
 		return p, e
 	}
+	// validate fills defaults in place; call it before p is copied out.
+	e := p.validate()
+	return p, e
+}
+
+// validate checks a decoded pool policy and fills absent thresholds with
+// their defaults. It is rerun after simulate's --policy-set overrides.
+func (p *PoolPolicy) validate() error {
 	if p.Version != 1 || len(p.Order) == 0 {
-		return p, fail(exitConfig, "invalid pool order policy")
+		return fail(exitConfig, "invalid pool order policy")
 	}
 	for _, tier := range poolTiers {
 		if !slices.Contains(p.Order, tier) {
-			return p, fail(exitConfig, "pool order policy missing tier %q", tier)
+			return fail(exitConfig, "pool order policy missing tier %q", tier)
 		}
 	}
 	for _, tier := range p.Order {
 		if !slices.Contains(poolTiers, tier) {
-			return p, fail(exitConfig, "unknown pool order tier %q", tier)
+			return fail(exitConfig, "unknown pool order tier %q", tier)
 		}
 	}
 	for _, fs := range p.Free {
 		if !validID(fs.Pool) {
-			return p, fail(exitConfig, "invalid free pool name %q", fs.Pool)
+			return fail(exitConfig, "invalid free pool name %q", fs.Pool)
 		}
 	}
 	for _, pool := range p.CreditPools {
 		if !validID(pool) {
-			return p, fail(exitConfig, "invalid credit pool name %q", pool)
+			return fail(exitConfig, "invalid credit pool name %q", pool)
 		}
 	}
 	for _, x := range []**float64{&p.WasteBelow, &p.ExcludeAt} {
@@ -87,10 +117,26 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 		}
 	}
 	if *p.WasteBelow < 0 || *p.ExcludeAt <= 0 || *p.WasteBelow > *p.ExcludeAt {
-		return p, fail(exitConfig, "invalid projected-at-reset thresholds")
+		return fail(exitConfig, "invalid projected-at-reset thresholds")
 	}
-	return p, nil
+	if p.WasteRisk == nil {
+		p.WasteRisk = &WasteRiskPolicy{}
+	}
+	if p.WasteRisk.HorizonHours == nil {
+		v := defaultWasteRiskHorizonHours
+		p.WasteRisk.HorizonHours = &v
+	}
+	if p.WasteRisk.MinUnusedPct == nil {
+		v := defaultWasteRiskMinUnusedPct
+		p.WasteRisk.MinUnusedPct = &v
+	}
+	if h, m := *p.WasteRisk.HorizonHours, *p.WasteRisk.MinUnusedPct; !finite(h) || !finite(m) || h < 0 || m < 0 || m > 100 {
+		return fail(exitConfig, "invalid waste_risk thresholds")
+	}
+	return nil
 }
+
+func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 func (a *App) poolPolicy() (PoolPolicy, error) {
 	return LoadPoolPolicy(str(a.Config.Local, "pool_policy"))
 }
@@ -113,6 +159,10 @@ type selCand struct {
 	// exhausted marks a free rung whose account projection reaches the
 	// exclusion threshold: only an admit on a free bucket may keep it.
 	exhausted bool
+	// risk marks a paid pool at waste risk (PoolPolicy.wasteRisk); unused is
+	// its projected unused share at the longest window's reset.
+	risk   bool
+	unused *float64
 }
 
 type selPlan struct {
@@ -120,6 +170,7 @@ type selPlan struct {
 	order    []string
 	req      selReq
 	cands    []*selCand
+	ranked   []*selCand // tiered candidates in rank order
 	chosen   *selCand
 	degraded []string
 	at       time.Time
@@ -263,6 +314,56 @@ func (p PoolPolicy) tierOf(row CatalogRow, order []string, pools map[string]Pool
 		tier = "credit"
 	}
 	return tier, slices.Index(order, tier)
+}
+
+// wasteRisk reports whether a paid pool is about to lose quota: its longest
+// window's (a day or more) projected unused share at reset is at least the
+// policy minimum and, when the policy sets a horizon above 0, that reset
+// falls within it. The unused
+// share is (100 − projected) of that window, i.e. waste urgency × hours to
+// reset. Free seats and credit pools are never at waste risk, and a pool
+// without a readable ok spend status, or whose longest window cannot be
+// paced, is not either. The returned share is set whenever it is readable.
+func (p PoolPolicy) wasteRisk(row CatalogRow, free bool, v PoolView, ok bool) (bool, *float64) {
+	if !ok || v.Urgency == nil || v.ResetHours == nil || *v.ResetHours <= 0 {
+		return false, nil
+	}
+	unused := *v.Urgency * *v.ResetHours
+	if free || slices.Contains(p.CreditPools, row.Pool) || v.Status != "ok" || v.Stale || v.Class != "spend" {
+		return false, &unused
+	}
+	wr := p.WasteRisk
+	if h := *wr.HorizonHours; h > 0 && *v.ResetHours > h {
+		return false, &unused
+	}
+	return unused >= *wr.MinUnusedPct, &unused
+}
+
+// exhaustReason names why a non-free candidate's pool excludes it, or "".
+// A pool not at waste risk is excluded when its projection — every window's
+// pace, sub-daily included — reaches the exclusion threshold. A waste-risk
+// pool is used up rather than paced: only its windows of a day or more are
+// projected, and a sub-daily window refuses only once exhausted (used at or
+// above 100%).
+func (p PoolPolicy) exhaustReason(v PoolView, risk bool) string {
+	if !risk {
+		if v.Projected != nil && *v.Projected >= *p.ExcludeAt {
+			return "projected_exhaust"
+		}
+		return ""
+	}
+	if v.ShortUsed != nil && *v.ShortUsed >= 100 || v.Blocking != nil && *v.Blocking >= 100 {
+		return "window_exhausted"
+	}
+	long := v.LongProjected
+	if long == nil && v.Urgency != nil && v.ResetHours != nil {
+		x := 100 - *v.Urgency**v.ResetHours
+		long = &x
+	}
+	if long != nil && *long >= *p.ExcludeAt {
+		return "projected_exhaust"
+	}
+	return ""
 }
 
 // Urgency values and the sources a resolved urgency can come from.
@@ -489,11 +590,18 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if _, ok := gradeOrder[req.grade]; !ok {
 		return nil, fail(exitSeatRefused, "unreadable task grade %q", req.grade)
 	}
+	req.urgency, req.urgencySource = resolveUrgency(s.Urgency, task)
+	return a.selectFor(ctx, s, req)
+}
+
+// selectFor ranks and admits the catalog rungs for a resolved request. It is
+// the selection core shared by spawn and `runtug plan`: it reads the catalog
+// and pool status, asks presence and the quota gates, and writes nothing.
+func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, error) {
 	policy, e := a.poolPolicy()
 	if e != nil {
 		return nil, e
 	}
-	req.urgency, req.urgencySource = resolveUrgency(s.Urgency, task)
 	p := &selPlan{policy: policy, order: slices.Clone(policy.Order), req: req, at: a.Now()}
 	rows, e := a.Quota.Catalog(ctx)
 	if e != nil {
@@ -535,14 +643,14 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 		}
 		if v, ok := pools[row.Pool]; ok {
 			c.blocking, c.projected, c.urgency, c.resetHrs = v.Blocking, v.Projected, v.Urgency, v.ResetHours
-			if c.reason == "" && v.Projected != nil && *v.Projected >= *policy.ExcludeAt {
+			free := policy.isFree(row)
+			c.risk, c.unused = policy.wasteRisk(row, free, v, poolsErr == nil)
+			if c.reason == "" && free && v.Projected != nil && *v.Projected >= *policy.ExcludeAt {
 				// The account projection does not bind a free bucket; the gate
 				// names its basis at admission, which decides.
-				if policy.isFree(row) {
-					c.exhausted = true
-				} else {
-					c.reason = "projected_exhaust"
-				}
+				c.exhausted = true
+			} else if c.reason == "" && !free {
+				c.reason = policy.exhaustReason(v, c.risk)
 			}
 		}
 		if c.reason != "" {
@@ -559,6 +667,7 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 		pending = append(pending, c)
 	}
 	orderSelCands(pending)
+	p.ranked = pending
 	pres := a.newSelPresence(ctx, s, req.tags)
 	p.degraded = append(p.degraded, pres.degraded...)
 	for _, c := range pending {
@@ -591,7 +700,8 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	return p, nil
 }
 
-// orderSelCands ranks tiered candidates: policy tier, then the lowest grade
+// orderSelCands ranks tiered candidates: waste-risk pools first (by waste
+// urgency), then policy tier, then the lowest grade
 // that fits, then waste urgency — the unused projected share per hour until
 // the pool's longest window's reset, highest first. A candidate whose pool
 // reset can be paced always ranks ahead of one whose cannot; candidates
@@ -600,7 +710,20 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 // score, profile.
 func orderSelCands(pending []*selCand) {
 	slices.SortStableFunc(pending, func(x, y *selCand) int {
-		if x.tier != y.tier {
+		// Waste-risk pools rank ahead of every tier, free included, and among
+		// themselves by waste urgency first; everything else keeps the tier
+		// order.
+		if x.risk != y.risk {
+			if x.risk {
+				return -1
+			}
+			return 1
+		}
+		if x.risk {
+			if c := cmp.Compare(*y.urgency, *x.urgency); c != 0 {
+				return c
+			}
+		} else if x.tier != y.tier {
 			return x.tier - y.tier
 		}
 		// Grade fit: the lowest grade that satisfies the task.
@@ -635,6 +758,14 @@ func orderSelCands(pending []*selCand) {
 		}
 		return cmp.Compare(x.row.Effort, y.row.Effort)
 	})
+}
+
+// horizonClause renders the optional waste-risk horizon for the rule text.
+func horizonClause(h float64) string {
+	if h > 0 {
+		return fmt.Sprintf(", resetting within %gh", h)
+	}
+	return ", any reset distance"
 }
 
 func firstPct(a, b *float64) *float64 {
@@ -695,6 +826,10 @@ func (p *selPlan) record() map[string]any {
 		if c.blocking != nil {
 			row["used_pct"] = *c.blocking
 		}
+		row["waste_risk"] = c.risk
+		if c.unused != nil {
+			row["unused_at_reset_pct"] = *c.unused
+		}
 		if c.tier >= 0 {
 			// Ranked candidates state how they were ordered: by waste urgency
 			// when the pool's longest window's reset was paceable, else by
@@ -721,7 +856,8 @@ func (p *selPlan) record() map[string]any {
 	rec := map[string]any{
 		"mode":           "auto",
 		"decision":       fmt.Sprintf("urgency=%s source=%s tiers=%s", p.req.urgency, p.req.urgencySource, strings.Join(p.order, ">")),
-		"rule":           fmt.Sprintf("tier, then lowest grade >= %s, then waste urgency (unused share per hour to the longest window's reset; a paceable reset ranks ahead of an unpaceable one, which keeps the lower projected-at-reset order; sub-daily windows never rank), then smaller effort; waste < %g%%, excluded >= %g%% projected", p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
+		"rule":           fmt.Sprintf("waste-risk pools first (longest window projected >= %g%% unused at reset%s; ranked by waste urgency; sub-daily windows refuse only when exhausted), then tier, then lowest grade >= %s, then waste urgency (unused share per hour to the longest window's reset; a paceable reset ranks ahead of an unpaceable one, which keeps the lower projected-at-reset order; sub-daily windows never rank), then smaller effort; waste < %g%%, excluded >= %g%% projected", *p.policy.WasteRisk.MinUnusedPct, horizonClause(*p.policy.WasteRisk.HorizonHours), p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
+		"waste_risk":     map[string]any{"horizon_hours": *p.policy.WasteRisk.HorizonHours, "min_unused_pct": *p.policy.WasteRisk.MinUnusedPct},
 		"policy_version": p.policy.Version,
 		"policy_source":  p.policy.SourceDoc,
 		"requested":      map[string]any{"grade": p.req.grade, "t": p.req.t, "role": p.req.role, "tags": tags, "effort": p.req.effort, "allow_escalation": p.req.allowEscalation},
@@ -736,8 +872,11 @@ func (p *selPlan) record() map[string]any {
 		if c.seat != nil {
 			canon = c.seat.Canon
 		}
-		chosen := map[string]any{"seat": c.seatName, "canon": canon, "effort": c.row.Effort, "model_id": c.row.ModelID, "pool": c.row.Pool, "gate": c.row.Gate, "tier": c.tierName, "grade": c.row.Grade}
+		chosen := map[string]any{"seat": c.seatName, "canon": canon, "effort": c.row.Effort, "model_id": c.row.ModelID, "pool": c.row.Pool, "gate": c.row.Gate, "tier": c.tierName, "grade": c.row.Grade, "waste_risk": c.risk}
 		why := fmt.Sprintf("tier=%s grade=%s for task %s", c.tierName, c.row.Grade, p.req.grade)
+		if c.risk {
+			why = "waste_risk " + why
+		}
 		if c.projected != nil {
 			chosen["projected_pct"] = *c.projected
 			why += fmt.Sprintf(" projected=%.0f%%", *c.projected)

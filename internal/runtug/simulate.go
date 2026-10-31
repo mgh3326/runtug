@@ -212,12 +212,14 @@ func (v *PoolView) pace(used, projected *float64, window string, left float64, n
 		p = projectAtReset(used, window, resetsAt.Format(time.RFC3339Nano), now)
 	}
 	v.Projected = p
-	v.Urgency, v.ResetHours = nil, nil
+	v.Urgency, v.ResetHours, v.LongProjected, v.ShortUsed = nil, nil, nil, nil
 	// Sub-daily windows never rank a pool; an unlabeled window ranks (the
 	// fixture's only window is its longest by definition).
 	if w, e := windowDuration(window); e == nil && w < 24*time.Hour {
+		v.ShortUsed = used
 		return
 	}
+	v.LongProjected = p
 	if p != nil && left > 0 {
 		u, h := (100-*p)/left, left
 		v.Urgency, v.ResetHours = &u, &h
@@ -225,8 +227,15 @@ func (v *PoolView) pace(used, projected *float64, window string, left float64, n
 }
 
 // simPoolView reduces one input pool to the PoolView the selector ranks on,
-// and reports the pool's reset instant (zero when the input gave none).
-func simPoolView(p simPool, now time.Time) (PoolView, time.Time) {
+// and reports the pool's reset instant (zero when the input gave none). A
+// malformed resets_at or a non-empty unparseable window is a config error,
+// never a silent fall back to the projected order.
+func simPoolView(p simPool, now time.Time) (PoolView, time.Time, error) {
+	if p.Window != "" {
+		if _, e := windowDuration(p.Window); e != nil {
+			return PoolView{}, time.Time{}, fail(exitConfig, "pool %s: invalid window %q", p.ID, p.Window)
+		}
+	}
 	v := PoolView{Status: firstNonempty(p.Status, "ok"), Stale: p.Stale, Class: p.Class, Waste: p.Waste, Blocking: p.UsedPct}
 	if v.Class == "" {
 		v.Class = "spend"
@@ -235,14 +244,16 @@ func simPoolView(p simPool, now time.Time) (PoolView, time.Time) {
 	var left float64
 	switch {
 	case p.ResetsAt != "":
-		if t, h, e := resetClock(p.ResetsAt, now); e == nil {
-			reset, left = t, h
+		t, h, e := resetClock(p.ResetsAt, now)
+		if e != nil {
+			return PoolView{}, time.Time{}, fail(exitConfig, "pool %s: invalid resets_at %q", p.ID, p.ResetsAt)
 		}
+		reset, left = t, h
 	case p.ResetHours != nil:
 		reset, left = now.Add(time.Duration(*p.ResetHours*float64(time.Hour))), *p.ResetHours
 	}
 	v.pace(p.UsedPct, p.Projected, p.Window, left, now, reset)
-	return v, reset
+	return v, reset, nil
 }
 
 // applySet rewrites (or creates) a pool entry and repaces it. A --set that
@@ -286,6 +297,12 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 	f := flags("simulate")
 	selection := f.String("selection", "", "selection input JSON (fixture or job event)")
 	nowFlag := f.String("now", "", "override the document's now (RFC3339)")
+	policyFile := f.String("policy", "", "pool-order policy JSON for this run (overrides [local].pool_policy)")
+	var policySets []string
+	f.Func("policy-set", "policy key=value override for this run (repeatable)", func(v string) error {
+		policySets = append(policySets, v)
+		return nil
+	})
 	var sets []string
 	f.Func("set", "pool:used=N,reset=RFC3339|+Nh[,window=D][,projected=N] (repeatable)", func(v string) error {
 		sets = append(sets, v)
@@ -373,8 +390,16 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 		}
 		now = t
 	}
-	policy, e := a.poolPolicy()
+	var policy PoolPolicy
+	if *policyFile != "" {
+		policy, e = LoadPoolPolicy(*policyFile)
+	} else {
+		policy, e = a.poolPolicy()
+	}
 	if e != nil {
+		return e
+	}
+	if e := policy.applySets(policySets); e != nil {
 		return e
 	}
 	if len(doc.CreditPools) > 0 {
@@ -390,7 +415,10 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 		if !validID(p.ID) {
 			return fail(exitConfig, "invalid pool id %q", p.ID)
 		}
-		v, reset := simPoolView(p, now)
+		v, reset, e := simPoolView(p, now)
+		if e != nil {
+			return e
+		}
 		pools[p.ID] = v
 		windows[p.ID] = p.Window
 		if !reset.IsZero() {
@@ -435,10 +463,11 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 		}
 		if v, ok := pools[row.Pool]; ok {
 			c.blocking, c.projected, c.urgency, c.resetHrs = v.Blocking, v.Projected, v.Urgency, v.ResetHours
+			c.risk, c.unused = policy.wasteRisk(row, free, v, true)
 			// A free rung is excluded only by an observed free limit, never by
 			// its shared pool's used or projected share.
-			if c.reason == "" && !free && v.Projected != nil && *v.Projected >= *policy.ExcludeAt {
-				c.reason = "projected_exhaust"
+			if c.reason == "" && !free {
+				c.reason = policy.exhaustReason(v, c.risk)
 			}
 		}
 		if c.reason != "" {
@@ -455,6 +484,7 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 		pending = append(pending, c)
 	}
 	orderSelCands(pending)
+	p.ranked = pending
 	for i, c := range pending {
 		if i == 0 {
 			c.outcome = "chosen"
@@ -467,6 +497,12 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 	rec["mode"] = "simulate"
 	if len(sets) > 0 {
 		rec["overrides"] = sets
+	}
+	if *policyFile != "" {
+		rec["policy_file"] = *policyFile
+	}
+	if len(policySets) > 0 {
+		rec["policy_overrides"] = policySets
 	}
 	out, e := json.MarshalIndent(rec, "", "  ")
 	if e != nil {
@@ -498,6 +534,34 @@ func simTierOf(policy PoolPolicy, row CatalogRow, free bool, pools map[string]Po
 		tier = "credit"
 	}
 	return tier, slices.Index(policy.Order, tier)
+}
+
+// policySetKeys are the pool-policy thresholds `simulate --policy-set` may
+// override for one run.
+var policySetKeys = []string{"waste_risk.horizon_hours", "waste_risk.min_unused_pct", "waste_below_projected_pct", "exclude_at_projected_pct"}
+
+// applySets applies key=value threshold overrides and revalidates the policy.
+func (p *PoolPolicy) applySets(sets []string) error {
+	for _, kv := range sets {
+		k, val, ok := strings.Cut(kv, "=")
+		n, e := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		if !ok || e != nil || !finite(n) {
+			return fail(exitUsage, "invalid --policy-set %q: want key=number", kv)
+		}
+		switch strings.TrimSpace(k) {
+		case "waste_risk.horizon_hours":
+			p.WasteRisk.HorizonHours = &n
+		case "waste_risk.min_unused_pct":
+			p.WasteRisk.MinUnusedPct = &n
+		case "waste_below_projected_pct":
+			p.WasteBelow = &n
+		case "exclude_at_projected_pct":
+			p.ExcludeAt = &n
+		default:
+			return fail(exitUsage, "unknown --policy-set key %q (want one of %s)", k, strings.Join(policySetKeys, ", "))
+		}
+	}
+	return p.validate()
 }
 
 func mustJSON(v any) []byte {
