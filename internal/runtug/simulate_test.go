@@ -106,3 +106,105 @@ func TestSimulateRejectsMissingSelection(t *testing.T) {
 		t.Fatal("a malformed --set must fail")
 	}
 }
+
+func TestSimulateRejectsNonFiniteSet(t *testing.T) {
+	for _, v := range []string{"claude:used=NaN", "claude:used=Inf", "claude:used=-Inf", "claude:projected=NaN", "claude:projected=Inf"} {
+		if _, _, err := runSimulate(t, "--selection", simulateFixturePath(t), "--set", v); err == nil || exitCode(err) != exitUsage {
+			t.Fatalf("--set %s must fail with exitUsage, got %v", v, err)
+		}
+	}
+}
+
+// A recorded job.placement carries its selection record under
+// payload.selection: the request under `requested`, no pools array, and the
+// pool reading on each candidate row. simulate rebuilds the pool views from
+// those rows; a recorded reset instant exists nowhere, so pools rank by the
+// projected fallback until --set supplies a reset.
+func TestSimulateReplaysRecordedEnvelope(t *testing.T) {
+	path := filepath.Join("testdata", "simulate-recorded-p4-pw6.json")
+	rec, fr, err := runSimulate(t, "--selection", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.Calls) != 0 {
+		t.Fatalf("simulate must run no external command: %v", fr.Calls)
+	}
+	if rec["chosen"] == nil {
+		t.Fatal("a recorded envelope must replay to a choice")
+	}
+	if got := candOutcome(rec, "sonnet", "high")["waste_order"]; got != "projected_fallback" {
+		t.Fatalf("recorded rows carry no reset instant: %v", got)
+	}
+	// Giving claude a reset 9h out makes its ~68% remainder urgent and ranks
+	// the claude rung by reset order.
+	rec, _, err = runSimulate(t, "--selection", path, "--set", "claude:reset=+9h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := candOutcome(rec, "sonnet", "high")
+	if row["waste_order"] != "reset" || row["waste_urgency"] == nil || row["reset_hours"] == nil {
+		t.Fatalf("--set claude:reset must produce an urgency: %v", row)
+	}
+	if u := row["waste_urgency"].(float64); u < 5 || u > 9 {
+		t.Fatalf("claude urgency after --set reset=+9h: %v", u)
+	}
+	if got := candOutcome(rec, "codex-luna", "high")["waste_order"]; got != "projected_fallback" {
+		t.Fatalf("codex still has no reset and keeps the fallback: %v", got)
+	}
+}
+
+// A dropped rung is not a ranked candidate: none of the waste-ranking fields
+// may appear on its record row, even when its pool is paceable.
+func TestSimulateDroppedRowHasNoWasteFields(t *testing.T) {
+	doc := `{"now":"2026-10-31T07:24:00Z","grade":"A",
+	  "pools":[{"id":"claude","used_pct":31,"resets_at":"2026-10-31T16:48:00Z","window":"7d"}],
+	  "candidates":[
+	    {"profile":"sonnet","effort":"high","grade":"A","pool":"claude","gate":"default","model_id":"m"},
+	    {"profile":"weak","effort":"high","grade":"B","pool":"claude","gate":"default","model_id":"m"}]}`
+	path := filepath.Join(t.TempDir(), "sel.json")
+	if err := os.WriteFile(path, []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, err := runSimulate(t, "--selection", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped := candOutcome(rec, "weak", "high")
+	if dropped["outcome"] != "dropped:grade_insufficient" {
+		t.Fatalf("the B rung must drop: %v", dropped["outcome"])
+	}
+	for _, k := range []string{"reset_hours", "waste_urgency", "waste_order"} {
+		if _, ok := dropped[k]; ok {
+			t.Fatalf("a dropped candidate records no %s: %v", k, dropped)
+		}
+	}
+	if candOutcome(rec, "sonnet", "high")["reset_hours"] == nil {
+		t.Fatal("the ranked candidate keeps reset_hours")
+	}
+}
+
+// --set pool:used=N without a reset= term keeps the reset instant the input
+// recorded — also for a sub-daily window whose reset never feeds urgency but
+// still paces the projection.
+func TestSimulateSetKeepsRecordedReset(t *testing.T) {
+	doc := `{"now":"2026-10-31T07:24:00Z","grade":"A",
+	  "pools":[
+	    {"id":"fast","used_pct":20,"resets_at":"2026-10-31T09:24:00Z","window":"5h"},
+	    {"id":"codex","used_pct":13,"projected_pct":30}],
+	  "candidates":[
+	    {"profile":"fast-cand","effort":"high","grade":"A","pool":"fast","gate":"default","model_id":"m"},
+	    {"profile":"codex-luna","effort":"high","grade":"A","pool":"codex","gate":"default","model_id":"m"}]}`
+	path := filepath.Join(t.TempDir(), "sel.json")
+	if err := os.WriteFile(path, []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, err := runSimulate(t, "--selection", path, "--set", "fast:used=40")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 3h of the 5h window elapsed: 40% used paces to 66.7% at reset.
+	got := candOutcome(rec, "fast-cand", "high")["projected_pct"]
+	if p, ok := got.(float64); !ok || p < 66 || p > 67 {
+		t.Fatalf("the recorded sub-daily reset must survive --set used=: %v", got)
+	}
+}

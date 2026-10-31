@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -46,8 +47,13 @@ import (
 // pool's usage or projection.
 //
 // A job event envelope works too: when the document carries
-// `payload.selection`, that record supplies `candidates` (and `pools`/`grade`
-// if present); pool usage can then be completed with --set.
+// `payload.selection`, that record supplies the request under `requested`
+// (grade, role, effort, allow_escalation), `at` as now and the `candidates`
+// table; unknown extra fields are ignored. A recorded record has no `pools`
+// array, so pool views are rebuilt from the candidate rows — per pool the
+// first row's `used_pct`/`projected_pct`. Recorded rows carry no reset
+// instant, so those pools rank by the projected fallback until
+// `--set pool:reset=…` supplies one.
 //
 //	--set pool:used=N,reset=RFC3339|+Nh[,window=7d][,projected=N]
 //
@@ -93,6 +99,32 @@ type simCand struct {
 	RetiredAt *string  `json:"retired_at"`
 }
 
+// simSelRecord is the selection record a job.placement event embeds under
+// payload.selection: the request under `requested`, `at`, and candidate rows
+// that carry their pool's used/projected reading. Fields beyond these are
+// ignored.
+type simSelRecord struct {
+	At         string       `json:"at"`
+	Requested  simRequest   `json:"requested"`
+	Candidates []simRecCand `json:"candidates"`
+}
+
+type simRequest struct {
+	Grade           string `json:"grade"`
+	Role            string `json:"role"`
+	Effort          string `json:"effort"`
+	AllowEscalation bool   `json:"allow_escalation"`
+}
+
+// simRecCand is a recorded candidate row: the catalog fields plus the pool
+// reading and outcome the record kept on the rung.
+type simRecCand struct {
+	simCand
+	UsedPct   *float64 `json:"used_pct"`
+	Projected *float64 `json:"projected_pct"`
+	Outcome   string   `json:"outcome"`
+}
+
 // simSet is one --set override: pool plus the keys it rewrites.
 type simSet struct {
 	pool      string
@@ -117,7 +149,7 @@ func parseSimSet(v string) (simSet, error) {
 		switch k {
 		case "used", "projected":
 			n, e := strconv.ParseFloat(val, 64)
-			if e != nil {
+			if e != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 				return s, fail(exitUsage, "invalid --set %s value %q", k, val)
 			}
 			if k == "used" {
@@ -192,8 +224,9 @@ func (v *PoolView) pace(used, projected *float64, window string, left float64, n
 	}
 }
 
-// simPoolView reduces one input pool to the PoolView the selector ranks on.
-func simPoolView(p simPool, now time.Time) PoolView {
+// simPoolView reduces one input pool to the PoolView the selector ranks on,
+// and reports the pool's reset instant (zero when the input gave none).
+func simPoolView(p simPool, now time.Time) (PoolView, time.Time) {
 	v := PoolView{Status: firstNonempty(p.Status, "ok"), Stale: p.Stale, Class: p.Class, Waste: p.Waste, Blocking: p.UsedPct}
 	if v.Class == "" {
 		v.Class = "spend"
@@ -209,11 +242,13 @@ func simPoolView(p simPool, now time.Time) PoolView {
 		reset, left = now.Add(time.Duration(*p.ResetHours*float64(time.Hour))), *p.ResetHours
 	}
 	v.pace(p.UsedPct, p.Projected, p.Window, left, now, reset)
-	return v
+	return v, reset
 }
 
-// applySet rewrites (or creates) a pool entry and repaces it.
-func applySet(pools map[string]PoolView, windows map[string]string, s simSet, now time.Time) {
+// applySet rewrites (or creates) a pool entry and repaces it. A --set that
+// omits reset keeps the instant the input recorded for the pool, whatever
+// its window — including sub-daily windows that never rank by urgency.
+func applySet(pools map[string]PoolView, windows map[string]string, resets map[string]time.Time, s simSet, now time.Time) {
 	v := pools[s.pool]
 	if v.Status == "" {
 		v.Status, v.Class = "ok", "spend"
@@ -228,13 +263,15 @@ func applySet(pools map[string]PoolView, windows map[string]string, s simSet, no
 		if t, h, e := resetClock(s.reset, now); e == nil {
 			reset, left = t, h
 		}
-	} else if v.ResetHours != nil {
-		left = *v.ResetHours
-		reset = now.Add(time.Duration(*v.ResetHours * float64(time.Hour)))
+	} else if t, ok := resets[s.pool]; ok {
+		reset, left = t, t.Sub(now).Hours()
 	}
 	projected := s.projected
 	v.pace(v.Blocking, projected, window, left, now, reset)
 	windows[s.pool] = window
+	if !reset.IsZero() {
+		resets[s.pool] = reset
+	}
 	pools[s.pool] = v
 }
 
@@ -264,15 +301,51 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 		return fail(exitConfig, "invalid selection input JSON: %v", e)
 	}
 	// A job event carries its selection record under payload.selection.
+	recorded := false
 	if payload, ok := raw["payload"].(map[string]any); ok {
 		if sel, ok := payload["selection"].(map[string]any); ok {
 			raw = sel
+			recorded = true
 		} else {
 			raw = payload
 		}
 	}
 	var doc simDoc
-	if e := decode(mustJSON(raw), &doc); e != nil {
+	if recorded {
+		// A recorded selection record carries fields the input document does
+		// not; decode leniently, let `requested`/`at` fill what the record
+		// nests, and rebuild a missing pools table from the candidate rows.
+		if e := json.Unmarshal(mustJSON(raw), &doc); e != nil {
+			return fail(exitConfig, "invalid selection input: %v", e)
+		}
+		var rec simSelRecord
+		if e := json.Unmarshal(mustJSON(raw), &rec); e != nil {
+			return fail(exitConfig, "invalid selection input: %v", e)
+		}
+		if doc.Now == "" {
+			doc.Now = rec.At
+		}
+		if doc.Grade == "" {
+			doc.Grade = rec.Requested.Grade
+		}
+		if doc.Role == "" {
+			doc.Role = rec.Requested.Role
+		}
+		if doc.Effort == "" {
+			doc.Effort = rec.Requested.Effort
+		}
+		doc.AllowEscalation = doc.AllowEscalation || rec.Requested.AllowEscalation
+		seen := map[string]bool{}
+		for _, p := range doc.Pools {
+			seen[p.ID] = true
+		}
+		for _, rc := range rec.Candidates {
+			if rc.Pool != "" && !seen[rc.Pool] && (rc.UsedPct != nil || rc.Projected != nil) {
+				seen[rc.Pool] = true
+				doc.Pools = append(doc.Pools, simPool{ID: rc.Pool, UsedPct: rc.UsedPct, Projected: rc.Projected})
+			}
+		}
+	} else if e := decode(mustJSON(raw), &doc); e != nil {
 		return fail(exitConfig, "invalid selection input: %v", e)
 	}
 	now := a.Now()
@@ -302,19 +375,24 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 	}
 	pools := map[string]PoolView{}
 	windows := map[string]string{}
+	resets := map[string]time.Time{}
 	for _, p := range doc.Pools {
 		if !validID(p.ID) {
 			return fail(exitConfig, "invalid pool id %q", p.ID)
 		}
-		pools[p.ID] = simPoolView(p, now)
+		v, reset := simPoolView(p, now)
+		pools[p.ID] = v
 		windows[p.ID] = p.Window
+		if !reset.IsZero() {
+			resets[p.ID] = reset
+		}
 	}
 	for _, s := range sets {
 		set, e := parseSimSet(s)
 		if e != nil {
 			return e
 		}
-		applySet(pools, windows, set, now)
+		applySet(pools, windows, resets, set, now)
 	}
 	p := &selPlan{policy: policy, order: slices.Clone(policy.Order), at: now}
 	p.req = selReq{grade: doc.Grade, role: firstNonempty(doc.Role, "worker"), effort: doc.Effort, allowEscalation: doc.AllowEscalation, urgency: urgencyNormal, urgencySource: "simulation"}

@@ -459,7 +459,8 @@ func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, p
 // The tier order is the policy order for every urgency (policy/quota-stop:
 // free first, always). Inside a tier the lowest grade that satisfies the task
 // wins, then the pool with the higher waste urgency — the unused projected
-// share per hour until its longest window's reset — then the smaller effort.
+// share per hour until its longest window's reset; a pool whose reset can be
+// paced always ranks ahead of one whose cannot — then the smaller effort.
 // Sub-daily windows (e.g. 5h) never rank a pool; they gate admission only.
 // A pool whose reset cannot be paced ranks by its projected use at reset. A
 // pool projected to run out before reset is never a candidate.
@@ -592,8 +593,9 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 
 // orderSelCands ranks tiered candidates: policy tier, then the lowest grade
 // that fits, then waste urgency — the unused projected share per hour until
-// the pool's longest window's reset, highest first. A pool whose reset
-// cannot be paced falls back to the lower projected use at reset (the used
+// the pool's longest window's reset, highest first. A candidate whose pool
+// reset can be paced always ranks ahead of one whose cannot; candidates
+// without urgency keep the lower projected use at reset (the used
 // percentage when it cannot be paced yet), then smaller effort, catalog
 // score, profile.
 func orderSelCands(pending []*selCand) {
@@ -605,7 +607,16 @@ func orderSelCands(pending []*selCand) {
 		if gx, gy := gradeOrder[x.row.Grade], gradeOrder[y.row.Grade]; gx != gy {
 			return gx - gy
 		}
-		if x.urgency != nil && y.urgency != nil {
+		// Paceable resets rank ahead of unpaceable ones: mixing the urgency
+		// and projected orders in one comparison is not a strict weak
+		// ordering.
+		if (x.urgency != nil) != (y.urgency != nil) {
+			if x.urgency != nil {
+				return -1
+			}
+			return 1
+		}
+		if x.urgency != nil {
 			if c := cmp.Compare(*y.urgency, *x.urgency); c != 0 {
 				return c
 			}
@@ -694,9 +705,9 @@ func (p *selPlan) record() map[string]any {
 			} else {
 				row["waste_order"] = "projected_fallback"
 			}
-		}
-		if c.resetHrs != nil {
-			row["reset_hours"] = *c.resetHrs
+			if c.resetHrs != nil {
+				row["reset_hours"] = *c.resetHrs
+			}
 		}
 		if len(c.judgments) > 0 {
 			row["quota_gates"] = c.judgments
@@ -710,7 +721,7 @@ func (p *selPlan) record() map[string]any {
 	rec := map[string]any{
 		"mode":           "auto",
 		"decision":       fmt.Sprintf("urgency=%s source=%s tiers=%s", p.req.urgency, p.req.urgencySource, strings.Join(p.order, ">")),
-		"rule":           fmt.Sprintf("tier, then lowest grade >= %s, then waste urgency (unused share per hour to the longest window's reset; sub-daily windows never rank; unknown reset falls back to lower projected-at-reset), then smaller effort; waste < %g%%, excluded >= %g%% projected", p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
+		"rule":           fmt.Sprintf("tier, then lowest grade >= %s, then waste urgency (unused share per hour to the longest window's reset; a paceable reset ranks ahead of an unpaceable one, which keeps the lower projected-at-reset order; sub-daily windows never rank), then smaller effort; waste < %g%%, excluded >= %g%% projected", p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
 		"policy_version": p.policy.Version,
 		"policy_source":  p.policy.SourceDoc,
 		"requested":      map[string]any{"grade": p.req.grade, "t": p.req.t, "role": p.req.role, "tags": tags, "effort": p.req.effort, "allow_escalation": p.req.allowEscalation},

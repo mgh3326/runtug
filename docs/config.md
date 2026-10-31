@@ -249,9 +249,10 @@ pools. Inside a tier the lowest catalog grade that satisfies the task wins,
 then the pool with the higher waste urgency — the unused projected share
 (100 − projected) per hour until its longest account window's reset (7d,
 monthly; sub-daily windows such as a 5h rate window never rank a pool, they
-stay admission gates only). When the longest window's reset cannot be paced
-the pool falls back to the lower projected use at reset (the used percentage
-when it cannot be paced yet) — then the smaller effort, then the catalog score.
+stay admission gates only). A pool whose longest window's reset can be paced
+always ranks ahead of one whose cannot; unpaceable pools keep the lower
+projected use at reset (the used percentage when it cannot be paced yet) —
+then the smaller effort, then the catalog score.
 
 The projection is pacelever's pace: for each account-scope bucket in the
 quota status, used percentage ÷ elapsed share of its window, paced at the
@@ -335,7 +336,12 @@ overrides or creates a pool and repaces it: `used` and `projected` are
 percentages, `reset` an RFC3339 instant or `+Nh`/`+Nd` relative to now, and
 `window` a quota duration (the entry's own window, else 7d). Candidates are
 the catalog row fields plus `seat`; a recorded `job.placement` selection's
-`candidates` decode directly.
+`candidates` decode directly, and when the input is the recorded
+`payload.selection` record itself the request comes from its `requested`
+(`at` is now), fields beyond the candidate schema are ignored, and the pool
+table is rebuilt from the candidate rows' `used_pct`/`projected_pct` — with
+no recorded reset those pools rank by the projected fallback until `--set
+pool:reset=…` supplies one.
 
 ## `[artifacts]`
 

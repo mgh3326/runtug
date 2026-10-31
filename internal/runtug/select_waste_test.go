@@ -136,6 +136,49 @@ func TestPoolsWasteUrgencyUsesLongestWindow(t *testing.T) {
 	}
 }
 
+// orderSelCands is a total order: candidates whose pool reset can be paced
+// rank ahead of those without urgency, however the projected shares compare.
+// A (urgency 5, projected 30), C (urgency 3, projected 10) and B (no
+// urgency, projected 20) must sort A, C, B under every input permutation.
+func TestOrderSelCandsMixedUrgencyIsTotal(t *testing.T) {
+	mk := func(profile string, urg, proj *float64) *selCand {
+		return &selCand{row: CatalogRow{Profile: profile, Grade: "A", Pool: "p", Effort: "high", ModelID: "m"}, tier: 1, urgency: urg, projected: proj}
+	}
+	a := mk("a", ptrF(5), ptrF(30))
+	b := mk("b", nil, ptrF(20))
+	c := mk("c", ptrF(3), ptrF(10))
+	for _, perm := range [][3]*selCand{{a, b, c}, {a, c, b}, {b, a, c}, {b, c, a}, {c, a, b}, {c, b, a}} {
+		pending := []*selCand{perm[0], perm[1], perm[2]}
+		orderSelCands(pending)
+		if pending[0] != a || pending[1] != c || pending[2] != b {
+			t.Fatalf("permutation must sort a, c, b: %s %s %s", pending[0].row.Profile, pending[1].row.Profile, pending[2].row.Profile)
+		}
+	}
+}
+
+// A dropped rung is not a ranked candidate: a grade-insufficient rung on a
+// paceable pool records none of reset_hours, waste_urgency or waste_order.
+func TestSelectRecordDroppedRowHasNoWasteFields(t *testing.T) {
+	rows := append(wasteRows(),
+		CatalogRow{Profile: "weak", Effort: "high", Grade: "B", Pool: "claude", Gate: "default", ModelID: "m"})
+	pools := wastePools20261031()
+	a, s, q := selFixture(t, "A", rows, pools, []string{"devin", "claude", "codex"})
+	q.GateDo = gatePools(map[string]string{"sonnet": "claude", "codex-luna": "codex"})
+	sel, e := a.selectProfile(context.Background(), s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	dropped := candOutcome(sel.record(), "weak", "high")
+	if dropped["outcome"] != "dropped:grade_insufficient" {
+		t.Fatalf("the B rung must drop: %v", dropped["outcome"])
+	}
+	for _, k := range []string{"reset_hours", "waste_urgency", "waste_order"} {
+		if _, ok := dropped[k]; ok {
+			t.Fatalf("a dropped candidate records no %s: %v", k, dropped)
+		}
+	}
+}
+
 func TestSelectRecordCarriesWasteUrgency(t *testing.T) {
 	a, s := wasteFixture(t, wastePools20261031())
 	sel, e := a.selectProfile(context.Background(), s)
