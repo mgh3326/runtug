@@ -191,7 +191,7 @@ package keeps to these rules; the tests named here enforce them:
 | Profile catalog, grade/effort, E6, seat policy | Canon resolution plus versioned policy data; no model fallbacks |
 | Local quota / hub quota / role exit 77 | Implemented; fail closed on missing evidence |
 | Local and SSH placement; pressure and wake request | Implemented as a local policy engine: capability `--tags`, presence/quota reads (degraded = unknown), hub load5/ncpu ordering, `$HOME/work/<repo>` clone convention (plus a matching remote `git worktree` for linked-worktree jobs) with `cwd_map` kept as explicit override, documented wake rules through a `Waker` interface, decision recorded as `job.placement` |
-| `via=hub` spawn | Refused until the hub gains a runtug-capable upstream adapter |
+| `via=hub` spawn | Implemented (RT-7): `POST /v1/spawn` with `brief.doc` and a `checkout` spec, `quota.refresh` node command; hub down or no `spawn_v2` refuses the host, no ssh fallback. ssh stays the default |
 | Harness launch and proof | Implemented for the seven core harnesses; extra catalog aliases fail closed if unavailable |
 | cmd long brief submission | Fixed: explicit submit, status verification, one key retry |
 | Mock lane | Exclusive Claude/Codex stdio descriptors; unsupported/remote seats refused |

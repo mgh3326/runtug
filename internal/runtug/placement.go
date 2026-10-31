@@ -738,8 +738,11 @@ func (a *App) waitForNode(ctx context.Context, host string, h map[string]any, wa
 				}
 			}
 		}
-		if r := a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "true"); r.Code == 0 {
-			return nil
+		// A hub host is proven by its hub connection alone; ssh never runs.
+		if str(h, "via") != "hub" {
+			if r := a.call(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", target, "true"); r.Code == 0 {
+				return nil
+			}
 		}
 		if !a.Now().Before(deadline) {
 			return fail(exitPlacement, "node %s did not connect after wake", host)
@@ -954,10 +957,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 		return candResult{rc: exitMockRefused, note: "mock_lane_remote_refused"}
 	}
 	if str(h, "via") == "hub" {
-		if forced {
-			return candResult{stop: fail(exitConfig, "hub spawn transport is unsupported; use an SSH target running runtug")}
-		}
-		return candResult{rc: exitConfig, note: "via_hub_unsupported"}
+		return a.spawnHub(ctx, s, brief, c, repo, forced)
 	}
 	plan, e := remoteDir(h, s.CWD, repo)
 	if e != nil {
@@ -1094,6 +1094,9 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		j, err := a.judgeHost(ctx, qr, pool, c.name, false, key, acc)
 		c.judgment = &j
 		if err != nil {
+			if j.Reason == hubDown {
+				return candResult{rc: exitCode(err), note: hubDown}
+			}
 			return candResult{rc: exitCode(err), note: "quota_" + j.Outcome}
 		}
 		return a.spawnRemote(ctx, s, brief, c, resolveRepo(), false)

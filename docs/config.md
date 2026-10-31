@@ -111,11 +111,13 @@ Panewire owns authentication and relay transport; runtug never prints credential
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ssh` | `NAME` | SSH config target; BatchMode is used. |
-| `via` | `ssh` | `ssh` or legacy `hub`; legacy hub spawn is refused until the hub can invoke runtug. |
+| `via` | `ssh` | `ssh` (default; unchanged when unset) or `hub`: spawn, worktree preparation and quota refresh go through the panewire hub (see [Hub transport](#hub-transport-via--hub)). A `hub` host never falls back to ssh. |
 | `herdr_session` | `workers` | Remote HERDR_SESSION. |
 | `workspace` | spawn `-w` | Remote workspace. |
 | `cwd_map` | explicit override | Inline table of local prefix → remote prefix; longest prefix wins. Only needed as an exception: the default remote cwd is `$HOME/work/<repo>` on the target, cloned when missing. For a job run from a linked git worktree the default is `<work root>/<worktree dir>`, where the work root is derived from entries that map a checkout directly under the local work root (else `$HOME/work`). |
-| `cwd_keys` | legacy | Kept for legacy hub configurations; not used by SSH. |
+| `cwd_keys` | legacy | Kept for legacy hub configurations; not used. A hub host's cwd key is the canonical repo name. |
+| `hub_wait` | `120` | `via = "hub"` only: seconds (1..300) the hub waits for the node to answer a spawn. A first spawn that clones a large repo may need more. |
+| `brief_doc_prefix` | `briefs/` | `via = "hub"` only: handoffkeep key prefix the brief is uploaded under; it must match the node's own `brief_doc_prefix` (ends in `/`). |
 | `tags` | unset | Capability tags offered by this host. A job's required `--tags` must be a subset for the host to be a placement candidate. |
 | `presence_id` | host `NAME` | Identity this host uses in pacelever host-presence records. |
 | `capacity` | unset | Inventory value displayed by hosts. Authoritative capacity comes from panewire placement and remote admission. |
@@ -136,6 +138,62 @@ on the target or any failing step refuses the spawn with exit 81 — it never
 tries another host or falls back to local. An explicit `cwd_map` entry decides
 the worktree path (its clone is the canonical repo name beside it); an
 unreachable host is skipped as before. `--dry-run` prepares nothing.
+
+### Hub transport (`via = "hub"`)
+
+A host with `via = "hub"` is spawned through the panewire hub (`POST /v1/spawn`,
+`spawn_v2`) instead of ssh. It needs `[hub] hub_url` and an operator credential
+file (`operator_token_env`, else `hub_token_env`; `hub_cf_env` if the hub sits
+behind access); the files must be private and are never echoed. For one spawn
+runtug:
+
+1. uploads the brief as an hk document `<brief_doc_prefix><job>.md`
+   (`handoffkeep doc put --kind brief --job <job>`) and sends the key as
+   `brief.doc`; the hub never sees the text. A brief over 64 KiB is refused
+   (exit 2); a retry overwrites the same key.
+2. for a job started from a linked worktree, sends a `checkout` spec that the
+   node's `worktree.prepare` turns into the same worktree: `mode: branch` for
+   a branch whose local HEAD is already contained in `origin/<branch>` (the
+   node tracks origin's tip), otherwise `mode: detached` at the exact `sha`
+   with `fetch: pull/<n>/head` when a local `origin/pull/<n>/head` ref points
+   at HEAD, or `fetch: refs/heads/<branch>` of an origin branch containing it
+   (a detached HEAD, or a branch whose commits sit on another origin ref).
+   Only refs already known locally are read; nothing is fetched. Commits on no
+   origin ref, an origin URL without an https form (`git@host:o/r` and
+   `ssh://` become `https://host/o/r`), or a subdirectory start refuse with
+   exit 81 before anything is uploaded. The worktree directory name is the local
+   one. A job from a canonical checkout sends no `checkout` and runs in the
+   node's `cwd_map[<repo name>]`.
+3. sends the flags the hub's allowlist carries (`-m -l --t --job --owner
+   --effort --role --lane --parent --task|--parent-job --report -L --urgency
+   --builder-family --builder-job`). The node supplies workspace, host and the
+   override reason. A flag the allowlist cannot carry (`--keep`, `--job-dup-ok`,
+   `--task-hk-bypass`, `--allow-escalation`, `--operator-request`,
+   `--requested-by`, `--purpose`, `--lane-defer`) refuses the spawn (exit 2)
+   instead of being dropped. `--report` is passed as the absolute path, so the
+   node's jobs root must sit at the same path; otherwise its runtug refuses
+   (rc 2, exit 2). The hub has no `--report-relative`.
+4. the node's `spawn.json` must map the repo name as a `cwd_key` and set
+   `work_root`; `spawn_disabled`, `cwd_unmapped`, `runtug_missing` and
+   `brief_doc_unavailable` refuse that host (recorded as `hub_<reason>`) and
+   `--host auto` moves to the next candidate.
+
+The target account is refreshed with the `quota.refresh` node command instead
+of `ssh <host> pacelever refresh`; `measure_timeout_s` still bounds it.
+
+Failures never fall back to ssh (design D4):
+
+| Hub answer | Result |
+| --- | --- |
+| Hub unreachable, timed out, 5xx | Host refused, reason `hub_unavailable`. `--host auto` continues with the other candidates; with none left the usual refusal applies (80 when local spawning is off, else the job runs locally). `--host NAME` exits 81 `hub unavailable`. A quota refresh meets the same outage the same way. |
+| 503 `spawn_capability_required` | Node predates `spawn_v2`: host refused, reason `hub_spawn_capability_required`. |
+| 503 `node_unavailable` | Node asleep or not accepting: treated like an unreachable host, so a wakeable host is woken (and waited for through the hub connection, never ssh). |
+| 401 / 403 / 400 | Host refused, reasons `hub_auth` / `hub_invalid_request` (exit 70 semantics). |
+| `checkout_refused:<outcome>` (rc 81) | Exit 81 naming the outcome (`branch-elsewhere`, `sha-missing`, `origin-mismatch`, `dirty`, `locked`, `git-failed`, `git_too_old`); no other host is tried. `busy` is retried once. |
+| 504 pending, `lost`, node `timeout` | Exit 75: the node may still run the job, so nothing is spawned elsewhere. |
+| Node spawn rc 0 | The `OK pane=… job=…` receipt is printed with `host=NAME`. Other rc values follow the ssh rules (2, 70, 74, 75, 76, 79 and 82 stop the round; others refuse the host). |
+
+`--dry-run` uploads and sends nothing.
 
 `--host auto` runs the local placement policy: required `--tags` must be a
 subset of a host's tags (a job with no tags may go anywhere), hosts with fresh
@@ -171,7 +229,8 @@ When the target's shared observation is missing or stale and the spawning host
 does not hold that account (no `[quota.accounts]` pin or local presence record
 for the key), pacelever cannot refresh it on demand. runtug then runs
 `pacelever refresh POOL` on the target over SSH, bounded by `measure_timeout_s`,
-re-reads the shared observation and judges it. A failed, timed-out or
+re-reads the shared observation and judges it (for a `via = "hub"` host the
+refresh is the hub's `quota.refresh` node command, not ssh). A failed, timed-out or
 unpublished measurement keeps the refusal; `quota_gates` records
 `measured` (`ok` or `failed`) and a `measure_*` reason. A gate that reports its
 `gate_basis` is also recorded as `basis`.
@@ -585,13 +644,13 @@ Behaviour differences from the script:
 | 77 | Role/seat/grade/family/E6 refusal; quota gate exit 5 is remapped here. |
 | 79 | Mock isolation refusal. |
 | 80 | Local spawning disabled/unavailable without a remote fallback. |
-| 81 | Wake/capacity placement failure, or the remote worktree for a linked-worktree job could not be prepared. |
+| 81 | Wake/capacity placement failure, the remote worktree for a linked-worktree job could not be prepared (also a `via = "hub"` checkout refusal), or the hub is unavailable for a forced `via = "hub"` host. |
 | 82 | Builder pane committed but lane unregistered under strict lane reporting. |
 | 83 | `spawn --wait`: the job escalated. |
 | 84 | `spawn --wait`: the job was lost or revoked. |
 | 85 | `spawn --wait`: the wait deadline expired; the job is retained. |
 | 124 | A time-bounded CLI call reached its context deadline. |
-| 255 | SSH could not reach a remote host (repository check, clone or spawn leg). |
+| 255 | SSH could not reach a remote host (repository check, clone or spawn leg). Never returned for a `via = "hub"` host. |
 
 Unexpected dependency failures preserve their subprocess exit code. A pane
 success receipt is always authoritative for avoiding a second spawn, even with exit 82.

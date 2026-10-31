@@ -134,6 +134,14 @@ func LoadConfig(path string) (Config, error) {
 		if v := str(h, "via"); v != "" && v != "ssh" && v != "hub" {
 			return c, fail(exitConfig, "hosts.%s.via must be ssh or hub", name)
 		}
+		if _, ok := h["hub_wait"]; ok {
+			if n, isInt := h["hub_wait"].(int64); !isInt || n < 1 || n > 300 {
+				return c, fail(exitConfig, "hosts.%s.hub_wait must be 1..300 seconds", name)
+			}
+		}
+		if v := str(h, "brief_doc_prefix"); v != "" && !validDocPrefix(v) {
+			return c, fail(exitConfig, "hosts.%s.brief_doc_prefix must be a key prefix ending in /", name)
+		}
 		if e := validTags(h["tags"], "hosts."+name+".tags"); e != nil {
 			return c, e
 		}
@@ -298,4 +306,19 @@ func (a *App) controlHubArgs(operator bool) []string {
 		args = append(args, "--hub-cf-env", v)
 	}
 	return args
+}
+
+// validDocPrefix accepts an hk document key prefix: path segments of key
+// characters, none empty, "." or "..", ending in "/".
+func validDocPrefix(v string) bool {
+	segs, ok := strings.CutSuffix(v, "/")
+	if !ok || segs == "" || len(v) > 100 {
+		return false
+	}
+	for _, seg := range strings.Split(segs, "/") {
+		if seg == "" || seg == "." || seg == ".." || !regexp.MustCompile(`^[A-Za-z0-9._-]+$`).MatchString(seg) {
+			return false
+		}
+	}
+	return true
 }

@@ -34,6 +34,9 @@ type App struct {
 	Wake      Waker
 	LoadRatio func(context.Context) (float64, error)
 	JobStore  JobStore
+	// Hub carries via="hub" spawns and quota refreshes; nil builds the HTTP
+	// client from [hub] on first use.
+	Hub HubTransport
 }
 
 func Main(ctx context.Context, args []string, out, errout io.Writer) int {
