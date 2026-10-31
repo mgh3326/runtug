@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
 // fakeJobStore is an in-memory JobStore mirroring the hk write rules: a claim
@@ -259,37 +261,51 @@ func (s seqStore) Get(ctx context.Context, jobID string) (map[string]any, error)
 	return s.JobStore.Get(ctx, jobID)
 }
 
+// probeStore wraps a JobStore and records, at each call, whether the job
+// already exists in the local ledger, so a test can assert cross-boundary
+// order (hk claim before the local claim).
+type probeStore struct {
+	JobStore
+	a      *App
+	job    string
+	ledger *[]string
+}
+
+func (p probeStore) mark(op string) {
+	state := "ledger-empty"
+	if _, e := p.a.ledger().JobGet(context.Background(), p.job); e == nil {
+		state = "ledger-claimed"
+	}
+	*p.ledger = append(*p.ledger, "hk "+op+" "+state)
+}
+func (p probeStore) Claim(ctx context.Context, jobID, taskID, host string) error {
+	p.mark("claim")
+	return p.JobStore.Claim(ctx, jobID, taskID, host)
+}
+func (p probeStore) Put(ctx context.Context, jobID string, fields map[string]any) error {
+	p.mark("put")
+	return p.JobStore.Put(ctx, jobID, fields)
+}
+func (p probeStore) Get(ctx context.Context, jobID string) (map[string]any, error) {
+	p.mark("get")
+	return p.JobStore.Get(ctx, jobID)
+}
+
 // Acceptance 1: the hk claim is issued on the executing host before the
-// arbiter claim, and a taken id refuses the spawn with exit 74.
-func TestJobClaimPrecedesArbiterClaim(t *testing.T) {
-	a, s, f, _ := cmdFixture(t)
+// local claim, and a taken id refuses the spawn with exit 74.
+func TestJobClaimPrecedesLocalClaim(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
 	h := newFakeHK(t)
 	var seq []string
-	a.JobStore = seqStore{JobStore: h.client(), seq: &seq, name: "hk"}
-	origDo := f.Do
-	f.Do = func(c Command) Result {
-		if c.Name == "arbiter" && len(c.Args) > 0 {
-			seq = append(seq, "arbiter "+c.Args[0])
-		}
-		return origDo(c)
-	}
+	a.JobStore = probeStore{JobStore: h.client(), a: a, job: s.Job, ledger: &seq}
 	if e := a.Spawn(context.Background(), s); e != nil {
 		t.Fatal(e)
 	}
-	claim, arbiter := -1, -1
-	for i, c := range seq {
-		if c == "hk claim" && claim < 0 {
-			claim = i
-		}
-		if c == "arbiter claim" && arbiter < 0 {
-			arbiter = i
-		}
+	if len(seq) < 2 || seq[0] != "hk claim ledger-empty" || seq[1] != "hk get ledger-empty" {
+		t.Fatalf("the hk claim must complete before the local claim: %v", seq)
 	}
-	if claim < 0 || arbiter < 0 {
-		t.Fatalf("claim=%d arbiter=%d seq=%v", claim, arbiter, seq)
-	}
-	if claim > arbiter {
-		t.Fatalf("hk claim must precede the arbiter claim: %v", seq)
+	if !slices.Contains(seq, "hk put ledger-claimed") {
+		t.Fatalf("the spawned record is written after the local claim: %v", seq)
 	}
 	rec := h.record(t, s.Job)
 	if str(rec, "host") != "test-host" || scalar(rec["task_id"]) != "42" {
@@ -297,24 +313,16 @@ func TestJobClaimPrecedesArbiterClaim(t *testing.T) {
 	}
 }
 
-func TestJobClaimTakenExits74BeforeArbiter(t *testing.T) {
-	a, s, f, _ := cmdFixture(t)
+func TestJobClaimTakenExits74BeforeLocalClaim(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
 	h := newFakeHK(t)
 	h.claimJob(s.Job, float64(7), "other-host") // a different task and host took the id
 	a.JobStore = h.client()
-	arbiterClaim := false
-	origDo := f.Do
-	f.Do = func(c Command) Result {
-		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
-			arbiterClaim = true
-		}
-		return origDo(c)
-	}
 	if code(a.Spawn(context.Background(), s)) != 74 {
 		t.Fatal("job_id_taken must exit 74")
 	}
-	if arbiterClaim {
-		t.Fatal("arbiter claim ran after a refused hk claim")
+	if _, e := a.ledger().JobGet(context.Background(), s.Job); e == nil {
+		t.Fatal("local claim ran after a refused hk claim")
 	}
 }
 
@@ -734,25 +742,17 @@ func (failingJobStore) Get(context.Context, string) (map[string]any, error) {
 }
 
 // An identical claim replayed onto a finished record is a used id, not a
-// fresh claim: refuse with 74 and never reach the arbiter.
+// fresh claim: refuse with 74 and never reach the local ledger.
 func TestJobClaimReplayOnTerminalRecordExits74(t *testing.T) {
-	a, s, f, _ := cmdFixture(t)
+	a, s, _, _ := cmdFixture(t)
 	store := newFakeJobStore()
 	store.records[s.Job] = map[string]any{"job_id": s.Job, "task_id": s.Task, "host": "test-host", "state": "completed", "result": map[string]any{"findings": []any{}}}
 	a.JobStore = store
-	arbiterClaim := false
-	origDo := f.Do
-	f.Do = func(c Command) Result {
-		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
-			arbiterClaim = true
-		}
-		return origDo(c)
-	}
 	if code(a.Spawn(context.Background(), s)) != 74 {
 		t.Fatal("replay onto a completed record must exit 74")
 	}
-	if arbiterClaim {
-		t.Fatal("arbiter claim ran after a used id")
+	if _, e := a.ledger().JobGet(context.Background(), s.Job); e == nil {
+		t.Fatal("local claim ran after a used id")
 	}
 	if st := str(store.records[s.Job], "state"); st != "completed" {
 		t.Fatalf("finished record touched: %s", st)
@@ -761,41 +761,46 @@ func TestJobClaimReplayOnTerminalRecordExits74(t *testing.T) {
 
 // A spawn that aborts after the hk claim marks the record lost.
 func TestSpawnAbortAfterClaimMarksLost(t *testing.T) {
-	a, s, f, _ := cmdFixture(t)
+	a, s, _, _ := cmdFixture(t)
 	store := newFakeJobStore()
 	a.JobStore = store
-	origDo := f.Do
-	f.Do = func(c Command) Result {
-		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
-			return Result{Code: 1, Err: "arbiter down"}
-		}
-		return origDo(c)
-	}
+	// A ledger path under a regular file cannot be created: the local claim fails.
+	a.Arbiter.DB = filepath.Join(a.Home, "node.env", "arbiter", "state.db")
 	if a.Spawn(context.Background(), s) == nil {
-		t.Fatal("spawn must fail when the arbiter claim fails")
+		t.Fatal("spawn must fail when the local claim fails")
 	}
 	if st := str(store.records[s.Job], "state"); st != "lost" {
 		t.Fatalf("aborted claim state = %q, want lost", st)
 	}
 }
 
-// A concurrent duplicate that loses at the arbiter leaves the live spawn's
+// claimLocal registers the spawn's job in the ledger as an earlier spawn would.
+func claimLocal(t *testing.T, a *App, s Spawn) {
+	t.Helper()
+	if _, e := a.ledger().Claim(context.Background(), arbiter.Claim{Job: s.Job, Lane: "x", T: "T1", AgentLabel: "y"}); e != nil {
+		t.Fatal(e)
+	}
+}
+
+// releaseLocal leaves the job released, as done/reap do: quota record, then release.
+func releaseLocal(t *testing.T, a *App, s Spawn) {
+	t.Helper()
+	if _, e := a.ledger().RecordQuotaPool(context.Background(), arbiter.QuotaRun{Job: s.Job, Profile: "p", Gate: arbiter.Gate{Pool: "example"}}); e != nil {
+		t.Fatal(e)
+	}
+	if e := a.ledger().ReleaseQuotaPool(context.Background(), s.Job, "example", false); e != nil {
+		t.Fatal(e)
+	}
+}
+
+// A concurrent duplicate that loses at the local claim leaves the live spawn's
 // record alone.
-func TestSpawnDuplicateAtArbiterKeepsRecord(t *testing.T) {
-	a, s, f, _ := cmdFixture(t)
+func TestSpawnDuplicateAtLedgerKeepsRecord(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
 	store := newFakeJobStore()
 	store.records[s.Job] = map[string]any{"job_id": s.Job, "task_id": s.Task, "host": "test-host", "state": "claimed"}
 	a.JobStore = store
-	origDo := f.Do
-	f.Do = func(c Command) Result {
-		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
-			return Result{Code: arbiterDuplicateClaim, Err: "duplicate"}
-		}
-		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "job-get" {
-			return Result{Out: `{"state":"claimed","owner_lane":"x","agent_label":"y","receipt":{}}`}
-		}
-		return origDo(c)
-	}
+	claimLocal(t, a, s)
 	if code(a.Spawn(context.Background(), s)) != 74 {
 		t.Fatal("a duplicate must exit 74")
 	}
@@ -804,69 +809,51 @@ func TestSpawnDuplicateAtArbiterKeepsRecord(t *testing.T) {
 	}
 }
 
-// A released job reports `"receipt":"absent"` from arbiter job-get. That is no
-// receipt, not an unreadable state: the same job id is reclaimed. null and a
-// missing field mean the same.
-func TestSpawnReclaimsReleasedJobWithoutReceipt(t *testing.T) {
-	for name, receipt := range map[string]string{
-		"absent":  `,"receipt":"absent"`,
-		"null":    `,"receipt":null`,
-		"missing": ``,
-	} {
+// A released job has no receipt (or a stale one); either way the same job id
+// is reclaimed in place and its history kept.
+func TestSpawnReclaimsReleasedJob(t *testing.T) {
+	for name, withReceipt := range map[string]bool{"no receipt": false, "stale receipt": true} {
 		t.Run(name, func(t *testing.T) {
-			a, s, f, _ := cmdFixture(t)
-			origDo := f.Do
-			reclaimed := false
-			f.Do = func(c Command) Result {
-				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
-					if !strings.Contains(strings.Join(c.Args, " "), "--reclaim-released") {
-						return Result{Code: arbiterDuplicateClaim, Err: "duplicate"}
-					}
-					reclaimed = true
+			a, s, _, _ := cmdFixture(t)
+			claimLocal(t, a, s)
+			if withReceipt {
+				if _, e := a.ledger().AppendEvent(context.Background(), s.Job, "job.spawned", map[string]any{"pane_id": "old:p"}, nil); e != nil {
+					t.Fatal(e)
 				}
-				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "job-get" {
-					return Result{Out: `{"state":"released","owner_lane":"x","agent_label":"y"` + receipt + `}`}
-				}
-				return origDo(c)
 			}
+			releaseLocal(t, a, s)
 			if e := a.Spawn(context.Background(), s); e != nil {
 				t.Fatalf("released job not reclaimed: %v", e)
 			}
-			if !reclaimed {
-				t.Fatal("no --reclaim-released claim")
+			kinds := eventKindsOf(t, a, s.Job)
+			if !slices.Contains(kinds, "job.reclaim") || slices.Index(kinds, "job.claim") != 0 {
+				t.Fatalf("no reclaim over the original claim: %v", kinds)
+			}
+			if st, pools := ledgerState(t, a, s.Job); st != "leased" || len(pools) != 1 {
+				t.Fatalf("after reclaim: %s %v", st, pools)
 			}
 		})
 	}
 }
 
-// A map receipt still decodes; any other receipt shape fails closed with the
-// existing unreadable-state error (exit 75) and never reclaims.
+// A duplicate of a live job with a receipt is refused (74); a receipt the
+// ledger cannot read fails closed with the unreadable-state error (75) and
+// never reclaims.
 func TestSpawnDuplicateReceiptShapes(t *testing.T) {
 	for name, tc := range map[string]struct {
-		receipt string
+		payload map[string]any
 		rc      int
 	}{
-		"map":          {`{"cwd":"/w"}`, exitDuplicate},
-		"other string": {`"present"`, exitStateConflict},
-		"empty string": {`""`, exitStateConflict},
-		"number":       {`7`, exitStateConflict},
-		"array":        {`[]`, exitStateConflict},
-		"bool":         {`true`, exitStateConflict},
+		"valid receipt": {map[string]any{"pane_id": "w:p", "label": "y"}, exitDuplicate},
+		"no pane id":    {map[string]any{"label": "y"}, exitStateConflict},
+		"empty pane id": {map[string]any{"pane_id": ""}, exitStateConflict},
+		"label number":  {map[string]any{"pane_id": "w:p", "label": 7}, exitStateConflict},
 	} {
 		t.Run(name, func(t *testing.T) {
-			a, s, f, _ := cmdFixture(t)
-			origDo := f.Do
-			f.Do = func(c Command) Result {
-				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
-					if strings.Contains(strings.Join(c.Args, " "), "--reclaim-released") {
-						t.Fatal("unexpected reclaim")
-					}
-					return Result{Code: arbiterDuplicateClaim, Err: "duplicate"}
-				}
-				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "job-get" {
-					return Result{Out: `{"state":"claimed","owner_lane":"x","agent_label":"y","receipt":` + tc.receipt + `}`}
-				}
-				return origDo(c)
+			a, s, _, _ := cmdFixture(t)
+			claimLocal(t, a, s)
+			if _, e := a.ledger().AppendEvent(context.Background(), s.Job, "job.spawned", tc.payload, nil); e != nil {
+				t.Fatal(e)
 			}
 			e := a.Spawn(context.Background(), s)
 			if got := code(e); got != tc.rc {
@@ -875,22 +862,31 @@ func TestSpawnDuplicateReceiptShapes(t *testing.T) {
 			if tc.rc == exitStateConflict && !strings.Contains(e.Error(), "duplicate job state unreadable") {
 				t.Fatalf("error = %v, want the existing unreadable-state error", e)
 			}
+			if st, _ := a.ledger().Status(context.Background(), s.Job, ""); len(st.Jobs) != 1 || st.Jobs[0].State != "claimed" {
+				t.Fatalf("a refused duplicate changed the job: %+v", st.Jobs)
+			}
 		})
 	}
 }
 
-func TestDurableReceiptDecodesMap(t *testing.T) {
-	var j DurableJob
-	if e := json.Unmarshal([]byte(`{"state":"claimed","receipt":{"cwd":"/w","pane":"p"}}`), &j); e != nil {
+func TestDurableReadsReceiptFromLedger(t *testing.T) {
+	a := testApp(t)
+	ctx := context.Background()
+	if _, e := a.ledger().Claim(ctx, arbiter.Claim{Job: "j", Lane: "l", T: "T1"}); e != nil {
 		t.Fatal(e)
 	}
-	if str(j.Receipt, "cwd") != "/w" || str(j.Receipt, "pane") != "p" {
-		t.Fatalf("receipt = %v", j.Receipt)
+	d, e := a.durable(ctx, "j")
+	if e != nil || d.State != "claimed" || d.Receipt != nil || d.Label != "j" {
+		t.Fatalf("%+v %v", d, e)
 	}
-	for _, in := range []string{`{"state":"released","receipt":"absent"}`, `{"state":"released","receipt":null}`, `{"state":"released"}`} {
-		var r DurableJob
-		if e := json.Unmarshal([]byte(in), &r); e != nil || r.Receipt != nil {
-			t.Fatalf("%s: receipt = %v, err = %v", in, r.Receipt, e)
-		}
+	if _, e = a.ledger().AppendEvent(ctx, "j", "job.spawned", map[string]any{"pane_id": "w:p", "label": "lab"}, nil); e != nil {
+		t.Fatal(e)
+	}
+	d, e = a.durable(ctx, "j")
+	if e != nil || str(d.Receipt, "pane_id") != "w:p" || str(d.Receipt, "label") != "lab" {
+		t.Fatalf("%+v %v", d, e)
+	}
+	if _, e = a.durable(ctx, "nope"); code(e) != arbiter.ExitNotFound {
+		t.Fatalf("unknown job: %v", e)
 	}
 }

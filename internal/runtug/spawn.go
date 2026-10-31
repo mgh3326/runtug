@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
 type Spawn struct {
@@ -368,18 +370,14 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if s.Role == "builder" {
 		owner = s.Lane
 	}
-	claim := []string{"claim", "--job", s.Job, "--agent-label", s.Label, "--lane", owner, "--t", s.T, "--role", "worker", "--task-id", s.Task}
+	claim := arbiter.Claim{Job: s.Job, AgentLabel: s.Label, Lane: owner, T: s.T, Role: "worker", TaskID: s.Task, TaskInheritedFrom: s.Inherited}
 	if s.Role == "builder" {
-		claim[10] = "builder"
-		claim = append(claim, "--parent-lane", s.Parent)
-	}
-	if s.Inherited != "" {
-		claim = append(claim, "--task-inherited-from", s.Inherited)
+		claim.Role, claim.ParentLane = "builder", s.Parent
 	}
 	if s.Bypass {
-		claim = append(claim, "--task-link-override", "declared")
+		claim.TaskLinkOverride = "declared"
 	}
-	// The hk job claim runs on the executing host before the arbiter claim:
+	// The hk job claim runs on the executing host before the local claim:
 	// 409 job_id_taken refuses with the same exit 74, and hk down fails
 	// closed like the task claim.
 	if e = a.claimJobRecord(ctx, s); e != nil {
@@ -395,15 +393,17 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			a.abandonJobRecord(context.WithoutCancel(ctx), s.Job)
 		}
 	}()
-	// The arbiter arbitrates concurrent duplicate claims; never infer a free job from pane status.
-	r := a.call(ctx, "arbiter", append(claim, "--json")...)
-	if r.Code == arbiterDuplicateClaim {
+	// The local ledger arbitrates concurrent duplicate claims on this host;
+	// never infer a free job from pane status.
+	_, e = a.ledger().Claim(ctx, claim)
+	if e != nil && arbiter.Code(e) == arbiter.ExitDuplicate {
 		d, de := a.durable(ctx, s.Job)
 		if de != nil {
 			return fail(exitStateConflict, "duplicate job state unreadable")
 		}
 		if d.State == "released" {
-			r = a.call(ctx, "arbiter", append(claim, "--reclaim-released", "--json")...)
+			claim.ReclaimReleased = true
+			_, e = a.ledger().Claim(ctx, claim)
 		} else if !s.DupOK {
 			return fail(exitDuplicate, "active duplicate job %s", s.Job)
 		} else {
@@ -411,11 +411,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			if e = a.event(ctx, s.Job, "job.duplicate_override", map[string]any{"label": s.Label}); e != nil {
 				return e
 			}
-			r = Result{}
+			e = nil
 		}
 	}
-	if e = check(r, "arbiter claim"); e != nil {
-		return e
+	if e != nil {
+		return ledgerFail(e, "claim")
 	}
 	if !s.Delegated {
 		if placementRec == nil {
@@ -439,36 +439,19 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 				_ = a.must(cleanup, "herdr", "pane", "close", pane)
 			}
 			if pool != "" {
-				_ = a.must(cleanup, "arbiter", "release", "--job", s.Job, "--resource", pool, "--kind", "quota_pool")
+				_ = a.ledger().ReleaseQuotaPool(cleanup, s.Job, pool, false)
 			}
 		}
 	}()
-	gateFile, e := os.CreateTemp("", "runtug-gate-*")
+	granted, e := arbiter.ParseGate(seat.gateName(), gate)
 	if e != nil {
-		return e
+		return ledgerFail(e, "lease")
 	}
-	defer os.Remove(gateFile.Name())
-	if _, e = gateFile.WriteString(gate); e != nil {
-		gateFile.Close()
-		return e
+	rec, e := a.ledger().RecordQuotaPool(ctx, arbiter.QuotaRun{Job: s.Job, Profile: seat.gateName(), LaunchProfile: launchProfile(seat.Canon, launch.Effort), Gate: granted})
+	if e != nil {
+		return ledgerFail(e, "lease")
 	}
-	if e = gateFile.Close(); e != nil {
-		return e
-	}
-	r = a.call(ctx, "arbiter", "lease", "--job", s.Job, "--kind", "quota_pool", "--profile", seat.gateName(), "--launch-profile", launchProfile(seat.Canon, launch.Effort), "--gate-output", gateFile.Name(), "--json")
-	if e = check(r, "arbiter lease"); e != nil {
-		return e
-	}
-	var lease map[string]any
-	if e = json.Unmarshal([]byte(r.Out), &lease); e != nil {
-		_ = a.releaseQuota(ctx, Job{ID: s.Job})
-		return e
-	}
-	pool = str(lease, "pool")
-	if pool == "" {
-		_ = a.releaseQuota(ctx, Job{ID: s.Job})
-		return fail(exitConfig, "lease missing pool")
-	}
+	pool = rec.Pool
 	mockEnv, e := a.mock(ctx, s, seat)
 	if e != nil {
 		return e
@@ -494,7 +477,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	for _, v := range env {
 		tabArgs = append(tabArgs, "--env", v)
 	}
-	r = a.call(ctx, "herdr", tabArgs...)
+	r := a.call(ctx, "herdr", tabArgs...)
 	if e = check(r, "herdr tab create"); e != nil {
 		return e
 	}

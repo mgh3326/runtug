@@ -35,9 +35,9 @@ func (a *App) trust() error {
 		return fail(exitConfig, "HOME and ARBITER_INBOX_ROOT must select canonical paths")
 	}
 	if data := os.Getenv("XDG_DATA_HOME"); data != "" && filepath.Clean(data) != filepath.Join(canonical, ".local", "share") {
-		return fail(exitConfig, "XDG_DATA_HOME must select canonical arbiter state")
+		return fail(exitConfig, "XDG_DATA_HOME must select the canonical local ledger state")
 	}
-	for _, bin := range []string{"arbiter", "handoffkeep"} {
+	for _, bin := range []string{"handoffkeep"} {
 		want := filepath.Join(canonical, ".local", "bin", bin)
 		selected := a.Bins[bin]
 		if selected == "" {
