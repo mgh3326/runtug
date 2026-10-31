@@ -485,6 +485,8 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 		}
 	}()
 	owner := firstNonempty(s.Owner, "default")
+	// The ledger knows two claim roles, worker and builder; a reviewer seat
+	// claims as a worker, as spawn does.
 	if _, e = a.ledger().Claim(ctx, arbiter.Claim{Job: s.Job, AgentLabel: s.Label, Lane: owner, T: s.T, Role: "worker", TaskID: s.Task, TaskInheritedFrom: s.Inherited}); e != nil {
 		return "", ledgerFail(e, "claim")
 	}

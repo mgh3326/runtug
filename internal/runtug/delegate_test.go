@@ -556,8 +556,21 @@ func TestDelegateHeadlessKindWithoutOneShotRefusesBeforeClaiming(t *testing.T) {
 
 func TestDelegateHeadlessReviewerExcludesCallerFamily(t *testing.T) {
 	e := newDelegateEnv(t)
-	if err := e.a.delegate(context.Background(), delegateArgs(e, "--role", "reviewer", "--headless", "--family", "cognition")); code(err) == 0 && len(e.runner.named("devin")) > 0 {
+	base := e.runner.do
+	e.runner.do = func(c Command) Result {
+		if c.Name == "claude" {
+			return Result{Out: "no findings\n"}
+		}
+		return base(c)
+	}
+	if err := e.a.delegate(context.Background(), delegateArgs(e, "--role", "reviewer", "--headless", "--family", "cognition")); err != nil {
+		t.Fatalf("a reviewer claims its job like any worker seat: %v", err)
+	}
+	if len(e.runner.named("devin")) != 0 || len(e.runner.named("claude")) != 1 {
 		t.Fatal("the reviewer must not run on the caller's own family")
+	}
+	if st := e.a.JobStore.(*fakeJobStore).record(t, "delegate-1"); st["role"] != "reviewer" || st["state"] != "completed" {
+		t.Fatalf("%v", st)
 	}
 }
 
@@ -657,6 +670,9 @@ func TestDelegatePatchRoleUsesTempWorktreeAndReturnsPatch(t *testing.T) {
 	patch, err := os.ReadFile(r.Patch)
 	if r.Patch == "" || err != nil {
 		t.Fatalf("a patch path that exists must come back: %q %v", r.Patch, err)
+	}
+	if strings.Contains(string(patch), "+// wip") {
+		t.Fatalf("the patch holds only the delegate's edits, not the caller's uncommitted ones:\n%s", patch)
 	}
 	if !strings.Contains(string(patch), "+var fixed = true") || !strings.Contains(string(patch), "new.go") {
 		t.Fatalf("the patch must hold the delegate's edits:\n%s", patch)
