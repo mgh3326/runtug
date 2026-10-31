@@ -71,10 +71,20 @@ func TestPlanPrintsHostAndModelWithoutSideEffects(t *testing.T) {
 	if len(store.calls) != 0 {
 		t.Fatalf("plan must not touch the job store: %v", store.calls)
 	}
+	// The only host contact is the read-only preflight: one probe script per
+	// remote host and the version of the local panewire.
+	probes := 0
 	for _, c := range fr.Calls {
-		if c.Name == "handoffkeep" || c.Name == "herdr" || c.Name == "arbiter" || c.Name == "panewire" || c.Name == "ssh" {
+		switch {
+		case c.Name == "ssh" && len(c.Args) > 0 && c.Args[len(c.Args)-1] == probeScript:
+			probes++
+		case c.Name == "panewire" && strings.Join(c.Args, " ") == "--version":
+		case c.Name == "handoffkeep" || c.Name == "herdr" || c.Name == "arbiter" || c.Name == "panewire" || c.Name == "ssh":
 			t.Fatalf("plan must not spawn or write: %v", fr.Calls)
 		}
+	}
+	if probes != 1 {
+		t.Fatalf("plan probes each remote host once, got %d: %v", probes, fr.Calls)
 	}
 	if entries, _ := os.ReadDir(a.Jobs); len(entries) != 0 {
 		t.Fatalf("plan must not write job state: %v", entries)

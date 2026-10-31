@@ -74,13 +74,9 @@ func (w cliWaker) Wake(ctx context.Context, host string, req WakeRequest) error 
 	return nil
 }
 
-// quotaClient resolves the shared-quota read endpoint. The URL and bearer
-// credential follow the same convention as pacelever: HANDOFFKEEP_URL /
-// HANDOFFKEEP_TOKEN in the environment or ~/.config/handoffkeep/config.env,
-// with hosts.toml [quota] url / credential_env as explicit overrides. Errors
-// never echo URLs or credentials.
-func (a *App) quotaClient() (*hkQuota, error) {
-	q := a.Config.Quota
+// hkRead returns the reader for the handoffkeep settings — environment first,
+// then ~/.config/handoffkeep/config.env — together with the parsed file.
+func (a *App) hkRead() (func(string) string, map[string]string) {
 	envFile := map[string]string{}
 	path := os.Getenv("HANDOFFKEEP_CONFIG")
 	if path == "" {
@@ -102,16 +98,32 @@ func (a *App) quotaClient() (*hkQuota, error) {
 			}
 		}
 	}
-	read := func(k string) string {
+	return func(k string) string {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			return v
 		}
 		return envFile[k]
+	}, envFile
+}
+
+// quotaURL is the configured shared-quota endpoint: hosts.toml [quota] url,
+// else HANDOFFKEEP_URL.
+func (a *App) quotaURL(read func(string) string) string {
+	if u := str(a.Config.Quota, "url"); u != "" {
+		return u
 	}
-	u := str(q, "url")
-	if u == "" {
-		u = read("HANDOFFKEEP_URL")
-	}
+	return read("HANDOFFKEEP_URL")
+}
+
+// quotaClient resolves the shared-quota read endpoint. The URL and bearer
+// credential follow the same convention as pacelever: HANDOFFKEEP_URL /
+// HANDOFFKEEP_TOKEN in the environment or ~/.config/handoffkeep/config.env,
+// with hosts.toml [quota] url / credential_env as explicit overrides. Errors
+// never echo URLs or credentials.
+func (a *App) quotaClient() (*hkQuota, error) {
+	q := a.Config.Quota
+	read, envFile := a.hkRead()
+	u := a.quotaURL(read)
 	tokenEnv := str(q, "credential_env")
 	if tokenEnv == "" {
 		tokenEnv = "HANDOFFKEEP_TOKEN"

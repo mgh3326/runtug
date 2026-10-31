@@ -173,6 +173,9 @@ type placeCandidate struct {
 	load       *float64
 	over       bool
 	outcome    string
+	// preflight is the remote-spawn preflight of a candidate the placement
+	// refused; it names why the host was not usable.
+	preflight *hostPreflight
 }
 
 type placePlan struct {
@@ -192,6 +195,11 @@ type placePlan struct {
 	// machines are then treated as awake so SSH proves them, and no wake
 	// reason may fire off a missing reading.
 	hostsDegraded bool
+	// hub, presence and presenceErr keep the reads the plan was built from so
+	// a refused candidate's preflight does not ask the hub or hk again.
+	hub         map[string]HostView
+	presence    []PresenceRecord
+	presenceErr bool
 }
 
 type candResult struct {
@@ -450,16 +458,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		local.login = loginUnknown
 	}
 	enum = append(enum, local)
-	names := slices.Clone(a.Config.HostOrder)
-	var extra []string
-	for name := range a.Config.Hosts {
-		if !slices.Contains(names, name) {
-			extra = append(extra, name)
-		}
-	}
-	slices.Sort(extra)
-	names = append(names, extra...)
-	for i, name := range names {
+	for i, name := range a.remoteHostNames() {
 		h := a.Config.Hosts[name]
 		c := placeCandidate{name: name, cfg: h, order: i + 1, tags: stringsValue(h, "tags"), wakeable: str(h, "wake") == "panewire"}
 		if hv, reported := hub[name]; reported {
@@ -480,7 +479,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		}
 		enum = append(enum, c)
 	}
-	p := &placePlan{tags: required, profile: s.Profile, pool: pool, waited: waited, threshold: threshold, at: now, degraded: degraded, hostsDegraded: hub == nil}
+	p := &placePlan{tags: required, profile: s.Profile, pool: pool, waited: waited, threshold: threshold, at: now, degraded: degraded, hostsDegraded: hub == nil, hub: hub, presence: presence, presenceErr: presencesDegraded}
 	needCap := ""
 	if seat, ok := a.Policy.Profiles[s.Profile]; ok && seat.Capability != "standard" {
 		needCap = seat.Capability
@@ -595,6 +594,9 @@ func (p *placePlan) record(chosen string) map[string]any {
 		}
 		if c.judgment != nil {
 			row["quota_gate"] = *c.judgment
+		}
+		if c.preflight != nil {
+			row["preflight"] = c.preflight.record()
 		}
 		if c.name == chosen {
 			row["chosen"] = true
@@ -1111,6 +1113,18 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	var unreachable []string
 	var deferredLocal *placeCandidate
 	var localRefusal error
+	// A refused remote candidate gets its preflight, so the placement record
+	// says which of the known remote-spawn conditions the host fails. The
+	// hub and presence reads come from the plan.
+	var preEnv *preflightEnv
+	// A host the quota gate refused was never contacted over SSH, and the
+	// preflight keeps it that way: it reads the hub and hk only.
+	explain := func(c *placeCandidate, res candResult) {
+		if preEnv == nil {
+			preEnv = a.preflightEnvFrom(ctx, p)
+		}
+		a.attachPreflight(ctx, preEnv, c, pool, !strings.HasPrefix(res.note, "quota_"))
+	}
 	admitLocal := func(c *placeCandidate) bool {
 		if a.Quota == nil {
 			return true
@@ -1156,6 +1170,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		if res.stop != nil {
 			return true, nil, res.stop
 		}
+		explain(c, res)
 		if res.unreachable && c.wakeable {
 			unreachable = append(unreachable, c.name)
 		}
@@ -1199,6 +1214,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		if res.stop != nil {
 			return true, nil, res.stop
 		}
+		explain(c, res)
 		lastNote = res.note
 	}
 	if deferredLocal != nil && admitLocal(deferredLocal) {
@@ -1206,19 +1222,20 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		a.attachSelection(rec, s)
 		return false, rec, nil
 	}
+	notes := p.preflightNotes()
 	if len(targets) > 0 {
 		if lastNote != "" {
-			return true, nil, fail(exitPlacement, "wake target did not accept spawn: %s", lastNote)
+			return true, nil, fail(exitPlacement, "wake target did not accept spawn: %s%s", lastNote, notes)
 		}
-		return true, nil, fail(exitPlacement, "wake target did not accept spawn")
+		return true, nil, fail(exitPlacement, "wake target did not accept spawn%s", notes)
 	}
 	if !boolean(a.Config.Local, "spawn", true) {
-		return true, nil, fail(exitLocalDisabled, "local spawns are disabled on this host; no remote candidate completed")
+		return true, nil, fail(exitLocalDisabled, "local spawns are disabled on this host; no remote candidate completed%s", notes)
 	}
 	if localRefusal != nil {
 		return true, nil, localRefusal
 	}
-	return true, nil, fail(exitPlacement, "no placement candidate accepted spawn; no local fallback")
+	return true, nil, fail(exitPlacement, "no placement candidate accepted spawn; no local fallback%s", notes)
 }
 
 func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map[string]any, error) {
