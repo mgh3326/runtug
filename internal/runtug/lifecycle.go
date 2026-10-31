@@ -22,6 +22,7 @@ func (a *App) lifecycle(ctx context.Context, kind string, args []string) error {
 	f := flags(kind)
 	report := f.String("report", "", "")
 	question := f.String("question", "", "")
+	resultFile := f.String("result", "", "")
 	if e := f.Parse(args[1:]); e != nil {
 		return fail(exitUsage, "%v", e)
 	}
@@ -40,6 +41,30 @@ func (a *App) lifecycle(ctx context.Context, kind string, args []string) error {
 	}
 	if kind == "escalate" && (*question == "" || j.Parent == "") {
 		return fail(exitUsage, "escalate requires --question and a recorded parent lane")
+	}
+	var result json.RawMessage
+	if *resultFile != "" {
+		if kind != "done" {
+			return fail(exitUsage, "%s accepts no --result", kind)
+		}
+		if e := noSymlinks(*resultFile); e != nil {
+			return e
+		}
+		body, e := os.ReadFile(*resultFile)
+		if e != nil {
+			return e
+		}
+		if len(body) > 64<<10 {
+			return fail(exitUsage, "--result exceeds 64 KiB")
+		}
+		var v any
+		if e := json.Unmarshal(body, &v); e != nil {
+			return fail(exitUsage, "--result is not valid JSON: %v", e)
+		}
+		if _, ok := v.(map[string]any); !ok {
+			return fail(exitUsage, "--result must be a JSON object")
+		}
+		result = json.RawMessage(body)
 	}
 	if *report == "" && kind == "done" {
 		*report = newestReport(filepath.Join(a.Jobs, id))
@@ -128,6 +153,24 @@ func (a *App) lifecycle(ctx context.Context, kind string, args []string) error {
 		} else {
 			a.warn("report upload failed; local report retained")
 		}
+	}
+	// The hk record state is written before the relay: one PUT carries the
+	// terminal state, the report doc and — for done --result — the findings.
+	// A failed write degrades to a job.record_failed event and the relay
+	// still goes out, so a cross-host reader falls back per the design.
+	state := "completed"
+	if kind == "escalate" {
+		state = "escalated"
+	}
+	rec := map[string]any{"state": state}
+	if doc != "" {
+		rec["report_doc"] = doc
+	}
+	if result != nil {
+		rec["result"] = result
+	}
+	if e := a.putJobRecord(ctx, id, rec); e != nil {
+		a.jobRecordFailed(ctx, id, state, e)
 	}
 	p := map[string]any{"report": *report, "report_sha256": digest, "question": *question, "owner_lane": j.Owner, "parent_lane": j.Parent, "label": j.Label, "pane_id": j.Pane, "document": doc}
 	if e = a.event(ctx, id, eventKind, p); e != nil {

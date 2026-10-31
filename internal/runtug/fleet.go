@@ -1,6 +1,7 @@
 package runtug
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -150,16 +151,35 @@ type hkQuota struct {
 }
 
 func (c *hkQuota) get(ctx context.Context, path string, out any) error {
+	return c.request(ctx, http.MethodGet, path, nil, out)
+}
+
+// request is the shared handoffkeep HTTP call: bearer plus optional CF Access
+// headers, JSON in and out, redirects refused so authentication never follows
+// another origin. Non-2xx answers yield BackendError carrying the status and,
+// when the body names one, the hk error code — never the body itself.
+func (c *hkQuota) request(ctx context.Context, method, path string, body, out any) error {
 	client := c.client
 	if client == nil {
 		client = &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
-	req, e := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	var rdr io.Reader
+	if body != nil {
+		b, e := json.Marshal(body)
+		if e != nil {
+			return fmt.Errorf("invalid backend request body")
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, e := http.NewRequestWithContext(ctx, method, c.base+path, rdr)
 	if e != nil {
 		return fmt.Errorf("invalid backend request")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if c.cfID != "" {
 		req.Header.Set("CF-Access-Client-Id", c.cfID)
 		req.Header.Set("CF-Access-Client-Secret", c.cfSecret)
@@ -170,7 +190,11 @@ func (c *hkQuota) get(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &BackendError{Status: resp.StatusCode}
+		var er struct {
+			Code string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&er)
+		return &BackendError{Status: resp.StatusCode, Code: er.Code}
 	}
 	if out != nil {
 		if e := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out); e != nil {
@@ -181,7 +205,10 @@ func (c *hkQuota) get(ctx context.Context, path string, out any) error {
 }
 
 // BackendError reports an HTTP failure without response details.
-type BackendError struct{ Status int }
+type BackendError struct {
+	Status int
+	Code   string
+}
 
 func (e *BackendError) Error() string {
 	return fmt.Sprintf("handoffkeep HTTP %d (response withheld)", e.Status)

@@ -23,10 +23,11 @@ type waitOutcome struct {
 }
 
 // afterSpawn runs the --wait half of a spawn once the pane exists — locally
-// or, when placement delegated the spawn, back on the initiator.
-func (a *App) afterSpawn(ctx context.Context, s Spawn) error {
+// or, when placement delegated the spawn, back on the initiator. A delegated
+// job additionally watches its hk record (the W4 rule).
+func (a *App) afterSpawn(ctx context.Context, s Spawn, delegated bool) error {
 	if s.Wait {
-		return a.waitJob(ctx, s)
+		return a.waitJob(ctx, s, delegated)
 	}
 	return nil
 }
@@ -67,7 +68,7 @@ func timeoutValue(raw string) (time.Duration, bool) {
 // process — so it survives the caller being backgrounded. Distinct exit
 // codes carry the outcome: 0 done/ready/joined/handed_off, 83 escalate,
 // 84 lost/revoked, 85 timeout.
-func (a *App) waitJob(ctx context.Context, s Spawn) error {
+func (a *App) waitJob(ctx context.Context, s Spawn, delegated ...bool) error {
 	timeout, e := a.waitDeadline(s)
 	if e != nil {
 		return e
@@ -82,8 +83,10 @@ func (a *App) waitJob(ctx context.Context, s Spawn) error {
 	deadline := a.Now().Add(timeout)
 	delay := 2 * time.Second
 	warned := false
+	hkWarned := false
+	hkWatch := len(delegated) > 0 && delegated[0]
 	for {
-		out := a.waitOutcome(ctx, s, lane, &warned)
+		out := a.waitOutcome(ctx, s, lane, &warned, &hkWarned, hkWatch)
 		if out.name != "" {
 			fmt.Fprintf(a.Out, "wait job=%s outcome=%s report=%s pane=%s\n", s.Job, out.name, out.report, out.pane)
 			switch out.name {
@@ -110,7 +113,7 @@ func (a *App) waitJob(ctx context.Context, s Spawn) error {
 // waitOutcome scans the job's durable event artifacts first, then the lane
 // inbox when the hub is configured. Event reads tolerate a missing dir (a
 // delegated job only has the initiator-side placement record here).
-func (a *App) waitOutcome(ctx context.Context, s Spawn, lane string, warned *bool) waitOutcome {
+func (a *App) waitOutcome(ctx context.Context, s Spawn, lane string, warned, hkWarned *bool, hkWatch bool) waitOutcome {
 	evs, e := a.events(s.Job)
 	if e != nil && !errors.Is(e, os.ErrNotExist) && !*warned {
 		*warned = true
@@ -133,6 +136,11 @@ func (a *App) waitOutcome(ctx context.Context, s Spawn, lane string, warned *boo
 			case "job.handed_off":
 				return waitOutcome{name: "handed_off", pane: str(p, "pane_id")}
 			}
+		}
+	}
+	if hkWatch {
+		if out := a.jobRecordOutcome(ctx, s.Job, hkWarned); out.name != "" {
+			return out
 		}
 	}
 	if lane == "" || str(a.Config.Hub, "hub_url") == "" {

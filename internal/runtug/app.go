@@ -28,6 +28,7 @@ type App struct {
 	Source       PlacementSource
 	Wake         Waker
 	LoadRatio    func(context.Context) (float64, error)
+	JobStore     JobStore
 }
 
 func Main(ctx context.Context, args []string, out, errout io.Writer) int {
@@ -176,7 +177,7 @@ func (a *App) help(cmd string) error {
 	case "spawn":
 		fmt.Fprintln(a.Out, "Usage: runtug spawn -c CWD [-m PROFILE|auto] -p BRIEF -w WORKSPACE -l LABEL --t T0..T3 [--task ID|--parent-job JOB] [--effort E] [--role worker|builder|tester|reviewer|counsel] [--lane L] [--parent L] [--owner L] [--job ID] [--host auto|local|NAME] [--tags a,b,c] [--exclude-host a,b] [--report PATH] [-L live|mock] [--keep] [--job-dup-ok] [--task-hk-bypass] [--allow-escalation] [--override-reason TEXT] [--operator-request REF] [--requested-by NAME] [--purpose PURPOSE] [--lane-defer HOST] [--report-relative PATH] [--wait] [--wait-timeout DUR] [--dry-run]")
 	case "done":
-		fmt.Fprintln(a.Out, "Usage: runtug done JOB [--report PATH]")
+		fmt.Fprintln(a.Out, "Usage: runtug done JOB [--report PATH] [--result FILE]")
 	case "escalate":
 		fmt.Fprintln(a.Out, "Usage: runtug escalate JOB --question TEXT [--report PATH]")
 	case "restore":

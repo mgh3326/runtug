@@ -210,6 +210,35 @@ overrides.
 | `fresh_ttl_s` | `300` | How recent a shared observation must be to count as fresh. |
 | `measure_timeout_s` | `60` | Bound on the on-target `pacelever refresh` run for a remote account the spawning host does not hold. |
 | `accounts` | unset | Optional pool → 16-hex account-fingerprint table for exact account keys. |
+| `node_env` | `~/.config/panewire/hub-node.env` | Panewire node env file; `HUB_MACHINE_ID` in it is the host id written to job records. `RUNTUG_NODE_ENV` overrides the path. |
+
+## Job records in handoffkeep
+
+Each spawn writes a record to hk `/v1/jobs` on the executing host (the design
+is `design/2026-10-30/cross-host-jobs`): the claim `POST {job_id, task_id,
+host}` runs before the arbiter claim and a taken id refuses with exit 74, like
+the arbiter's duplicate. `host` is the node's `HUB_MACHINE_ID`. hk unreachable
+or unconfigured fails the spawn closed, as the task claim does.
+
+After the brief lands, runtug merges `{state:"spawned", role, label, family,
+profile, model, pool, owner_lane, parent_lane, parent_job, pane_id,
+worktree:{origin, branch|null, head}}` — the allowlisted fields only; brief
+text, command lines, pane output and absolute local paths are never written.
+`runtug done` writes `{state:"completed", report_doc}` plus `result` when
+`--result FILE` (a JSON object of at most 64 KiB) is given, in the same PUT,
+and emits the relay only after the PUT returns; `escalate` writes
+`{state:"escalated"}` and the watcher writes `{state:"lost"}` after two
+missing-pane observations. A failed write after the pane exists degrades to a
+`job.record_failed` event and a warning; the relay still goes out so readers
+fall back.
+
+`--parent-job` resolves the local job directory first, then `GET
+/v1/jobs/<job>` on any host — waiting up to 30 s for a lagging record before
+refusing with exit 75. `spawn --wait` on a delegated job also watches the hk
+record: `completed` exits 0 (the result is read from the record by the
+caller), `escalated` exits 83, `lost` exits 84, and a record still pending,
+absent or unreadable leaves the local signals and the usual deadline to
+decide (the unreadable case warns once with reason `hk-unavailable`).
 
 Automatic model selection (`spawn` with `-m` omitted or `-m auto`) reads the
 live bench catalog and pool status from the quota CLI, then orders candidates
@@ -320,6 +349,7 @@ for ownership and distribution.
 | `HERDR_BIN`, `PANEWIRE_BIN` | CLI executable overrides. |
 | `HANDOFFKEEP_BIN`, `ARBITER_BIN` | Must resolve to the canonical current-user ~/.local/bin executable in production. |
 | `RUNTUG_QUOTA_BIN` | Quota executable override; default `pacelever`. |
+| `RUNTUG_NODE_ENV` | Panewire node env file for `HUB_MACHINE_ID` (job record host id); default `~/.config/panewire/hub-node.env`, or `[quota].node_env`. |
 | `ARBITER_INBOX_ROOT` | Jobs root; production guard requires the canonical inbox. |
 | `HERDR_SESSION` | Herdr session passed through or selected for remote execution. |
 | `RUNTUG_E6_ARM` | Exact canon@effort experiment marker when policy requires one. |
@@ -344,8 +374,8 @@ silently enables automatic pruning.
 | 3 / 4 | Quota-tool refusal, unchanged; artifacts use 3 for upload confirmation timeout and 4 for unconfirmed Drive eviction. |
 | 5 / 6 | Hub quota denial / authentication refusal. |
 | 70 | Configuration, trust or unverified admission evidence. |
-| 74 | Active job duplicate. |
-| 75 | Unreadable duplicate state or changed artifact. |
+| 74 | Active job duplicate, including an hk `job_id_taken` claim refusal. |
+| 75 | Unreadable duplicate state, changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
 | 76 | Initial brief submission unconfirmed after one key retry. |
 | 77 | Role/seat/grade/family/E6 refusal; quota gate exit 5 is remapped here. |
 | 79 | Mock isolation refusal. |
