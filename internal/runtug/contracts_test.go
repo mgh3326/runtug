@@ -243,13 +243,19 @@ func TestR03PlacementReadsCanonicalMachineAndFiltersDisconnected(t *testing.T) {
 	}
 }
 func TestR03PlacementReadsHubLoadRatio(t *testing.T) {
-	raw := `{"decision":"host-a","candidates":[{"machine":"host-a","connected":true,"load_ratio":0.25,"reason":"available"},{"machine":"host-b","connected":true}]}`
+	raw := `{"decision":"host-a","candidates":[{"machine":"host-a","connected":true,"load_ratio":0.25,"reason":"available"},{"machine":"host-b","connected":true,"score":42.5}]}`
 	views, e := parseHubHosts(raw)
 	if e != nil {
 		t.Fatal(e)
 	}
+	if views[1].Score == nil || *views[1].Score != 42.5 {
+		t.Fatalf("score must be read from the hub: %+v", views[1])
+	}
 	if views[0].LoadRatio == nil || *views[0].LoadRatio != 0.25 {
 		t.Fatalf("load_ratio must be read from the hub: %+v", views[0])
+	}
+	if views[0].Score != nil {
+		t.Fatalf("an absent score stays nil: %+v", views[0])
 	}
 	if views[1].LoadRatio != nil {
 		t.Fatalf("a missing reading stays unknown: %+v", views[1])
