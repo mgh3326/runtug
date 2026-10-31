@@ -517,7 +517,7 @@ silently enables automatic pruning.
 | 5 / 6 | Hub quota denial / authentication refusal. |
 | 70 | Configuration, trust or unverified admission evidence. |
 | 74 | Active job duplicate, including an hk `job_id_taken` claim refusal. |
-| 75 | Unreadable duplicate state, changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
+| 75 | Unreadable duplicate state (an `arbiter job-get` reply without a state, or whose `receipt` is not an object, the string `"absent"`, null or missing; `"absent"` on a released job means no receipt and the job is reclaimed), changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
 | 76 | Initial brief submission unconfirmed after one key retry. |
 | 77 | Role/seat/grade/family/E6 refusal; quota gate exit 5 is remapped here. |
 | 79 | Mock isolation refusal. |

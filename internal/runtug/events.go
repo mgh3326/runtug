@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -163,7 +164,38 @@ type DurableJob struct {
 	State   string         `json:"state"`
 	Owner   string         `json:"owner_lane"`
 	Label   string         `json:"agent_label"`
-	Receipt map[string]any `json:"receipt"`
+	Receipt DurableReceipt `json:"receipt"`
+}
+
+// DurableReceipt is the `receipt` field of `arbiter job-get`. Accepted shapes:
+//   - an object: the spawn receipt, decoded as a map;
+//   - the string sentinel "absent", JSON null, or a missing field: no receipt
+//     (nil). The arbiter reports a released job this way, and it stays
+//     reclaimable.
+//
+// Any other shape (another string, a number, a bool, an array) is an error, so
+// durable() fails closed with exit 75.
+type DurableReceipt map[string]any
+
+func (r *DurableReceipt) UnmarshalJSON(b []byte) error {
+	var v any
+	if e := json.Unmarshal(b, &v); e != nil {
+		return e
+	}
+	switch t := v.(type) {
+	case nil:
+		*r = nil
+		return nil
+	case string:
+		if t == "absent" {
+			*r = nil
+			return nil
+		}
+	case map[string]any:
+		*r = t
+		return nil
+	}
+	return fmt.Errorf("unexpected receipt shape %.40s", b)
 }
 
 func (a *App) durable(ctx context.Context, id string) (DurableJob, error) {
