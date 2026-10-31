@@ -14,8 +14,11 @@ import (
 // claude account, so the plan has to ask the remote host's quota gate.
 func planFixture(t *testing.T) (*App, *fakeQuota, *fakeRunner, *fakeJobStore, *bytes.Buffer) {
 	t.Helper()
-	pools := map[string]PoolView{"devin": {Status: "ok", Class: "spend", Blocking: ptrF(4)}, "claude": riskPool(32.6, 8)}
-	a, _, q := selFixture(t, "A", riskRows(), pools, []string{"devin", "claude"})
+	// codex projects past its cap and is not at waste risk: it is excluded
+	// by its pool, before tiering.
+	pools := map[string]PoolView{"devin": {Status: "ok", Class: "spend", Blocking: ptrF(4)}, "claude": riskPool(32.6, 8), "codex": riskPool(120, 30)}
+	rows := append(riskRows(), CatalogRow{Profile: "codex-luna", Effort: "high", Grade: "A", Pool: "codex", Gate: "default", ModelID: "m"})
+	a, _, q := selFixture(t, "A", rows, pools, []string{"devin", "claude", "codex"})
 	const key = "claude:00000000000000aa"
 	src := a.Source.(*fakePlacementSource)
 	src.hosts = []HostView{{Name: "host-b", Connected: true}}
@@ -52,6 +55,9 @@ func TestPlanPrintsHostAndModelWithoutSideEffects(t *testing.T) {
 	}
 	if !strings.Contains(text, "runner-up devin-swe2@high model=swe-2") {
 		t.Fatalf("plan prints the runner-up:\n%s", text)
+	}
+	if !strings.Contains(text, "dropped codex-luna@high pool=codex reason=projected_exhaust") {
+		t.Fatalf("plan prints a pool-excluded rung as dropped:\n%s", text)
 	}
 	remote := 0
 	for _, c := range q.Calls {

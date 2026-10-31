@@ -79,7 +79,9 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 	if e := decode(b, &p); e != nil {
 		return p, e
 	}
-	return p, p.validate()
+	// validate fills defaults in place; call it before p is copied out.
+	e := p.validate()
+	return p, e
 }
 
 // validate checks a decoded pool policy and fills absent thresholds with
