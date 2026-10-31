@@ -52,7 +52,14 @@ func testApp(t *testing.T) *App {
 	if real, e := filepath.EvalSymlinks(root); e == nil {
 		root = real
 	}
-	return &App{Runner: &fakeRunner{}, Policy: p, Config: Config{}, Home: root, Jobs: filepath.Join(root, "work", "herdr-inbox", "jobs"), Bins: map[string]string{}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }, Sleep: func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }}
+	nodeEnv := filepath.Join(root, "node.env")
+	if e := os.WriteFile(nodeEnv, []byte("HUB_MACHINE_ID=test-host\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("RUNTUG_NODE_ENV", nodeEnv)
+	a := &App{Runner: &fakeRunner{}, Policy: p, Config: Config{}, Home: root, Jobs: filepath.Join(root, "work", "herdr-inbox", "jobs"), Bins: map[string]string{}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }, Sleep: func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }}
+	a.JobStore = newFakeJobStore()
+	return a
 }
 func putEvent(t *testing.T, a *App, job, kind string, p map[string]any) {
 	t.Helper()

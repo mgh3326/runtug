@@ -106,6 +106,9 @@ func (a *App) watch(ctx context.Context, args []string) error {
 			missing = 0
 		}
 		if missing >= 2 {
+			if e := a.putJobRecord(ctx, id, map[string]any{"state": "lost"}); e != nil {
+				a.jobRecordFailed(ctx, id, "lost", e)
+			}
 			if e = a.event(ctx, id, "job.lost", map[string]any{"pane_id": j.Pane}); e != nil {
 				return e
 			}

@@ -68,8 +68,17 @@ lane inbox with bounded backoff — a plain blocking CLI, no resident process.
 `--wait-timeout` requires `--wait`; without it the bound falls back to
 `RUNTUG_COMPLETION_TIMEOUT_S`, then one hour. `--wait` refuses `--dry-run`.
 
+Every spawn also claims a job record in handoffkeep (`/v1/jobs`) on the
+executing host before the arbiter claim, then merges allowlisted metadata as
+the job moves `claimed → spawned → completed | escalated | lost`. `done
+--result findings.json` writes a JSON findings object (≤64 KiB) together with
+`completed` in one PUT, before the relay emit. `--parent-job` resolves the
+local job directory first and falls back to the hk record on any host, and a
+delegated `--wait` watches the record alongside local signals. See
+[docs/config.md](docs/config.md) for fields and failure behavior.
+
 ```sh
-runtug done task42-worker --report ~/work/herdr-inbox/jobs/task42-worker/report.md
+runtug done task42-worker --report ~/work/herdr-inbox/jobs/task42-worker/report.md [--result findings.json]
 runtug escalate task42-builder --question 'A decision is needed before proceeding'
 runtug restore task42-worker
 runtug reap --include-builders                   # preview

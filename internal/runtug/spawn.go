@@ -175,7 +175,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	builderFamily := s.ParentFamily
 	if s.ParentJob != "" {
-		j, e := a.job(s.ParentJob)
+		j, e := a.resolveParent(ctx, s.ParentJob)
 		if e != nil {
 			return fail(exitStateConflict, "parent metadata unreadable: %v", e)
 		}
@@ -254,7 +254,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			return e
 		}
 		if handled {
-			return a.afterSpawn(ctx, s)
+			return a.afterSpawn(ctx, s, true)
 		}
 		placementRec = rec
 	}
@@ -377,6 +377,12 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	if s.Bypass {
 		claim = append(claim, "--task-link-override", "declared")
+	}
+	// The hk job claim runs on the executing host before the arbiter claim:
+	// 409 job_id_taken refuses with the same exit 74, and hk down fails
+	// closed like the task claim.
+	if e = a.claimJobRecord(ctx, s); e != nil {
+		return e
 	}
 	// The arbiter arbitrates concurrent duplicate claims; never infer a free job from pane status.
 	r := a.call(ctx, "arbiter", append(claim, "--json")...)
@@ -506,6 +512,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e = a.taskLink(ctx, s, bypassed); e != nil {
 		return e
 	}
+	a.spawnedJobRecord(ctx, s, seat, launch, pane, pool, owner)
 	lane := s.Label
 	parent := owner
 	if s.Role == "builder" {
@@ -536,7 +543,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if s.Role == "builder" && !laneOK && a.envOr("RUNTUG_LANE_STRICT", "WRK_LANE_STRICT") == "1" {
 		return fail(exitLaneUnregistered, "builder pane exists but lane is UNREGISTERED")
 	}
-	return a.afterSpawn(ctx, s)
+	return a.afterSpawn(ctx, s, false)
 }
 func (a *App) attachSelection(rec map[string]any, s Spawn) {
 	if s.Sel != nil {
