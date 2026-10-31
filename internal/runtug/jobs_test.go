@@ -803,3 +803,94 @@ func TestSpawnDuplicateAtArbiterKeepsRecord(t *testing.T) {
 		t.Fatalf("duplicate rewrote the live record to %q", st)
 	}
 }
+
+// A released job reports `"receipt":"absent"` from arbiter job-get. That is no
+// receipt, not an unreadable state: the same job id is reclaimed. null and a
+// missing field mean the same.
+func TestSpawnReclaimsReleasedJobWithoutReceipt(t *testing.T) {
+	for name, receipt := range map[string]string{
+		"absent":  `,"receipt":"absent"`,
+		"null":    `,"receipt":null`,
+		"missing": ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, s, f, _ := cmdFixture(t)
+			origDo := f.Do
+			reclaimed := false
+			f.Do = func(c Command) Result {
+				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
+					if !strings.Contains(strings.Join(c.Args, " "), "--reclaim-released") {
+						return Result{Code: arbiterDuplicateClaim, Err: "duplicate"}
+					}
+					reclaimed = true
+				}
+				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "job-get" {
+					return Result{Out: `{"state":"released","owner_lane":"x","agent_label":"y"` + receipt + `}`}
+				}
+				return origDo(c)
+			}
+			if e := a.Spawn(context.Background(), s); e != nil {
+				t.Fatalf("released job not reclaimed: %v", e)
+			}
+			if !reclaimed {
+				t.Fatal("no --reclaim-released claim")
+			}
+		})
+	}
+}
+
+// A map receipt still decodes; any other receipt shape fails closed with the
+// existing unreadable-state error (exit 75) and never reclaims.
+func TestSpawnDuplicateReceiptShapes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		receipt string
+		rc      int
+	}{
+		"map":          {`{"cwd":"/w"}`, exitDuplicate},
+		"other string": {`"present"`, exitStateConflict},
+		"empty string": {`""`, exitStateConflict},
+		"number":       {`7`, exitStateConflict},
+		"array":        {`[]`, exitStateConflict},
+		"bool":         {`true`, exitStateConflict},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, s, f, _ := cmdFixture(t)
+			origDo := f.Do
+			f.Do = func(c Command) Result {
+				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
+					if strings.Contains(strings.Join(c.Args, " "), "--reclaim-released") {
+						t.Fatal("unexpected reclaim")
+					}
+					return Result{Code: arbiterDuplicateClaim, Err: "duplicate"}
+				}
+				if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "job-get" {
+					return Result{Out: `{"state":"claimed","owner_lane":"x","agent_label":"y","receipt":` + tc.receipt + `}`}
+				}
+				return origDo(c)
+			}
+			e := a.Spawn(context.Background(), s)
+			if got := code(e); got != tc.rc {
+				t.Fatalf("rc = %d (%v), want %d", got, e, tc.rc)
+			}
+			if tc.rc == exitStateConflict && !strings.Contains(e.Error(), "duplicate job state unreadable") {
+				t.Fatalf("error = %v, want the existing unreadable-state error", e)
+			}
+		})
+	}
+}
+
+func TestDurableReceiptDecodesMap(t *testing.T) {
+	var j DurableJob
+	if e := json.Unmarshal([]byte(`{"state":"claimed","receipt":{"cwd":"/w","pane":"p"}}`), &j); e != nil {
+		t.Fatal(e)
+	}
+	if str(j.Receipt, "cwd") != "/w" || str(j.Receipt, "pane") != "p" {
+		t.Fatalf("receipt = %v", j.Receipt)
+	}
+	for _, in := range []string{`{"state":"released","receipt":"absent"}`, `{"state":"released","receipt":null}`, `{"state":"released"}`} {
+		var r DurableJob
+		if e := json.Unmarshal([]byte(in), &r); e != nil || r.Receipt != nil {
+			t.Fatalf("%s: receipt = %v, err = %v", in, r.Receipt, e)
+		}
+	}
+}
