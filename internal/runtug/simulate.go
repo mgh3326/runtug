@@ -38,8 +38,10 @@ import (
 //
 // A pool's projection comes from `projected_pct` when given, else from
 // pacelever's pace over `used_pct`/`window`/`resets_at` (or `reset_hours`
-// relative to now). Waste urgency is (100 − projected) / hours-to-reset;
-// pools without a readable reset fall back to projected order. A `free`
+// relative to now). Waste urgency is (100 − projected) / hours-to-reset of
+// the pool's longest window of a day or more — sub-daily windows (e.g. 5h)
+// never rank — and pools without a readable reset fall back to projected
+// order. A `free`
 // candidate is excluded only by an observed free limit, never by its shared
 // pool's usage or projection.
 //
@@ -179,6 +181,11 @@ func (v *PoolView) pace(used, projected *float64, window string, left float64, n
 	}
 	v.Projected = p
 	v.Urgency, v.ResetHours = nil, nil
+	// Sub-daily windows never rank a pool; an unlabeled window ranks (the
+	// fixture's only window is its longest by definition).
+	if w, e := windowDuration(window); e == nil && w < 24*time.Hour {
+		return
+	}
 	if p != nil && left > 0 {
 		u, h := (100-*p)/left, left
 		v.Urgency, v.ResetHours = &u, &h

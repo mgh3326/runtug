@@ -2,8 +2,11 @@ package runtug
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 // wasteCase reproduces the 2026-10-31 decision: claude at 31% used of a
@@ -68,6 +71,68 @@ func TestSelectWasteUrgency(t *testing.T) {
 				t.Fatalf("want %s, got %s", tt.want, sel.chosen.seatName)
 			}
 		})
+	}
+}
+
+// The pool status document's buckets decide urgency by the LONGEST window
+// of a day or more: claude's 5h rate window at 3% used, resetting in 1.5 h,
+// must not outrank by itself — the 7d window still decides, and the
+// 2026-10-31 case still picks claude (≈67% unused in 9.4 h) over codex
+// (≈70% unused in 95 h). A pool whose only window is sub-daily, and a pool
+// whose longest window cannot be paced, get no urgency at all.
+func TestPoolsWasteUrgencyUsesLongestWindow(t *testing.T) {
+	a := testApp(t)
+	now := a.Now()
+	reset := func(h float64) string { return now.Add(time.Duration(h * float64(time.Hour))).Format(time.RFC3339Nano) }
+	doc := fmt.Sprintf(`{"schema":"scopefuel.v1","generated_at":%q,"providers":[
+	  {"id":"claude","status":"ok","pool_class":"spend","buckets":[
+	    {"window":"5h","used_pct":3,"resets_at":%q,"scope":{"kind":"account"}},
+	    {"window":"7d","used_pct":31,"resets_at":%q,"scope":{"kind":"account"}}]},
+	  {"id":"short","status":"ok","pool_class":"spend","buckets":[
+	    {"window":"5h","used_pct":3,"resets_at":%q,"scope":{"kind":"account"}}]},
+	  {"id":"long-unpaced","status":"ok","pool_class":"spend","buckets":[
+	    {"window":"7d","used_pct":31,"resets_at":%q,"scope":{"kind":"account"}},
+	    {"window":"30d","used_pct":1,"resets_at":%q,"scope":{"kind":"account"}}]},
+	  {"id":"codex","status":"ok","pool_class":"spend","buckets":[
+	    {"window":"7d","used_pct":13,"resets_at":%q,"scope":{"kind":"account"}}]}]}`,
+		now.Format(time.RFC3339Nano), reset(1.5), reset(9.4), reset(1.5), reset(9.4), reset(29*24), reset(95))
+	q := CLIQuota{Runner: &fakeRunner{Do: func(Command) Result { return Result{Out: doc} }}, Binary: "pacelever"}
+	pools, e := q.Pools(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	// 31% used, 9.4 h of a 7d window left: projected 32.84, urgency ≈ 7.15 —
+	// never the 5h bucket's ≈64.7.
+	if u := pools["claude"].Urgency; u == nil || math.Abs(*u-7.145) > 0.01 {
+		t.Fatalf("claude urgency must come from the 7d window: %v", u)
+	}
+	if h := pools["claude"].ResetHours; h == nil || *h != 9.4 {
+		t.Fatalf("claude reset hours: %v", h)
+	}
+	if u := pools["codex"].Urgency; u == nil || math.Abs(*u-0.738) > 0.01 {
+		t.Fatalf("codex urgency: %v", u)
+	}
+	if u := pools["short"].Urgency; u != nil {
+		t.Fatalf("a sub-daily-only pool must not rank by urgency: %v", *u)
+	}
+	if u := pools["long-unpaced"].Urgency; u != nil {
+		t.Fatalf("an unpaceable longest window leaves no urgency: %v", *u)
+	}
+	// Blocking still sees the short window: it stays an admission gate.
+	if b := pools["short"].Blocking; b == nil || *b != 3 {
+		t.Fatalf("short window still reports used: %v", b)
+	}
+
+	// Feeding the computed views into selection still picks the claude rung.
+	rows := wasteRows()
+	a2, s, q2 := selFixture(t, "A", rows, pools, []string{"devin", "claude", "codex"})
+	q2.GateDo = gatePools(map[string]string{"sonnet": "claude", "codex-luna": "codex"})
+	sel, e := a2.selectProfile(context.Background(), s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if sel.chosen.seatName != "sonnet" {
+		t.Fatalf("the 2026-10-31 case picks claude via its 7d window: %s", sel.chosen.seatName)
 	}
 }
 

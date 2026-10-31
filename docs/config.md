@@ -247,10 +247,11 @@ under the versioned pool-order policy (`[local].pool_policy` or
 then WASTE subscription pools, then named credit pools, then ranked spend
 pools. Inside a tier the lowest catalog grade that satisfies the task wins,
 then the pool with the higher waste urgency — the unused projected share
-(100 − projected) per hour until its binding window's reset, the highest
-across paceable account buckets; when no bucket's reset can be paced the pool
-falls back to the lower projected use at reset (the used percentage when it
-cannot be paced yet) — then the smaller effort, then the catalog score.
+(100 − projected) per hour until its longest account window's reset (7d,
+monthly; sub-daily windows such as a 5h rate window never rank a pool, they
+stay admission gates only). When the longest window's reset cannot be paced
+the pool falls back to the lower projected use at reset (the used percentage
+when it cannot be paced yet) — then the smaller effort, then the catalog score.
 
 The projection is pacelever's pace: for each account-scope bucket in the
 quota status, used percentage ÷ elapsed share of its window, paced at the
@@ -325,7 +326,8 @@ spawn, no job writes. The input file is a minimal JSON document — or a
 `--now` wins over the document's `now`, which wins over the clock. A pool's
 projection is `projected_pct` when given, else pacelever's pace over
 `used_pct`/`window`/`resets_at` (or `reset_hours` relative to now); waste
-urgency is (100 − projected) ÷ hours-to-reset, and pools without a readable
+urgency is (100 − projected) ÷ hours-to-reset of the longest window of a
+day or more (sub-daily windows never rank), and pools without a readable
 reset rank by projected order. `free` marks a free-tier rung; `free_limit`
 records an observed free limit — the only exclusion a free rung honors, so a
 shared pool's `used_pct` or projection never drops it. `--set` (repeatable)

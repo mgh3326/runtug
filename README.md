@@ -19,8 +19,9 @@ admission gate, role and capability tags, ordered by the versioned pool-order
 policy (free pools, then WASTE subscription pools, the credit pool, then
 ranked spend; inside a tier the lowest grade that fits the task, then the pool
 with the higher waste urgency — the unused projected share per hour until its
-binding window's reset; a pool whose reset cannot be paced ranks by its
-projected use at reset), and admitted in order — each must have fresh host-presence
+longest window's reset (7d, monthly; sub-daily windows such as 5h never rank,
+they gate admission only); a pool whose longest window cannot be paced ranks
+by its projected use at reset), and admitted in order — each must have fresh host-presence
 evidence for its quota account and pass the quota gate. Unknown, stale or
 degraded evidence is never guessed admissible: selection fails closed.
 Every considered rung and its drop reason is recorded on the placement event;
@@ -38,7 +39,7 @@ the default is normal. An explicit flag always wins. The record and the
 `--dry-run` output carry `urgency=<v> source=<flag|task-priority|default>`,
 the tier order used, the ordering rule and, for the chosen rung, its tier,
 grade and projected use at reset. Every ranked candidate carries
-`waste_urgency` and `reset_hours` when its pool's binding window can be
+`waste_urgency` and `reset_hours` when its pool's longest window can be
 paced, and `waste_order` states whether it ranked by that urgency (`reset`)
 or by the projected-at-reset fallback. Free-tier seats are excluded only by
 an observed free limit (the rung's gate refusal), never by their shared
