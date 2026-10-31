@@ -327,23 +327,25 @@ func TestSelectEscalationGateNeedsFlag(t *testing.T) {
 }
 
 func TestSelectTesterExcludesBuilderFamily(t *testing.T) {
+	// A tester routes to the verifier role (opus, codex-terra61).
 	rows := []CatalogRow{
-		{Profile: "sonnet", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
-		{Profile: "codex-sol", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
+		{Profile: "opus", Effort: "high", Grade: "S", Pool: "claude", Gate: "default", ModelID: "m"},
+		{Profile: "codex-terra61", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "m"},
 	}
 	pools := map[string]PoolView{
 		"claude": {Status: "ok", Class: "spend", Blocking: ptrF(5)},
 		"codex":  {Status: "ok", Class: "spend", Blocking: ptrF(90)},
 	}
 	a, s, q := selFixture(t, "S", rows, pools, []string{"claude", "codex"})
+	serveRouting(a, routingDocV1)
 	s.Role = "tester"
 	s.ParentFamily = "anthropic"
-	q.GateDo = gatePools(map[string]string{"codex-sol": "codex"})
+	q.GateDo = gatePools(map[string]string{"codex-terra61": "codex"})
 	sel, e := a.selectProfile(context.Background(), s)
-	if e != nil || sel.chosen.seatName != "codex-sol" {
+	if e != nil || sel.chosen.seatName != "codex-terra61" {
 		t.Fatalf("%v", e)
 	}
-	if got := candOutcome(sel.record(), "sonnet", "high")["outcome"]; got != "dropped:family_excluded" {
+	if got := candOutcome(sel.record(), "opus", "high")["outcome"]; got != "dropped:family_excluded" {
 		t.Fatalf("the builder's family must be excluded for testers: %v", got)
 	}
 }

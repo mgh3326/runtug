@@ -78,6 +78,8 @@ const (
 	exitWaitEscalated       = 83  // spawn --wait: the job escalated
 	exitWaitLost            = 84  // spawn --wait: the job was lost or revoked
 	exitWaitTimeout         = 85  // spawn --wait: the wait deadline expired
+	exitRoleWait            = 86  // role routing: every role profile exhausted, wait for a reset
+	exitRoleEscalate        = 87  // role routing: every role profile exhausted, ask the parent lane
 	exitTimeout             = 124 // a time-bounded CLI call hit its deadline
 	exitUnreachable         = 255 // SSH could not reach the host (ssh's own status)
 )

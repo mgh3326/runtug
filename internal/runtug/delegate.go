@@ -204,7 +204,7 @@ func (a *App) delegateRun(ctx context.Context, d delegateReq, id, onlyFamily str
 	if err = os.WriteFile(paths.brief, []byte(delegatePreamble(o.role, o.patch, o.panel > 0, id, paths)+"\n\n"+d.body), 0600); err != nil {
 		return res, err
 	}
-	s := Spawn{CWD: work, Profile: "auto", Prompt: paths.brief, Workspace: o.workspace, Label: id, T: "T0", Job: id, Role: d.seatRole, Host: "auto", Report: paths.report, Grade: o.grade, ParentFamily: d.caller.family, Task: d.caller.task, ParentJob: d.caller.parent, OnlyFamily: onlyFamily, ExcludeFamilies: exclude}
+	s := Spawn{CWD: work, Profile: "auto", Prompt: paths.brief, Workspace: o.workspace, Label: id, T: "T0", Job: id, Role: d.seatRole, Host: "auto", Report: paths.report, Grade: o.grade, ParentFamily: d.caller.family, Task: d.caller.task, ParentJob: d.caller.parent, OnlyFamily: onlyFamily, ExcludeFamilies: exclude, Unrouted: true}
 	if o.patch || o.headless {
 		s.Host = "local"
 		s.OverrideReason = "delegate " + map[bool]string{true: "--headless runs", false: "--patch uses a scratch checkout"}[o.headless] + " on this host"

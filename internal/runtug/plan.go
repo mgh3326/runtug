@@ -29,8 +29,8 @@ import (
 // seat (hosts a spawn would wake are listed); a local launch or gate refusal
 // keeps its own code.
 type planOpts struct {
-	grade, t, role, tags, effort, urgency, exclude, builderFamily string
-	allowEscalation, json                                         bool
+	grade, t, role, tags, effort, urgency, exclude, builderFamily, routingRole string
+	allowEscalation, json                                                      bool
 }
 
 func (a *App) planCmd(ctx context.Context, args []string) error {
@@ -44,6 +44,7 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 	f.StringVar(&o.urgency, "urgency", "", "normal or urgent")
 	f.StringVar(&o.exclude, "exclude-host", "", "hosts placement must not pick")
 	f.StringVar(&o.builderFamily, "builder-family", "", "builder model family (tester/reviewer)")
+	f.StringVar(&o.routingRole, "routing-role", "", "override the policy/model-routing role")
 	f.BoolVar(&o.allowEscalation, "allow-escalation", false, "admit escalation and consult-only rungs")
 	f.BoolVar(&o.json, "json", false, "print the full decision as JSON")
 	if e := f.Parse(args); e != nil {
@@ -84,6 +85,9 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 	req := selReq{grade: o.grade, t: o.t, role: o.role, tags: tags, effort: o.effort, allowEscalation: o.allowEscalation, builderFamily: o.builderFamily, urgency: urgencyNormal, urgencySource: "default"}
 	if o.urgency != "" {
 		req.urgency, req.urgencySource = o.urgency, "flag"
+	}
+	if req.route, e = a.routeFor(ctx, o.role, o.routingRole); e != nil {
+		return e
 	}
 	sel, selErr := a.selectFor(ctx, s, req)
 	out := map[string]any{"mode": "plan"}
@@ -217,6 +221,9 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 		return
 	}
 	fmt.Fprintf(a.Out, "plan grade=%s t=%s role=%s urgency=%s tiers=%s\n", sel.req.grade, sel.req.t, sel.req.role, sel.req.urgency, strings.Join(sel.order, ">"))
+	if rt := sel.req.route; rt != nil {
+		fmt.Fprintf(a.Out, "routing role=%s version=%d policy_source=%s%s\n", firstNonempty(rt.role, "-"), rt.version, rt.source, map[bool]string{true: " downgraded_from=" + rt.downgradedFrom}[rt.downgradedFrom != ""])
+	}
 	label := func(c *selCand) string {
 		return fmt.Sprintf("%s@%s model=%s pool=%s grade=%s", c.seatName, c.row.Effort, c.row.ModelID, c.row.Pool, c.row.Grade)
 	}
