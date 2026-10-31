@@ -14,6 +14,10 @@ import (
 	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
+// BuildVersion and BuildCommit are set by the binary's main from its link-time
+// values.
+var BuildVersion, BuildCommit = "dev", "unknown"
+
 type App struct {
 	EnforceTrust bool
 	Runner       Runner
@@ -37,6 +41,9 @@ type App struct {
 	// Hub carries via="hub" spawns and quota refreshes; nil builds the HTTP
 	// client from [hub] on first use.
 	Hub HubTransport
+	// Version is the build line `runtug --version` prints, compared with the
+	// remote hosts' by the preflight.
+	Version string
 }
 
 func Main(ctx context.Context, args []string, out, errout io.Writer) int {
@@ -87,6 +94,7 @@ func New(out, errout io.Writer) (*App, error) {
 	a.Source = fleetSource{a}
 	a.Wake = cliWaker{a}
 	a.LoadRatio = a.loadRatio
+	a.Version = fmt.Sprintf("runtug %s (%s)", BuildVersion, BuildCommit)
 	a.EnforceTrust = true
 	return a, nil
 }
@@ -168,13 +176,13 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 func validID(s string) bool { return idPattern.MatchString(s) && s != "." && s != ".." }
 func (a *App) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(a.Out, "Usage: runtug <spawn|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts|simulate|plan> [options]")
+		fmt.Fprintln(a.Out, "Usage: runtug <spawn|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts|simulate|plan|preflight> [options]")
 		return nil
 	}
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
 		return a.help(args[0])
 	}
-	if a.EnforceTrust && (args[0] == "spawn" || args[0] == "plan" || args[0] == "_spawn-stdin" || args[0] == "done" || args[0] == "escalate" || args[0] == "restore" || args[0] == "reap" || args[0] == "prune" || args[0] == "gc" || args[0] == "artifacts" || args[0] == "_watch") {
+	if a.EnforceTrust && (args[0] == "spawn" || args[0] == "plan" || args[0] == "preflight" || args[0] == "_spawn-stdin" || args[0] == "done" || args[0] == "escalate" || args[0] == "restore" || args[0] == "reap" || args[0] == "prune" || args[0] == "gc" || args[0] == "artifacts" || args[0] == "_watch") {
 		if e := a.trust(); e != nil {
 			return e
 		}
@@ -200,6 +208,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.simulate(ctx, args[1:])
 	case "plan":
 		return a.planCmd(ctx, args[1:])
+	case "preflight":
+		return a.preflightCmd(ctx, args[1:])
 	case "_artifact-inventory":
 		return a.artifactInventory()
 	case "_watch":
@@ -230,6 +240,8 @@ func (a *App) help(cmd string) error {
 		fmt.Fprintln(a.Out, "Usage: runtug simulate --selection FILE [--now RFC3339] [--policy FILE] [--policy-set key=value] ... [--set pool:used=N,reset=RFC3339|+Nh[,window=D][,projected=N]] ... (rank a recorded selection input; no quota reads, no spawn)")
 	case "plan":
 		fmt.Fprintln(a.Out, "Usage: runtug plan --grade G --t T0..T3 [--role R] [--tags a,b] [--effort E] [--urgency normal|urgent] [--exclude-host a,b] [--builder-family F] [--allow-escalation] [--json] (live, read-only: the host and model a spawn would get now; no task, spawn or job write)")
+	case "preflight":
+		fmt.Fprintln(a.Out, "Usage: runtug preflight [--host NAME] [--pool P] [--json] (read-only: per remote host, hub acceptance, shared quota observation age, quota transport setting, hub load/memory, mergewake review config and runtug/panewire version skew, each with a named reason; exit 0 when all good, 78 otherwise)")
 	default:
 		fmt.Fprintf(a.Out, "Usage: runtug %s [options]; see README and docs/config.md\n", cmd)
 	}

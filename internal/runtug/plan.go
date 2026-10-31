@@ -20,6 +20,9 @@ import (
 // as a spawn would (pacelever refresh), since the gate refuses unmeasured
 // evidence.
 //
+// It also prints the remote-spawn preflight of every remote host (see
+// preflight.go), as information only.
+//
 // Exit codes: 0 a host and model were found; 2 usage; 70 configuration or
 // unreadable catalog; 77 no catalog rung was admitted; 80 local spawning is
 // disabled and no remote host admitted the seat; 81 no host admitted the
@@ -90,7 +93,7 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 		out["selection"] = rec
 	}
 	if selErr != nil {
-		a.printPlan(o.json, out, sel, nil, "", selErr)
+		a.printPlan(o.json, out, sel, nil, nil, "", selErr)
 		return selErr
 	}
 	c := sel.chosen
@@ -99,13 +102,16 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 		s.Effort = c.row.Effort
 	}
 	pp, host, placeErr := a.planHosts(ctx, s, o.grade)
+	var pre []hostPreflight
 	if pp != nil {
 		out["placement"] = pp.record(host)
+		pre = a.planPreflight(ctx, pp)
+		out["preflight"] = pre
 	}
 	if placeErr == nil {
 		out["chosen"] = map[string]any{"host": host, "seat": c.seatName, "model_id": c.row.ModelID, "effort": c.row.Effort, "pool": c.row.Pool, "tier": c.tierName, "grade": c.row.Grade, "waste_risk": c.risk}
 	}
-	a.printPlan(o.json, out, sel, pp, host, placeErr)
+	a.printPlan(o.json, out, sel, pp, pre, host, placeErr)
 	return placeErr
 }
 
@@ -181,10 +187,24 @@ func (a *App) planHosts(ctx context.Context, s Spawn, grade string) (*placePlan,
 	return p, "", fail(exitPlacement, "no host admitted %s", s.Profile)
 }
 
+// planPreflight runs the remote-spawn preflight for every remote host the
+// plan evaluated, reusing the hub and presence reads the plan was built from.
+// It is informational: it never changes the plan's outcome or exit status.
+func (a *App) planPreflight(ctx context.Context, pp *placePlan) []hostPreflight {
+	env := a.preflightEnvFrom(ctx, pp)
+	var out []hostPreflight
+	for _, c := range pp.candidates {
+		if !c.local {
+			out = append(out, a.preflightHost(ctx, env, c.name, c.cfg, pp.pool, true))
+		}
+	}
+	return out
+}
+
 // printPlan renders the plan: the full decision as JSON, or a short text
 // summary — the chosen host and model, the runners-up in rank order, every
 // dropped rung with its reason and every host's outcome.
-func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *placePlan, host string, err error) {
+func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *placePlan, pre []hostPreflight, host string, err error) {
 	if asJSON {
 		if err != nil {
 			out["error"] = err.Error()
@@ -231,6 +251,9 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 		if pp.wake != nil {
 			fmt.Fprintf(a.Out, "would_wake %v\n", pp.wake["would_wake"])
 		}
+	}
+	for _, h := range pre {
+		printPreflightSummary(a.Out, h)
 	}
 	if err != nil {
 		fmt.Fprintf(a.Out, "result refused exit=%d: %v\n", exitCode(err), err)
