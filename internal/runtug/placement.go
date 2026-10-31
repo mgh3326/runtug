@@ -27,7 +27,11 @@ type HostView struct {
 	Name      string
 	Connected bool
 	LoadRatio *float64
-	Reason    string
+	// Score is the hub's placement score: free capacity weighted by the
+	// host's configured capacity_weight. Higher is better; nil when the hub
+	// did not send one.
+	Score  *float64
+	Reason string
 }
 
 // PresenceRecord is a pacelever host-presence row: which host measured which
@@ -171,6 +175,7 @@ type placeCandidate struct {
 	login      string
 	judgment   *quotaJudgment
 	load       *float64
+	score      *float64
 	over       bool
 	outcome    string
 	// preflight is the remote-spawn preflight of a candidate the placement
@@ -430,6 +435,9 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		local.excluded = "spawn_disabled"
 	}
 	local.load = a.localLoad(ctx)
+	if hv, reported := hub[machine]; reported {
+		local.score = hv.Score
+	}
 	maxRatio, hasGuard := number(a.Config.Local, "max_load_ratio")
 	if local.load != nil && hasGuard && *local.load >= maxRatio {
 		local.over = true
@@ -472,6 +480,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 				c.awake = true
 			}
 			c.load = hv.LoadRatio
+			c.score = hv.Score
 		} else {
 			c.awake = !c.wakeable || hub == nil
 		}
@@ -526,7 +535,14 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		if rx, ry := loginRank(x.login), loginRank(y.login); rx != ry {
 			return rx - ry
 		}
-		if c := cmp.Compare(loadOrInf(x.load), loadOrInf(y.load)); c != 0 {
+		// The hub score already folds load and host speed together, so a
+		// fast machine at moderate load beats a slow idle one. Raw load is
+		// the fallback when either side has no score.
+		if x.score != nil && y.score != nil {
+			if c := cmp.Compare(*y.score, *x.score); c != 0 {
+				return c
+			}
+		} else if c := cmp.Compare(loadOrInf(x.load), loadOrInf(y.load)); c != 0 {
 			return c
 		}
 		return x.order - y.order
@@ -1390,6 +1406,7 @@ func parseHubHosts(raw string) ([]HostView, error) {
 			// The hub sends snake_case; encoding/json folds case but not
 			// underscores, so the field needs its tag.
 			LoadRatio *float64 `json:"load_ratio"`
+			Score     *float64 `json:"score"`
 		}
 		var name string
 		if json.Unmarshal(v, &name) != nil {
@@ -1407,7 +1424,7 @@ func parseHubHosts(raw string) ([]HostView, error) {
 		if !validID(name) {
 			continue
 		}
-		hv := HostView{Name: name, Connected: true, LoadRatio: c.LoadRatio, Reason: c.Reason}
+		hv := HostView{Name: name, Connected: true, LoadRatio: c.LoadRatio, Score: c.Score, Reason: c.Reason}
 		if c.Connected != nil {
 			hv.Connected = *c.Connected
 		}

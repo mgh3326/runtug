@@ -408,3 +408,41 @@ func TestPlacementDegradedAccountTriesNextHost(t *testing.T) {
 		}
 	}
 }
+
+func TestPlacementRanksByHubScoreThenLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		scoreA, scoB *float64
+		want         string
+	}{
+		{"fast busy host beats slow idle host", ptrF(10), ptrF(50), "host-b"},
+		{"without scores the lower load wins", nil, nil, "host-a"},
+		{"a missing score falls back to load", ptrF(10), nil, "host-a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, s, _ := remoteFixture(t, &fakePlacementSource{}, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
+				if strings.Contains(args, "_spawn-stdin") {
+					return Result{Out: "OK pane=w:p1 job=job-a\n"}
+				}
+				return Result{}
+			})
+			const key = "claude:0123456789abcdef"
+			a.Config.Hosts = map[string]map[string]any{"host-a": {"presence_id": "presence-a"}, "host-b": {"presence_id": "presence-b"}}
+			a.Config.HostOrder = []string{"host-a", "host-b"}
+			a.Config.Quota = map[string]any{"accounts": map[string]any{"claude": "0000000000000001"}}
+			a.Source = &fakePlacementSource{
+				hosts: []HostView{
+					{Name: "host-a", Connected: true, LoadRatio: ptrF(.05), Score: tc.scoreA},
+					{Name: "host-b", Connected: true, LoadRatio: ptrF(.3), Score: tc.scoB},
+				},
+				presence: []PresenceRecord{{HostID: "presence-a", AccountKey: key, LastSeen: a.Now()}, {HostID: "presence-b", AccountKey: key, LastSeen: a.Now()}},
+				accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true}},
+			}
+			a.Quota = &fakeQuota{LaunchValue: Launch{Pool: "claude"}, GateDo: func(QuotaRequest) (string, error) { return "pool=claude\n", nil }}
+			handled, rec, err := a.placeAuto(context.Background(), s, "brief")
+			if err != nil || !handled || rec["chose"] != tc.want {
+				t.Fatalf("want %s: handled=%v record=%v err=%v", tc.want, handled, rec, err)
+			}
+		})
+	}
+}
