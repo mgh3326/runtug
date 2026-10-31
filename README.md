@@ -77,6 +77,31 @@ chosen host and model, the runners-up and every drop reason, without a task,
 brief, worktree, spawn, hk write or job record. Exit codes are in
 `docs/config.md`.
 
+## Delegation
+
+```sh
+runtug delegate --role reader|verifier|reviewer --prompt FILE \
+  [--grade G] [--cwd DIR] [--timeout D] [--headless] [--patch] [--panel 2..4] [--family F] [--json]
+```
+
+`runtug delegate` hands one bounded reading, verifying or cross-checking task
+to another model and prints its answer: one call, one answer back, no PR and
+no worktree of its own. The model comes from the same selection as `spawn` and
+`plan` under the normal pool policy; a free model is one candidate there, not
+a target. By default it spawns a visible pane through the spawn path with
+`--wait`, reads the job result the model files with `runtug done --result`,
+prints it and closes the pane. `--headless` runs the selected seat's CLI once
+on this host under `--timeout` instead. Nothing is written in `--cwd`.
+
+`--panel N` (2 to 4) sends the same prompt to N seats of N different model
+families in parallel and prints every answer followed by a side-by-side table
+of agreements, disagreements and points only one model made. Each answer is its
+own delegate job. A reviewer panel excludes the caller's family.
+
+The rule (robin-mode): delegate reading, verification and cross-family review;
+keep tight design loops in the session's own subagents. Roles, exit codes and
+the output format are in [docs/config.md](docs/config.md#delegation).
+
 ```sh
 runtug preflight [--host NAME] [--pool P] [--json]
 ```

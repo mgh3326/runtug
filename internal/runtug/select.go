@@ -185,6 +185,10 @@ type selReq struct {
 	builderFamily   string
 	urgency         string
 	urgencySource   string
+	// excludeFamilies drops seats of those families; onlyFamily keeps just that
+	// one (delegate --panel picks one seat per distinct family).
+	excludeFamilies []string
+	onlyFamily      string
 }
 
 // effortRank orders rung efforts cheap-first; an empty effort is the catalog's
@@ -261,6 +265,10 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 			reason = "seat_rung"
 		} else {
 			switch {
+			case slices.Contains(req.excludeFamilies, seat.Family):
+				reason = "family_excluded"
+			case req.onlyFamily != "" && seat.Family != req.onlyFamily:
+				reason = "family_filtered"
 			case !slices.Contains(roles, req.role):
 				reason = "seat_role"
 			case req.role == "builder" && row.Gate != "default":
@@ -569,7 +577,7 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if a.Quota == nil {
 		return nil, fail(exitConfig, "auto selection needs the quota catalog")
 	}
-	req := selReq{t: s.T, role: s.Role, effort: s.Effort, allowEscalation: s.AllowEscalation, builderFamily: s.ParentFamily}
+	req := selReq{t: s.T, role: s.Role, effort: s.Effort, allowEscalation: s.AllowEscalation, builderFamily: s.ParentFamily, excludeFamilies: s.ExcludeFamilies, onlyFamily: s.OnlyFamily}
 	tags, e := parseTags(s.Tags)
 	if e != nil {
 		return nil, e
@@ -579,7 +587,9 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if e != nil {
 		return nil, e
 	}
-	if m := taskMarker.FindStringSubmatch(task.Title); m != nil {
+	if s.Grade != "" {
+		req.grade = s.Grade
+	} else if m := taskMarker.FindStringSubmatch(task.Title); m != nil {
 		req.grade = strings.ToUpper(m[1])
 		if strings.ToUpper(m[2]) != s.T {
 			return nil, fail(exitSeatRefused, "task scale does not match --t")

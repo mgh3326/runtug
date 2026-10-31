@@ -33,6 +33,13 @@ type Spawn struct {
 	BuilderJob    string         `json:"-"`
 	Delegated     bool           `json:"-"`
 	Sel           map[string]any `json:"-"`
+	// Grade is the task grade a caller states itself (`runtug delegate`),
+	// used instead of the "(grade X, Tn" marker in the bound task's title.
+	Grade string `json:"-"`
+	// ExcludeFamilies and OnlyFamily narrow automatic selection to seats of
+	// other families, or of one family (`runtug delegate --panel`).
+	ExcludeFamilies []string `json:"-"`
+	OnlyFamily      string   `json:"-"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -319,48 +326,19 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e != nil {
 		return e
 	}
-	grade := ""
-	if m := taskMarker.FindStringSubmatch(task.Title); m != nil {
-		grade = strings.ToUpper(m[1])
-		if strings.ToUpper(m[2]) != s.T {
-			return fail(exitSeatRefused, "task scale does not match --t")
+	grade := s.Grade
+	if s.Grade == "" {
+		if m := taskMarker.FindStringSubmatch(task.Title); m != nil {
+			grade = strings.ToUpper(m[1])
+			if strings.ToUpper(m[2]) != s.T {
+				return fail(exitSeatRefused, "task scale does not match --t")
+			}
+		} else if !bypassed {
+			return fail(exitSeatRefused, "task title lacks (grade X, Tn marker")
 		}
-	} else if !bypassed {
-		return fail(exitSeatRefused, "task title lacks (grade X, Tn marker")
 	}
-	qr := QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
-	launch, e := a.Quota.Launch(ctx, qr)
+	launch, gate, e := a.admitLaunch(ctx, s, seat, effort, selEffort, grade, builderFamily, autoSel)
 	if e != nil {
-		// Preserve the gate's role/quota refusal even when the catalog also
-		// refuses this launch; no fallback launch data is ever invented.
-		if _, gateErr := a.Quota.Gate(ctx, qr); gateErr != nil {
-			return gateErr
-		}
-		return e
-	}
-	if effort != "" && launch.Effort != effort {
-		return fail(exitConfig, "catalog effort does not match request")
-	}
-	if autoSel && selEffort != "" && launch.Effort != selEffort {
-		return fail(exitConfig, "launch rung does not match selected catalog rung")
-	}
-	if launch.Profile != seat.Canon {
-		return fail(exitConfig, "catalog profile mismatch")
-	}
-	if e = seat.Check(launch, s.Role, grade, builderFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
-		return e
-	}
-	// A gate alias is the pool gate for a whole family of spellings, so it
-	// cannot tell an escalation rung from a default one; the launch row can.
-	if seat.Gate != "" && launch.Gate != "default" && !s.AllowEscalation {
-		return fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
-	}
-	qr.Effort = launch.Effort
-	gate, e := a.Quota.Gate(ctx, qr)
-	if e != nil {
-		return e
-	}
-	if e = a.hubGate(ctx, s.CWD, gate); e != nil {
 		return e
 	}
 	owner := s.Owner
@@ -539,6 +517,48 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return fail(exitLaneUnregistered, "builder pane exists but lane is UNREGISTERED")
 	}
 	return a.afterSpawn(ctx, s, false)
+}
+
+// admitLaunch resolves the launch rung for a selected seat and asks the quota
+// gate and the hub for the spawn. It is the admission half shared by spawn and
+// `runtug delegate --headless`; it claims and writes nothing.
+func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEffort, grade, builderFamily string, autoSel bool) (Launch, string, error) {
+	qr := QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
+	launch, e := a.Quota.Launch(ctx, qr)
+	if e != nil {
+		// Preserve the gate's role/quota refusal even when the catalog also
+		// refuses this launch; no fallback launch data is ever invented.
+		if _, gateErr := a.Quota.Gate(ctx, qr); gateErr != nil {
+			return Launch{}, "", gateErr
+		}
+		return Launch{}, "", e
+	}
+	if effort != "" && launch.Effort != effort {
+		return Launch{}, "", fail(exitConfig, "catalog effort does not match request")
+	}
+	if autoSel && selEffort != "" && launch.Effort != selEffort {
+		return Launch{}, "", fail(exitConfig, "launch rung does not match selected catalog rung")
+	}
+	if launch.Profile != seat.Canon {
+		return Launch{}, "", fail(exitConfig, "catalog profile mismatch")
+	}
+	if e = seat.Check(launch, s.Role, grade, builderFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
+		return Launch{}, "", e
+	}
+	// A gate alias is the pool gate for a whole family of spellings, so it
+	// cannot tell an escalation rung from a default one; the launch row can.
+	if seat.Gate != "" && launch.Gate != "default" && !s.AllowEscalation {
+		return Launch{}, "", fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
+	}
+	qr.Effort = launch.Effort
+	gate, e := a.Quota.Gate(ctx, qr)
+	if e != nil {
+		return Launch{}, "", e
+	}
+	if e = a.hubGate(ctx, s.CWD, gate); e != nil {
+		return Launch{}, "", e
+	}
+	return launch, gate, nil
 }
 func (a *App) attachSelection(rec map[string]any, s Spawn) {
 	if s.Sel != nil {
