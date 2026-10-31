@@ -136,7 +136,7 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 func validID(s string) bool { return idPattern.MatchString(s) && s != "." && s != ".." }
 func (a *App) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(a.Out, "Usage: runtug <spawn|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts> [options]")
+		fmt.Fprintln(a.Out, "Usage: runtug <spawn|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts|simulate> [options]")
 		return nil
 	}
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
@@ -162,6 +162,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.diagnostics(ctx, args[0], args[1:])
 	case "artifacts":
 		return a.artifacts(ctx, args[1:])
+	case "simulate":
+		return a.simulate(ctx, args[1:])
 	case "_artifact-inventory":
 		return a.artifactInventory()
 	case "_watch":
@@ -186,6 +188,8 @@ func (a *App) help(cmd string) error {
 		fmt.Fprintf(a.Out, "Usage: runtug %s [--job ID[,ID]] [--lane L] [--grace 10m] [--include-builders] [--worktrees] [--apply]\n", cmd)
 	case "artifacts":
 		fmt.Fprintln(a.Out, "Usage: runtug artifacts move SRC --dest DEST [--source-host HOST] [--apply] | sweep [--job JOB] [--age 7d] [--policy FILE] [--apply]")
+	case "simulate":
+		fmt.Fprintln(a.Out, "Usage: runtug simulate --selection FILE [--now RFC3339] [--set pool:used=N,reset=RFC3339|+Nh[,window=D][,projected=N]] ... (rank a recorded selection input; no quota reads, no spawn)")
 	default:
 		fmt.Fprintf(a.Out, "Usage: runtug %s [options]; see README and docs/config.md\n", cmd)
 	}

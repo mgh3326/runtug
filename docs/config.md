@@ -246,8 +246,11 @@ under the versioned pool-order policy (`[local].pool_policy` or
 `RUNTUG_POOL_POLICY`, else the embedded copy): free pool/model sets first,
 then WASTE subscription pools, then named credit pools, then ranked spend
 pools. Inside a tier the lowest catalog grade that satisfies the task wins,
-then the pool with the lower projected use at reset (the used percentage when
-a pool cannot be paced yet), then the smaller effort, then the catalog score.
+then the pool with the higher waste urgency — the unused projected share
+(100 − projected) per hour until its binding window's reset, the highest
+across paceable account buckets; when no bucket's reset can be paced the pool
+falls back to the lower projected use at reset (the used percentage when it
+cannot be paced yet) — then the smaller effort, then the catalog score.
 
 The projection is pacelever's pace: for each account-scope bucket in the
 quota status, used percentage ÷ elapsed share of its window, paced at the
@@ -282,9 +285,55 @@ when the free rung is refused or excluded. The `job.placement` selection
 record carries `urgency`, `urgency_source` (`flag`, `task-priority` or
 `default`), the `tiers` order used, a one-line `decision`, the ordering
 `rule` with both thresholds, `projected_pct` and `used_pct` per candidate,
-and on `chosen` its `tier`, `grade`, `projected_pct` and a one-line `why`;
+`waste_urgency`, `reset_hours` and `waste_order` (`reset` or
+`projected_fallback`) per ranked candidate,
+and on `chosen` its `tier`, `grade`, `projected_pct`, `waste_urgency` and a
+one-line `why`;
 `--dry-run` prints `urgency=<v> source=<s> tiers=<a>><b>...` before the full
 record.
+
+### `runtug simulate`
+
+`runtug simulate --selection FILE [--now RFC3339] [--set
+pool:used=N,reset=RFC3339|+Nh[,window=D][,projected=N]] ...` replays the
+selection ranking on a recorded input and prints the decision record
+(`mode: "simulate"`). It is hermetic: no quota reads, no gate calls, no
+spawn, no job writes. The input file is a minimal JSON document — or a
+`job.placement` event whose `payload.selection` carries the same fields:
+
+```json
+{
+  "now": "2026-10-31T07:24:00Z",
+  "grade": "A",
+  "role": "worker",
+  "effort": "",
+  "allow_escalation": false,
+  "credit_pools": ["anthropic-api"],
+  "pools": [
+    {"id": "claude", "status": "ok", "class": "spend", "waste": true,
+     "used_pct": 31, "projected_pct": 31.8,
+     "resets_at": "2026-10-31T16:48:00Z", "window": "7d"}
+  ],
+  "candidates": [
+    {"profile": "sonnet", "seat": "sonnet", "effort": "high", "grade": "A",
+     "pool": "claude", "gate": "default", "model_id": "m",
+     "free": false, "free_limit": false, "score": 90}
+  ]
+}
+```
+
+`--now` wins over the document's `now`, which wins over the clock. A pool's
+projection is `projected_pct` when given, else pacelever's pace over
+`used_pct`/`window`/`resets_at` (or `reset_hours` relative to now); waste
+urgency is (100 − projected) ÷ hours-to-reset, and pools without a readable
+reset rank by projected order. `free` marks a free-tier rung; `free_limit`
+records an observed free limit — the only exclusion a free rung honors, so a
+shared pool's `used_pct` or projection never drops it. `--set` (repeatable)
+overrides or creates a pool and repaces it: `used` and `projected` are
+percentages, `reset` an RFC3339 instant or `+Nh`/`+Nd` relative to now, and
+`window` a quota duration (the entry's own window, else 7d). Candidates are
+the catalog row fields plus `seat`; a recorded `job.placement` selection's
+`candidates` decode directly.
 
 ## `[artifacts]`
 
