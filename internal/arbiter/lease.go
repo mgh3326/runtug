@@ -171,12 +171,32 @@ func (s *Store) Release(ctx context.Context, job, resource, kind, token string, 
 		if _, err = c.exec("DELETE FROM leases WHERE resource = ? AND kind = ?", row.resource, row.kind); err != nil {
 			return sqlErr(err)
 		}
-		if _, err = c.exec("UPDATE jobs SET state = 'released', updated_at = ? WHERE job_id = ?", iso(moment), row.job); err != nil {
-			return sqlErr(err)
+		if err = settleJob(c, row.job, moment); err != nil {
+			return err
 		}
 		_, err = s.recordEvent(c, row.job, evKind, map[string]any{"resource": row.resource, "kind": row.kind, "token": maskToken(row.token), "forced": force}, nil)
 		return err
 	})
+}
+
+// settleJob marks a job released once it holds nothing: no quota_pool record
+// and no unexpired exclusive lease. A job that still holds one resource stays
+// leased, so it cannot be reclaimed (and a second generation cannot start)
+// while the first still consumes a pool or a lease. An expired lease no longer
+// holds anything; gc archives it.
+func settleJob(c *conn, job string, moment time.Time) error {
+	var held int
+	err := c.row(`SELECT (SELECT count(*) FROM quota_pool_records WHERE job_id = ?)
+		+ (SELECT count(*) FROM leases WHERE job_id = ? AND expires_at > ?)`, job, job, iso(moment)).Scan(&held)
+	if err != nil {
+		return sqlErr(err)
+	}
+	if held > 0 {
+		_, err = c.exec("UPDATE jobs SET updated_at = ? WHERE job_id = ?", iso(moment), job)
+		return sqlErr(err)
+	}
+	_, err = c.exec("UPDATE jobs SET state = 'released', updated_at = ? WHERE job_id = ?", iso(moment), job)
+	return sqlErr(err)
 }
 
 // Gate is what a passed quota gate says about the run: the pool, and the
@@ -324,8 +344,8 @@ func (s *Store) ReleaseQuotaPool(ctx context.Context, job, pool string, force bo
 		if _, err = c.exec("DELETE FROM quota_pool_records WHERE job_id = ? AND pool = ?", job, pool); err != nil {
 			return sqlErr(err)
 		}
-		if _, err = c.exec("UPDATE jobs SET state = 'released', updated_at = ? WHERE job_id = ?", iso(moment), job); err != nil {
-			return sqlErr(err)
+		if err = settleJob(c, job, moment); err != nil {
+			return err
 		}
 		kind := "quota_pool.release"
 		if force {

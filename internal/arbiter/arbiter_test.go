@@ -678,3 +678,76 @@ func TestReleaseOrphan(t *testing.T) {
 		t.Fatalf("%+v", last)
 	}
 }
+
+// ---- a job is released only when it holds nothing
+
+func TestJobStaysLeasedWhileAnotherResourceIsHeld(t *testing.T) {
+	s, clk := newStore(t)
+	claim(t, s, "j1")
+	for _, pool := range []string{"pool-a", "pool-b"} {
+		if _, e := s.RecordQuotaPool(ctx, QuotaRun{Job: "j1", Profile: "p", Gate: Gate{Pool: pool}}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	l, e := s.Acquire(ctx, LeaseReq{Job: "j1", Resource: "res", Kind: KindPath, TTL: time.Hour, HasTTL: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	state := func() string { v, _ := s.JobGet(ctx, "j1"); return v.State }
+	if e = s.ReleaseQuotaPool(ctx, "j1", "pool-a", false); e != nil || state() != "leased" {
+		t.Fatalf("one of two pools released: %s %v", state(), e)
+	}
+	if e = s.Release(ctx, "j1", "res", KindPath, l.Token, false); e != nil || state() != "leased" {
+		t.Fatalf("the lease released while a pool is held: %s %v", state(), e)
+	}
+	_, e = s.Claim(ctx, Claim{Job: "j1", Lane: "l", T: "T1", ReclaimReleased: true})
+	wantCode(t, e, ExitDuplicate)
+	if e = s.ReleaseQuotaPool(ctx, "j1", "pool-b", false); e != nil || state() != "released" {
+		t.Fatalf("nothing held, still %s %v", state(), e)
+	}
+	// An expired lease holds nothing: releasing the last pool settles the job.
+	claim(t, s, "j2")
+	if _, e = s.Acquire(ctx, LeaseReq{Job: "j2", Resource: "res2", Kind: KindLinearPermit, TTL: time.Minute, HasTTL: true}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.RecordQuotaPool(ctx, QuotaRun{Job: "j2", Profile: "p", Gate: Gate{Pool: "pool-a"}}); e != nil {
+		t.Fatal(e)
+	}
+	clk.advance(time.Hour)
+	if e = s.ReleaseQuotaPool(ctx, "j2", "pool-a", false); e != nil {
+		t.Fatal(e)
+	}
+	if v, _ := s.JobGet(ctx, "j2"); v.State != "released" {
+		t.Fatalf("an expired lease kept the job leased: %s", v.State)
+	}
+}
+
+// ---- a new ledger is private to its owner
+
+func TestNewLedgerIsOwnerOnly(t *testing.T) {
+	s, _ := newStore(t)
+	claim(t, s, "j1")
+	c, e := s.rw(ctx, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer c.Close()
+	if _, e = c.exec("INSERT INTO events (job_id, seq, kind, payload, created_at) VALUES ('x', 1, 'k', '{}', 't')"); e != nil {
+		t.Fatal(e)
+	}
+	mode := func(p string) os.FileMode {
+		st, e := os.Stat(p)
+		if e != nil {
+			t.Fatalf("%s: %v", p, e)
+		}
+		return st.Mode().Perm()
+	}
+	if m := mode(filepath.Dir(s.DB)); m != 0o700 {
+		t.Fatalf("state dir mode %o", m)
+	}
+	for _, p := range []string{s.DB, s.DB + "-wal", s.DB + "-shm"} {
+		if m := mode(p); m&0o077 != 0 {
+			t.Fatalf("%s is readable by others: %o", filepath.Base(p), m)
+		}
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,8 +215,18 @@ func (s *Store) rw(ctx context.Context, bootstrap bool) (*conn, error) {
 		if !bootstrap {
 			return nil, errf(ExitStorage, "state db is missing: %s", s.DB)
 		}
-		if e := os.MkdirAll(filepath.Dir(s.DB), 0o755); e != nil {
+		// The database holds the full fencing tokens: a new ledger is owner-only
+		// (directory 0700, database 0600; SQLite gives the -wal and -shm files
+		// the database's mode). An existing ledger keeps the modes it has.
+		if e := os.MkdirAll(filepath.Dir(s.DB), 0o700); e != nil {
 			return nil, errf(ExitStorage, "cannot create the state db directory: %v", e)
+		}
+		f, e := os.OpenFile(s.DB, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		switch {
+		case e == nil:
+			f.Close()
+		case !errors.Is(e, fs.ErrExist):
+			return nil, errf(ExitStorage, "cannot create the state db: %v", e)
 		}
 	}
 	mode := "rw"

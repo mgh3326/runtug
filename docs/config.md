@@ -553,6 +553,14 @@ Behaviour differences from the script:
 - A read of the quota records of a ledger that does not exist yet answers none
   (the script failed with exit 6), so `done` and `reap` on a job that never ran
   here do not fail.
+- **A job is released only when it holds nothing.** Releasing one quota_pool
+  record or lease leaves the job `leased` while it still has another record or
+  an unexpired lease (the script marked it released at once), so it cannot be
+  reclaimed while a pool is still consumed. An expired lease holds nothing.
+- **A new ledger is owner-only** (state directory 0700, `state.db` and its
+  `-wal`/`-shm` 0600) because the database holds the full fencing tokens. A
+  ledger that already exists keeps its modes; tighten it with `chmod 700` on
+  `~/.local/share/arbiter` if it was created with the script's default.
 - Failures keep the script's exit statuses (3 denied, 4 duplicate, 5 fencing,
   6 storage, 7 not found) and surface as `arbiter <operation>: ...`.
 - The trust guard no longer checks an `arbiter` binary (there is none to run);
