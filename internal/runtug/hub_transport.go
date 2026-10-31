@@ -11,6 +11,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -398,7 +399,7 @@ func (a *App) refsAt(ctx context.Context, dir, selector, sha string, patterns ..
 // hubArgs renders the runtug flags the hub's allowlist accepts. A field the
 // allowlist cannot carry is refused rather than dropped, so a hub spawn never
 // runs with weaker settings than the same spawn over ssh.
-func hubArgs(s Spawn) ([]string, error) {
+func hubArgs(jobs string, s Spawn) ([]string, error) {
 	var args []string
 	add := func(flag, v string) {
 		if v != "" {
@@ -434,12 +435,64 @@ func hubArgs(s Spawn) ([]string, error) {
 	} else {
 		add("--task", s.Task)
 	}
-	add("--report", s.Report)
+	report, e := hubReportRelative(jobs, s)
+	if e != nil {
+		return nil, e
+	}
+	add("--report-relative", report)
 	add("-L", s.ExecutionLane)
 	add("--urgency", s.Urgency)
 	add("--builder-family", s.BuilderFamily)
 	add("--builder-job", s.BuilderJob)
 	return args, nil
+}
+
+// hubReportValue is the shape the hub accepts for --report-relative: the same
+// rule as panewire's validHubSpawnDocKey (a narrower charset than other hub
+// argument values: no ':' or '@'), checked here so a path the hub would
+// refuse never reaches it as an ambiguous 400.
+var hubReportValue = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
+
+func hubReportRelativeOK(rel string) bool {
+	if !hubReportValue.MatchString(rel) || strings.HasPrefix(rel, "/") || strings.HasSuffix(rel, "/") {
+		return false
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// hubReportRelative names the report for the node. The caller's absolute
+// report path means nothing on the node, whose jobs root is under its own
+// home, so a report is sent relative to the jobs root and the node resolves
+// it there. A report outside the jobs root is refused, as the local spawn
+// does; --report-relative given by the caller takes the same path.
+func hubReportRelative(jobs string, s Spawn) (string, error) {
+	rel := s.ReportRelative
+	switch {
+	case rel != "":
+		if filepath.IsAbs(rel) || strings.Contains(rel, "..") {
+			return "", fmt.Errorf("unsafe report-relative")
+		}
+	case s.Report != "":
+		if !within(jobs, s.Report) {
+			return "", fmt.Errorf("remote report outside jobs root")
+		}
+		r, e := filepath.Rel(jobs, s.Report)
+		if e != nil {
+			return "", fmt.Errorf("remote report outside jobs root")
+		}
+		rel = filepath.ToSlash(r)
+	default:
+		return "", nil
+	}
+	if !hubReportRelativeOK(rel) {
+		return "", fmt.Errorf("report path %q cannot cross the hub (allowed: letters, digits and ._/-, no empty, . or .. segments, at most 200 characters)", rel)
+	}
+	return rel, nil
 }
 
 // putBrief uploads the brief as an hk document under the node's prefix and
@@ -490,7 +543,7 @@ func (a *App) spawnHub(ctx context.Context, s Spawn, brief string, c *placeCandi
 	if !hubKeyRule.MatchString(key) {
 		return refuse("hub_cwd_key_invalid", fail(exitConfig, "repo name %q is not a valid hub cwd key", key))
 	}
-	args, e := hubArgs(s)
+	args, e := hubArgs(a.Jobs, s)
 	if e != nil {
 		return candResult{stop: fail(exitUsage, "hub spawn: %v", e)}
 	}
@@ -504,9 +557,6 @@ func (a *App) spawnHub(ctx context.Context, s Spawn, brief string, c *placeCandi
 	}
 	if !utf8.ValidString(brief) || len([]byte(brief)) > hubMaxBriefBytes {
 		return candResult{stop: fail(exitUsage, "brief for hub spawn must be valid UTF-8 of at most %d bytes", hubMaxBriefBytes)}
-	}
-	if s.Report != "" && !within(a.Jobs, s.Report) {
-		return candResult{stop: fail(exitUsage, "remote report outside jobs root")}
 	}
 	hub, e := a.hub()
 	if e != nil {
@@ -534,6 +584,14 @@ func (a *App) spawnHub(ctx context.Context, s Spawn, brief string, c *placeCandi
 		}
 		reply, err := hub.Spawn(ctx, HubSpawnRequest{RequestID: id, Machine: c.name, CWDKey: key, Brief: HubBrief{Doc: doc}, Checkout: checkout, Args: args, WaitSeconds: wait})
 		if err != nil {
+			var he *HubError
+			if slices.Contains(args, "--report-relative") && errors.As(err, &he) && he.Kind == hubRejected && he.Status == http.StatusBadRequest && he.Code == "invalid_request" {
+				// The hub validates the whole request, so one invalid_request
+				// hides the cause. --report-relative is the one flag older hubs
+				// refuse; name it as a possibility, keep the code, and do not
+				// retry with an absolute --report the node would refuse anyway.
+				return candResult{stop: fail(exitConfig, "hub rejected the spawn request (400 %s); if the hub predates the --report-relative capability, upgrade panewire on the hub, otherwise check the request fields", he.Code)}
+			}
 			return a.hubFailure(c.name, id, err, forced)
 		}
 		if reply.Status == "lost" || reply.Status == "pending" {

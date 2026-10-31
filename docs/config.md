@@ -165,14 +165,27 @@ runtug:
    one. A job from a canonical checkout sends no `checkout` and runs in the
    node's `cwd_map[<repo name>]`.
 3. sends the flags the hub's allowlist carries (`-m -l --t --job --owner
-   --effort --role --lane --parent --task|--parent-job --report -L --urgency
+   --effort --role --lane --parent --task|--parent-job --report-relative -L --urgency
    --builder-family --builder-job`). The node supplies workspace, host and the
    override reason. A flag the allowlist cannot carry (`--keep`, `--job-dup-ok`,
    `--task-hk-bypass`, `--allow-escalation`, `--operator-request`,
    `--requested-by`, `--purpose`, `--lane-defer`) refuses the spawn (exit 2)
-   instead of being dropped. `--report` is passed as the absolute path, so the
-   node's jobs root must sit at the same path; otherwise its runtug refuses
-   (rc 2, exit 2). The hub has no `--report-relative`.
+   instead of being dropped. A report is sent as `--report-relative <path>`,
+   relative to the jobs root, and the node resolves it under its own jobs root,
+   so the two hosts' home directories may differ. This applies to `--report`
+   under the caller's jobs root and to a caller-given `--report-relative`
+   alike; no absolute `--report` crosses the hub. A report outside the
+   jobs root is refused (exit 2), as is an absolute or `..` `--report-relative`
+   or a path with characters the hub does not accept. A hub without
+   `--report-relative` answers 400 `invalid_request`; runtug then stops with a
+   message naming the missing capability instead of retrying with an absolute
+   path. Upgrade panewire on the hub to a version whose spawn allowlist carries the
+   flag.
+   `--builder-family` may be sent without `--builder-job` for `--role reviewer`
+   only (the author's job is not bound to the task): the reviewer then runs as
+   a top-level job, still excludes that family, and neither claims nor links
+   the task, so several passes on one task all spawn. Any other role keeps the
+   "go together" refusal (exit 2).
 4. the node's `spawn.json` must map the repo name as a `cwd_key` and set
    `work_root`; `spawn_disabled`, `cwd_unmapped`, `runtug_missing` and
    `brief_doc_unavailable` refuse that host (recorded as `hub_<reason>`) and
