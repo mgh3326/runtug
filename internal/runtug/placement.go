@@ -1387,7 +1387,9 @@ func parseHubHosts(raw string) ([]HostView, error) {
 		var c struct {
 			Machine, Host, Target, Reason string
 			Connected                     *bool
-			LoadRatio                     *float64
+			// The hub sends snake_case; encoding/json folds case but not
+			// underscores, so the field needs its tag.
+			LoadRatio *float64 `json:"load_ratio"`
 		}
 		var name string
 		if json.Unmarshal(v, &name) != nil {
