@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
 func (a *App) lifecycle(ctx context.Context, kind string, args []string) error {
@@ -216,24 +218,16 @@ func (a *App) lifecycle(ctx context.Context, kind string, args []string) error {
 	return nil
 }
 func (a *App) releaseQuota(ctx context.Context, j Job) error {
-	r := a.call(ctx, "arbiter", "status", "--job", j.ID, "--json")
-	if e := check(r, "arbiter status"); e != nil {
-		return e
+	pools, e := a.ledger().QuotaPools(ctx, j.ID)
+	if e != nil {
+		return ledgerFail(e, "status")
 	}
-	var status struct {
-		Records []struct {
-			Pool string `json:"pool"`
-		} `json:"quota_pool_records"`
-	}
-	if e := json.Unmarshal([]byte(r.Out), &status); e != nil {
-		return e
-	}
-	for _, record := range status.Records {
-		if record.Pool == "" {
+	for _, pool := range pools {
+		if pool == "" {
 			return fail(exitStateConflict, "invalid quota record")
 		}
-		if e := a.must(ctx, "arbiter", "release", "--job", j.ID, "--resource", record.Pool, "--kind", "quota_pool"); e != nil {
-			return e
+		if e := a.ledger().ReleaseQuotaPool(ctx, j.ID, pool, false); e != nil {
+			return ledgerFail(e, "release")
 		}
 	}
 	return nil
@@ -266,12 +260,12 @@ func (a *App) restore(ctx context.Context, j Job) error {
 	if j.Role == "builder" || j.Role == "captain" {
 		role = "builder"
 	}
-	args := []string{"claim", "--reclaim-released", "--job", j.ID, "--lane", j.Owner, "--agent-label", j.Label, "--t", j.T, "--role", role, "--task-id", j.Task}
+	claim := arbiter.Claim{ReclaimReleased: true, Job: j.ID, Lane: j.Owner, AgentLabel: j.Label, T: j.T, Role: role, TaskID: j.Task}
 	if role == "builder" {
-		args = append(args, "--parent-lane", j.Parent)
+		claim.ParentLane = j.Parent
 	}
-	if e = a.must(ctx, "arbiter", args...); e != nil {
-		return e
+	if _, e = a.ledger().Claim(ctx, claim); e != nil {
+		return ledgerFail(e, "claim")
 	}
 	if e = a.event(ctx, j.ID, "job.spawned", j.Receipt); e != nil {
 		return fail(exitFailure, "job reclaimed; restoring receipt failed: %v", e)

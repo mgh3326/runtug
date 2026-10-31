@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -450,11 +451,13 @@ func TestSpawnOverrideRecorded(t *testing.T) {
 		t.Fatal(e)
 	}
 	var placement map[string]any
-	for _, c := range f.Calls {
-		if c.Name == "arbiter" && len(c.Args) > 4 && c.Args[0] == "event" && c.Args[4] == "job.placement" {
-			json.Unmarshal([]byte(c.Args[6]), &placement)
+	evs, _ := a.events(s.Job)
+	for _, ev := range evs {
+		if ev.Kind == "job.placement" {
+			placement = ev.Payload
 		}
 	}
+	_ = f
 	if placement == nil {
 		t.Fatal("placement record missing")
 	}
@@ -493,10 +496,13 @@ func TestSpawnAutoDryRunPrintsSelection(t *testing.T) {
 	for _, c := range f.Calls {
 		joined += c.Name + " " + strings.Join(c.Args, " ") + "\n"
 	}
-	for _, bad := range []string{"arbiter", "tab create", "pane ", "tasks claim"} {
+	for _, bad := range []string{"tab create", "pane ", "tasks claim"} {
 		if strings.Contains(joined, bad) {
 			t.Fatalf("dry-run must emit no side effects: %s", joined)
 		}
+	}
+	if _, e := os.Stat(a.ledger().DB); e == nil {
+		t.Fatal("dry-run must not touch the ledger")
 	}
 }
 

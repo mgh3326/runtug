@@ -9,19 +9,23 @@ Models, effort and grades always come from `policy launch PROFILE --effort E
 
 ## State and transaction boundaries
 
-Arbiter is the only job and lease ledger. Runtug calls `claim`, `job-get`,
-`lease`, `release`, `status` and `event`. It reads arbiter's exported event
-artifacts, ordered by event timestamp, then file identity, for task inheritance
-and cleanup. It creates no job-state database and never edits arbiter's ledger.
-The inbox default is `~/work/herdr-inbox/jobs`.
+The cross-host job state is the hk job record. The host-local ledger (job
+rows, quota_pool records, path and linear_permit leases, job events, gc) is
+`internal/arbiter`, absorbed from the agent-skills `arbiter` script: it reads
+and writes the same `state.db` and event artifacts in place, so existing state
+needs no migration, and runtug never executes `arbiter`. Runtug reads the
+exported event artifacts, ordered by event timestamp, then file identity, for
+task inheritance and cleanup. The inbox default is `~/work/herdr-inbox/jobs`.
+A job claimed on another host has events here and no jobs row; recording an
+event never requires a local claim.
 
 A local spawn validates flags and task identity, reads the task, resolves the
-catalog and policy, runs quota admission, claims and leases through arbiter,
+catalog and policy, runs quota admission, claims and records the quota run in the local ledger,
 creates a pane and launches the harness. The brief is submitted and verified
 before handoffkeep's atomic `tasks claim --by LABEL --job-id JOB` response is
 accepted. Claim responses missing either field fail closed. Inherited children
 do not reclaim the parent's task. A readable refusal cannot be bypassed with
-`--task-hk-bypass`; an availability override is recorded in arbiter metadata.
+`--task-hk-bypass`; an availability override is recorded in the claim event.
 
 Pane creation arms failure cleanup. Failure captures a private screen artifact,
 closes that pane and releases the lease. The durable `job.spawned` event commits
@@ -130,7 +134,7 @@ Runtug itself starts no mock server.
 
 `done` serializes per job, deduplicates report content and snapshots changed
 reports that reuse a path. It uploads a report document, records completion
-through arbiter, relays through `panewire emit`, comments on the task and
+in the ledger, relays through `panewire emit`, comments on the task and
 releases quota. An unavailable relay leaves a durable `job.relay_failed` event
 and `relay=file-only`. Escalation routes only to the recorded parent.
 `restore` reclaims a released job only after verifying its existing pane, name
@@ -215,7 +219,7 @@ package keeps to these rules; the tests named here enforce them:
    mergewake. No rollout is performed by this build task.
 5. Expand only after comparing receipts, completion relay, quota release and
    cleanup. Retain the previous spawner for legacy hub transport until that
-   boundary is migrated; arbiter remains the shared ledger throughout.
+   boundary is migrated; the local ledger keeps the arbiter state format throughout.
 
 Inventory risks R1/R3/R4/R6/R9/R10/R11 remain external-service boundaries;
 runtug neither removes their routes, wrappers, provider pools nor attachment

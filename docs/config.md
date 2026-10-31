@@ -275,8 +275,8 @@ overrides.
 
 Each spawn writes a record to hk `/v1/jobs` on the executing host (the design
 is `design/2026-10-30/cross-host-jobs`): the claim `POST {job_id, task_id,
-host}` runs before the arbiter claim and a taken id refuses with exit 74, like
-the arbiter's duplicate. `host` is the node's `HUB_MACHINE_ID`. hk unreachable
+host}` runs before the local claim and a taken id refuses with exit 74, like
+the ledger's duplicate. `host` is the node's `HUB_MACHINE_ID`. hk unreachable
 or unconfigured fails the spawn closed, as the task claim does.
 
 After the brief lands, runtug merges `{state:"spawned", role, label, family,
@@ -459,7 +459,7 @@ host's quota gate) with the grade from `--grade` instead of a task title,
 then walks the same placement plan for the chosen seat — the local launch
 resolution, seat check and gate for this host, the shared-account quota
 gate for each remote host — and stops at the first host that admits it. It
-never spawns, wakes a host, claims an arbiter job, writes an hk task or job
+never spawns, wakes a host, claims a local job, writes an hk task or job
 record or emits a job event; a stale remote account is measured on its
 host (`pacelever refresh`) exactly as a spawn would. Remote-only spawn
 checks (repository mapping, the remote seat check) are not run.
@@ -548,7 +548,8 @@ for ownership and distribution.
 | --- | --- |
 | `RUNTUG_POOL_POLICY` | Overrides the pool-order policy used by `spawn` automatic model selection; `[local].pool_policy` takes precedence. |
 | `HERDR_BIN`, `PANEWIRE_BIN` | CLI executable overrides. |
-| `HANDOFFKEEP_BIN`, `ARBITER_BIN` | Must resolve to the canonical current-user ~/.local/bin executable in production. |
+| `HANDOFFKEEP_BIN` | Must resolve to the canonical current-user ~/.local/bin executable in production. |
+| `XDG_DATA_HOME` | Data home of the local ledger (`$XDG_DATA_HOME/arbiter/state.db`); production guard requires the canonical `~/.local/share`. |
 | `RUNTUG_QUOTA_BIN` | Quota executable override; default `pacelever`. |
 | `RUNTUG_NODE_ENV` | Panewire node env file for `HUB_MACHINE_ID` (job record host id); default `~/.config/panewire/hub-node.env`, or `[quota].node_env`. |
 | `ARBITER_INBOX_ROOT` | Jobs root; production guard requires the canonical inbox. |
@@ -565,6 +566,68 @@ for ownership and distribution.
 Legacy periodic prune environment switches are not read. Runtug never
 silently enables automatic pruning.
 
+## Local job ledger
+
+Since RT-arb the host-local ledger lives in runtug (`internal/arbiter`); runtug
+no longer executes the agent-skills `arbiter` script, and `ARBITER_BIN` is not
+read. hk job records hold the cross-host job state; the ledger keeps what they
+do not replace:
+
+| Part | What it holds |
+| --- | --- |
+| Jobs | One row per job claimed on this host (`claimed → leased → released`), written with its `job.claim`/`job.reclaim` event. The duplicate arbiter on this host; cross-host duplicates are refused by the hk claim first. |
+| quota_pool records | One execution record per job and pool, written at admission and deleted at `done`, `reap` or a failed spawn. No TTL. |
+| path, linear_permit leases | Exclusive leases with a TTL (90 and 30 minutes by default), a monotonic fencing token, archived history and expiry by `gc`. Library only: runtug itself takes no such lease today. |
+| Job events | `job.*`, `lease.*` and `quota_pool.*` events, one artifact each. |
+| gc | `runtug gc [--json]`: expires leases, cleans quota_pool records and releases leased jobs whose exact agent label is gone from Herdr. |
+
+State is read and written in place; no migration or import is needed:
+
+| What | Path |
+| --- | --- |
+| Database (SQLite, schema version 2) | `$XDG_DATA_HOME/arbiter/state.db`, default `~/.local/share/arbiter/state.db` |
+| Event artifacts | `<jobs root>/<job>/events/NNNNN-<kind>.json`, jobs root `~/work/herdr-inbox/jobs` or `ARBITER_INBOX_ROOT` |
+| Events lock | `<jobs root>/<job>/.wrk-events.lock` |
+
+The script and runtug may share one database: both write with `BEGIN
+IMMEDIATE`, a 10 s busy timeout and the same events lock, and artifact numbers
+continue after the highest existing prefix. A schema version other than 2 is
+refused (exit 6 from the ledger, no migration). The script stays installed for
+its remaining readers (for example the quota CLI's `arbiter status --json`).
+
+Behaviour differences from the script:
+
+- **No local claim is needed to record an event.** A job placed on another host
+  has no jobs row here; its `job.placement` event is recorded anyway, which ends
+  the `placement decision record failed: arbiter: job not registered` warning on
+  a remote spawn. Claim event kinds are still refused, and the first event
+  creates `state.db` if it does not exist (the script created it only on a claim).
+- **The pool comes from the gate output runtug just received.** The profile
+  named there must match and conflicting audit tokens are refused, as before,
+  but the second cross-check of the pool against the quota tool's provider
+  list (`scopefuel --json`) is not repeated. The gate output is passed in
+  memory, not through a temporary file.
+- Event artifacts are the same JSON objects with sorted keys; the separators are
+  compact (`,` and `:`) where the script wrote `, ` and `: `.
+- A read of the quota records of a ledger that does not exist yet answers none
+  (the script failed with exit 6), so `done` and `reap` on a job that never ran
+  here do not fail.
+- **A job is released only when it holds nothing.** Releasing one quota_pool
+  record or lease leaves the job `leased` while it still has another record or
+  an unexpired lease (the script marked it released at once), so it cannot be
+  reclaimed while a pool is still consumed. An expired lease holds nothing.
+- **A new ledger is owner-only** (state directory 0700, `state.db` and its
+  `-wal`/`-shm` 0600) because the database holds the full fencing tokens. A
+  ledger that already exists keeps its modes; tighten it with `chmod 700` on
+  `~/.local/share/arbiter` if it was created with the script's default.
+- Failures keep the script's exit statuses (3 denied, 4 duplicate, 5 fencing,
+  6 storage, 7 not found) and surface as `arbiter <operation>: ...`.
+- The trust guard no longer checks an `arbiter` binary (there is none to run);
+  `HOME`, `ARBITER_INBOX_ROOT` and `XDG_DATA_HOME` must still select the
+  canonical paths. `ARBITER_TEST_NOW` is not read; tests inject a clock.
+- Not ported: the script's own command line. Operators keep using the script for
+  `status`, `job-get`, `lease`, `release` and `event` by hand.
+
 ## Exit statuses
 
 | Code | Meaning |
@@ -576,7 +639,7 @@ silently enables automatic pruning.
 | 5 / 6 | Hub quota denial / authentication refusal. |
 | 70 | Configuration, trust or unverified admission evidence. |
 | 74 | Active job duplicate, including an hk `job_id_taken` claim refusal. |
-| 75 | Unreadable duplicate state (an `arbiter job-get` reply without a state, or whose `receipt` is not an object, the string `"absent"`, null or missing; `"absent"` on a released job means no receipt and the job is reclaimed), changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
+| 75 | Unreadable duplicate state (the ledger's record of a duplicate job has no state or an unreadable `job.spawned` receipt; a released job has no receipt and is reclaimed), changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
 | 76 | Initial brief submission unconfirmed after one key retry. |
 | 77 | Role/seat/grade/family/E6 refusal; quota gate exit 5 is remapped here. |
 | 79 | Mock isolation refusal. |

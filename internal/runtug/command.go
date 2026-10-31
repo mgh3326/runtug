@@ -83,8 +83,7 @@ const (
 
 // Exit statuses of dependency CLIs that runtug interprets.
 const (
-	arbiterDuplicateClaim = 4 // arbiter claim: a live claim already holds the job
-	quotaGateRoleDenied   = 5 // quota gate: the role may not use the seat
+	quotaGateRoleDenied = 5 // quota gate: the role may not use the seat
 )
 
 type ExitError struct {

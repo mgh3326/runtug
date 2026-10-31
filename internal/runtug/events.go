@@ -3,7 +3,6 @@ package runtug
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -153,11 +152,10 @@ func scalar(v any) string {
 	return ""
 }
 func (a *App) event(ctx context.Context, id, kind string, p map[string]any) error {
-	b, e := encode(p)
-	if e != nil {
-		return e
-	}
-	return a.must(ctx, "arbiter", "event", "--job", id, "--kind", kind, "--payload-json", string(b))
+	// No local claim is needed: a job claimed on another host (a remote
+	// placement) still has its events recorded here.
+	_, e := a.ledger().AppendEvent(ctx, id, kind, p, nil)
+	return ledgerFail(e, "event")
 }
 
 type DurableJob struct {
@@ -167,45 +165,25 @@ type DurableJob struct {
 	Receipt DurableReceipt `json:"receipt"`
 }
 
-// DurableReceipt is the `receipt` field of `arbiter job-get`. Accepted shapes:
-//   - an object: the spawn receipt, decoded as a map;
-//   - the string sentinel "absent", JSON null, or a missing field: no receipt
-//     (nil). The arbiter reports a released job this way, and it stays
-//     reclaimable.
-//
-// Any other shape (another string, a number, a bool, an array) is an error, so
-// durable() fails closed with exit 75.
+// DurableReceipt is the newest job.spawned receipt of a durable job: nil when
+// the job has none (a released job stays reclaimable that way).
 type DurableReceipt map[string]any
 
-func (r *DurableReceipt) UnmarshalJSON(b []byte) error {
-	var v any
-	if e := json.Unmarshal(b, &v); e != nil {
-		return e
-	}
-	switch t := v.(type) {
-	case nil:
-		*r = nil
-		return nil
-	case string:
-		if t == "absent" {
-			*r = nil
-			return nil
-		}
-	case map[string]any:
-		*r = t
-		return nil
-	}
-	return fmt.Errorf("unexpected receipt shape %.40s", b)
-}
-
 func (a *App) durable(ctx context.Context, id string) (DurableJob, error) {
-	r := a.call(ctx, "arbiter", "job-get", "--job", id, "--json")
 	var j DurableJob
-	if e := check(r, "arbiter job-get"); e != nil {
-		return j, e
+	v, e := a.ledger().JobGet(ctx, id)
+	if e != nil {
+		return j, ledgerFail(e, "job-get")
 	}
-	if e := json.Unmarshal([]byte(r.Out), &j); e != nil || j.State == "" {
+	if v.State == "" {
 		return j, fail(exitStateConflict, "unreadable durable job %s", id)
+	}
+	j = DurableJob{State: v.State, Owner: v.OwnerLane, Label: v.AgentLabel}
+	if v.Receipt != nil {
+		j.Receipt = DurableReceipt{}
+		for k, val := range v.Receipt {
+			j.Receipt[k] = val
+		}
 	}
 	return j, nil
 }
