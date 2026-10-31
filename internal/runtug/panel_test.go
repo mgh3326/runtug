@@ -81,7 +81,7 @@ func TestPanelPicksNDistinctFamilies(t *testing.T) {
 	}
 	seenJobs := map[string]bool{}
 	for _, m := range r.Members {
-		if m.Status != "answered" || m.Answer != "an answer" || seenJobs[m.Job] || !strings.HasPrefix(m.Job, "delegate-") {
+		if m.Status != "answered" || m.Answer != "an answer" || seenJobs[m.Job] || !strings.HasPrefix(m.Job, "delegate_") {
 			t.Fatalf("each answer is its own delegate job: %+v", m)
 		}
 		seenJobs[m.Job] = true

@@ -522,8 +522,10 @@ presence and the quota gate. Free models are one tier of that policy, not a
 default target. A reviewer drops every seat of the caller's family.
 
 **Job record.** Each delegation is a job: `delegate-<parent>-<n>`, where
-`<parent>` is the enclosing job (`ARBITER_JOB`; `delegate-<n>` outside a job)
-and `<n>` the next free number. It is claimed in hk and the local ledger,
+`<parent>` is the enclosing job (`ARBITER_JOB`), and `<n>` the next free number
+in the local jobs dir. Outside a job the id is `delegate_<host>_<n>`, where
+`<host>` is `HUB_MACHINE_ID`, so two hosts never hand out the same id to hk;
+without a node id the delegation refuses. It is claimed in hk and the local ledger,
 holds a quota lease, carries the parent job, task and owner lane, and ends with
 `done`, so placement, quota and hk records match any other job. A task is
 required: run inside a runtug job or set `HK_TASK_ID`. The job directory holds
