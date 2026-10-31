@@ -38,6 +38,9 @@ type App struct {
 	Wake      Waker
 	LoadRatio func(context.Context) (float64, error)
 	JobStore  JobStore
+	// Hub carries via="hub" spawns and quota refreshes; nil builds the HTTP
+	// client from [hub] on first use.
+	Hub HubTransport
 	// Version is the build line `runtug --version` prints, compared with the
 	// remote hosts' by the preflight.
 	Version string

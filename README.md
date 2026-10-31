@@ -183,7 +183,9 @@ Inspect `spawn --dry-run`, compare profiles and hosts,
 then use distinct job IDs for isolated runtug runs. Never submit the
 same live task twice. The repository's mergewake policy has `enabled: false`.
 
-The v0.1 transport supports local and SSH runtug hosts. Legacy `via="hub"`
-spawn endpoints are refused until the hub supports runtug.
+Remote hosts are reached over SSH by default. A host with `via = "hub"` is
+spawned through the panewire hub instead (brief as an hk document, worktree
+prepared by the node, quota refreshed by node command), with no ssh fallback
+when the hub is down; see [Hub transport](docs/config.md#hub-transport-via--hub).
 Old rollback aliases require matching catalog rows; there is no embedded model
 fallback.
