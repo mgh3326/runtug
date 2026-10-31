@@ -16,7 +16,8 @@ import (
 // the quota gates — and prints the choice. It places no host, spawns
 // nothing and writes no job record. The answer is the last thing printed.
 //
-// The seat role is worker, or reviewer for the reviewer and judge routing
+// --t takes the same values as plan's (T0..T3) and defaults to T0, so the
+// bare `resolve --role R --grade G` form keeps working. The seat role is worker, or reviewer for the reviewer and judge routing
 // roles, whose family rule needs --builder-family (the author's or parent's
 // family). The effort is the role's starting effort when the table sets
 // one, else the chosen rung's.
@@ -24,6 +25,7 @@ type resolveResult struct {
 	RoutingRole    string         `json:"routing_role"`
 	SeatRole       string         `json:"seat_role"`
 	Grade          string         `json:"grade"`
+	T              string         `json:"t"`
 	RoutingVersion int            `json:"routing_version"`
 	PolicySource   string         `json:"policy_source"`
 	DowngradedFrom string         `json:"downgraded_from,omitempty"`
@@ -39,11 +41,12 @@ type resolveResult struct {
 }
 
 func (a *App) resolveCmd(ctx context.Context, args []string) error {
-	var role, grade, builderFamily string
+	var role, grade, t, builderFamily string
 	var asJSON bool
 	f := flags("resolve")
 	f.StringVar(&role, "role", "", "routing role")
 	f.StringVar(&grade, "grade", "C", "task grade (C, B, A, A+, S, S+)")
+	f.StringVar(&t, "t", "T0", "task scale T0..T3")
 	f.StringVar(&builderFamily, "builder-family", "", "author or parent family (reviewer/judge)")
 	f.BoolVar(&asJSON, "json", false, "print the decision as JSON")
 	if e := f.Parse(args); e != nil {
@@ -58,6 +61,10 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 	grade = strings.ToUpper(grade)
 	if _, ok := gradeOrder[grade]; !ok {
 		return fail(exitUsage, "resolve needs --grade C|B|A|A+|S|S+")
+	}
+	t = strings.ToUpper(t)
+	if !slices.Contains([]string{"T0", "T1", "T2", "T3"}, t) {
+		return fail(exitUsage, "resolve needs --t T0..T3")
 	}
 	seatRole := "worker"
 	if role == "reviewer" || role == "judge" {
@@ -76,10 +83,10 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		return e
 	}
 	cwd, _ := os.Getwd()
-	s := Spawn{CWD: cwd, Profile: "auto", Host: "auto", Role: seatRole, T: "T0", ParentFamily: builderFamily, RoutingRole: role, DryRun: true}
-	req := selReq{grade: grade, t: "T0", role: seatRole, builderFamily: builderFamily, urgency: urgencyNormal, urgencySource: "default", route: route}
+	s := Spawn{CWD: cwd, Profile: "auto", Host: "auto", Role: seatRole, T: t, ParentFamily: builderFamily, RoutingRole: role, DryRun: true}
+	req := selReq{grade: grade, t: t, role: seatRole, builderFamily: builderFamily, urgency: urgencyNormal, urgencySource: "default", route: route}
 	sel, selErr := a.selectFor(ctx, s, req)
-	r := resolveResult{RoutingRole: role, SeatRole: seatRole, Grade: grade, RoutingVersion: route.version, PolicySource: route.source}
+	r := resolveResult{RoutingRole: role, SeatRole: seatRole, Grade: grade, T: t, RoutingVersion: route.version, PolicySource: route.source}
 	if sel != nil {
 		// A downgrade retry carries its own routing decision.
 		route = sel.req.route
@@ -99,7 +106,7 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		fmt.Fprintln(a.Out, string(b))
 		return selErr
 	}
-	fmt.Fprintf(a.Out, "resolve role=%s seat_role=%s grade=%s routing_version=%d policy_source=%s", r.RoutingRole, r.SeatRole, r.Grade, r.RoutingVersion, r.PolicySource)
+	fmt.Fprintf(a.Out, "resolve role=%s seat_role=%s grade=%s t=%s routing_version=%d policy_source=%s", r.RoutingRole, r.SeatRole, r.Grade, r.T, r.RoutingVersion, r.PolicySource)
 	if r.DowngradedFrom != "" {
 		fmt.Fprintf(a.Out, " downgraded_from=%s", r.DowngradedFrom)
 	}

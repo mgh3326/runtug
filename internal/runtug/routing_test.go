@@ -382,6 +382,34 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 		}
 	}
 
+	// resolve --t passes the task scale to selection exactly as plan does:
+	// at each scale both choose the same profile and record the same request.
+	for _, scale := range []string{"T1", "T2"} {
+		a, _, out := setup()
+		if e := a.Run(context.Background(), []string{"plan", "--grade", "A", "--t", scale, "--routing-role", "lead", "--json"}); e != nil {
+			t.Fatalf("plan --t %s: %v\n%s", scale, e, out)
+		}
+		var plan map[string]any
+		if e := json.Unmarshal(out.Bytes(), &plan); e != nil {
+			t.Fatal(e)
+		}
+		planSel := plan["selection"].(map[string]any)
+		a, _, out = setup()
+		if e := a.Run(context.Background(), []string{"resolve", "--role", "lead", "--grade", "A", "--t", scale, "--json"}); e != nil {
+			t.Fatalf("resolve --t %s: %v\n%s", scale, e, out)
+		}
+		var r resolveResult
+		if e := json.Unmarshal(out.Bytes(), &r); e != nil {
+			t.Fatal(e)
+		}
+		if r.T != scale || r.Profile != planSel["chosen"].(map[string]any)["canon"] || r.Seat != plan["chosen"].(map[string]any)["seat"] {
+			t.Fatalf("--t %s: resolve %+v disagrees with plan %v", scale, r, planSel["chosen"])
+		}
+		if got, want := r.Selection["requested"].(map[string]any)["t"], planSel["requested"].(map[string]any)["t"]; got != scale || want != scale {
+			t.Fatalf("--t %s reaches selection: resolve %v plan %v", scale, got, want)
+		}
+	}
+
 	// Text form: the last line is the answer.
 	a, _, out = setup()
 	if e := a.Run(context.Background(), []string{"resolve", "--role", "lead", "--grade", "A"}); e != nil {
@@ -392,7 +420,7 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 		t.Fatalf("text answer last:\n%s", out)
 	}
 
-	for _, args := range [][]string{{"resolve"}, {"resolve", "--role", "boss"}, {"resolve", "--role", "reviewer"}, {"resolve", "--role", "lead", "--grade", "Z"}} {
+	for _, args := range [][]string{{"resolve"}, {"resolve", "--role", "boss"}, {"resolve", "--role", "reviewer"}, {"resolve", "--role", "lead", "--grade", "Z"}, {"resolve", "--role", "lead", "--t", "T9"}} {
 		if e := a.Run(context.Background(), args); exitCode(e) != exitUsage {
 			t.Fatalf("%v: want usage exit, got %v", args, e)
 		}

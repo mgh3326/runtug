@@ -608,10 +608,12 @@ routing stamp sits in its own object because the record's top-level
 ### `runtug resolve`
 
 `runtug resolve --role lead|implementer|explorer|verifier|reviewer|judge
-[--grade G] [--builder-family F] [--json]` runs the routed selection core —
+[--grade G] [--t T0..T3] [--builder-family F] [--json]` runs the routed selection core —
 the same code `plan` and `spawn` run, including the quota gates — and prints
 the chosen profile and effort. It places no host, spawns nothing and writes
-no job or hk record. `--grade` defaults to `C`. The seat role is `worker`,
+no job or hk record. `--grade` defaults to `C`; `--t` takes plan's values
+(`T0`..`T3`) and defaults to `T0`, and is passed to selection as plan passes
+it. The seat role is `worker`,
 or `reviewer` for the `reviewer` and `judge` roles, which need
 `--builder-family` (the author's or parent's family). The answer is printed
 last: the text form ends with `profile=<catalog profile> effort=<effort>`,
