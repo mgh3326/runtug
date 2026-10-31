@@ -267,6 +267,11 @@ func applySet(pools map[string]PoolView, windows map[string]string, resets map[s
 		reset, left = t, t.Sub(now).Hours()
 	}
 	projected := s.projected
+	if projected == nil && reset.IsZero() {
+		// Without a reset instant nothing can re-pace the pool: keep the
+		// recorded projection rather than dropping it.
+		projected = v.Projected
+	}
 	v.pace(v.Blocking, projected, window, left, now, reset)
 	windows[s.pool] = window
 	if !reset.IsZero() {

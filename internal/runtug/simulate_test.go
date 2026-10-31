@@ -208,3 +208,20 @@ func TestSimulateSetKeepsRecordedReset(t *testing.T) {
 		t.Fatalf("the recorded sub-daily reset must survive --set used=: %v", got)
 	}
 }
+
+func TestSimulateSetKeepsRecordedProjectionWithoutReset(t *testing.T) {
+	doc := `{"now":"2026-10-31T07:24:00Z","grade":"A",
+	  "pools":[{"id":"codex","used_pct":13,"projected_pct":30}],
+	  "candidates":[{"profile":"codex-luna","effort":"high","grade":"A","pool":"codex","gate":"default","model_id":"m"}]}`
+	path := filepath.Join(t.TempDir(), "sel.json")
+	if err := os.WriteFile(path, []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, err := runSimulate(t, "--selection", path, "--set", "codex:used=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := candOutcome(rec, "codex-luna", "high")["projected_pct"]; got != 30.0 {
+		t.Fatalf("a --set without projected= and without a reset must keep the recorded projection: %v", got)
+	}
+}
