@@ -86,8 +86,11 @@ type Task struct {
 // unlinkedReviewer is a reviewer that names the author's family but no
 // builder job: it reviews a task it neither inherits nor claims, so several
 // passes can run on the same task.
+// unlinkedReviewer reads the resolved fields that cross the ssh envelope
+// (ParentFamily, Inherited, ParentJob); BuilderFamily/BuilderJob do not, so a
+// test of those would read false on the receiving host.
 func (s Spawn) unlinkedReviewer() bool {
-	return s.Role == "reviewer" && s.BuilderFamily != "" && s.BuilderJob == ""
+	return s.Role == "reviewer" && s.ParentFamily != "" && s.Inherited == "" && s.ParentJob == ""
 }
 
 func (a *App) taskPrecheck(ctx context.Context, s Spawn) (Task, bool, error) {

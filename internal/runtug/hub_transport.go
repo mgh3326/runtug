@@ -447,8 +447,23 @@ func hubArgs(jobs string, s Spawn) ([]string, error) {
 	return args, nil
 }
 
-// hubReportValue is the shape the hub accepts for an argument value.
-var hubReportValue = regexp.MustCompile(`^[A-Za-z0-9._:/@-]{1,200}$`)
+// hubReportValue is the shape the hub accepts for --report-relative: the same
+// rule as panewire's validHubSpawnDocKey (a narrower charset than other hub
+// argument values: no ':' or '@'), checked here so a path the hub would
+// refuse never reaches it as an ambiguous 400.
+var hubReportValue = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
+
+func hubReportRelativeOK(rel string) bool {
+	if !hubReportValue.MatchString(rel) || strings.HasPrefix(rel, "/") || strings.HasSuffix(rel, "/") {
+		return false
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 // hubReportRelative names the report for the node. The caller's absolute
 // report path means nothing on the node, whose jobs root is under its own
@@ -474,8 +489,8 @@ func hubReportRelative(jobs string, s Spawn) (string, error) {
 	default:
 		return "", nil
 	}
-	if !hubReportValue.MatchString(rel) {
-		return "", fmt.Errorf("report path %q cannot cross the hub (allowed: letters, digits and ._:/@-, at most 200 characters)", rel)
+	if !hubReportRelativeOK(rel) {
+		return "", fmt.Errorf("report path %q cannot cross the hub (allowed: letters, digits and ._/-, no empty, . or .. segments, at most 200 characters)", rel)
 	}
 	return rel, nil
 }
@@ -570,11 +585,12 @@ func (a *App) spawnHub(ctx context.Context, s Spawn, brief string, c *placeCandi
 		reply, err := hub.Spawn(ctx, HubSpawnRequest{RequestID: id, Machine: c.name, CWDKey: key, Brief: HubBrief{Doc: doc}, Checkout: checkout, Args: args, WaitSeconds: wait})
 		if err != nil {
 			var he *HubError
-			if slices.Contains(args, "--report-relative") && errors.As(err, &he) && he.Kind == hubRejected && he.Status == http.StatusBadRequest {
-				// The hub validates the whole request, so one 400 hides the
-				// cause. It is the one flag older hubs refuse; do not retry
-				// with an absolute --report the node would refuse anyway.
-				return candResult{stop: fail(exitConfig, "hub rejected the spawn request (400 invalid_request): the hub may lack the spawn capability --report-relative; upgrade panewire on the hub or spawn without a report")}
+			if slices.Contains(args, "--report-relative") && errors.As(err, &he) && he.Kind == hubRejected && he.Status == http.StatusBadRequest && he.Code == "invalid_request" {
+				// The hub validates the whole request, so one invalid_request
+				// hides the cause. --report-relative is the one flag older hubs
+				// refuse; name it as a possibility, keep the code, and do not
+				// retry with an absolute --report the node would refuse anyway.
+				return candResult{stop: fail(exitConfig, "hub rejected the spawn request (400 %s); if the hub predates the --report-relative capability, upgrade panewire on the hub, otherwise check the request fields", he.Code)}
 			}
 			return a.hubFailure(c.name, id, err, forced)
 		}

@@ -2,6 +2,7 @@ package runtug
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -78,7 +79,36 @@ func TestBuilderFamilyWithoutBuilderJobOnlyForReviewer(t *testing.T) {
 
 func TestParseSpawnBuilderFamilyAlone(t *testing.T) {
 	s, e := parseSpawn([]string{"--builder-family", "anthropic", "--task", "12", "--role", "reviewer"})
-	if e != nil || s.BuilderFamily != "anthropic" || s.BuilderJob != "" || !s.unlinkedReviewer() {
+	if e != nil || s.BuilderFamily != "anthropic" || s.BuilderJob != "" {
 		t.Fatalf("%+v %v", s, e)
+	}
+}
+
+// Over ssh the Spawn crosses as JSON and BuilderFamily/BuilderJob are not on
+// the wire; the receiving host must still see an unlinked reviewer from the
+// resolved fields, and a reviewer that inherits a builder job must not.
+func TestUnlinkedReviewerSurvivesTheSSHEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		s    Spawn
+		want bool
+	}{
+		{"family only", Spawn{Role: "reviewer", Task: "12", BuilderFamily: "anthropic", ParentFamily: "anthropic"}, true},
+		{"with builder job", Spawn{Role: "reviewer", Task: "12", BuilderFamily: "anthropic", BuilderJob: "job-b", ParentFamily: "anthropic", Inherited: "job-b"}, false},
+		{"worker", Spawn{Role: "worker", Task: "12", ParentFamily: "anthropic"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, e := json.Marshal(tc.s)
+			if e != nil {
+				t.Fatal(e)
+			}
+			var got Spawn
+			if e := json.Unmarshal(b, &got); e != nil {
+				t.Fatal(e)
+			}
+			if got.BuilderFamily != "" || got.unlinkedReviewer() != tc.want {
+				t.Fatalf("after the envelope: unlinked=%v want %v (%+v)", got.unlinkedReviewer(), tc.want, got)
+			}
+		})
 	}
 }

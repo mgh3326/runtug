@@ -801,3 +801,37 @@ func TestHubConfigKeys(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// A 400 with another hub code keeps its own cause instead of blaming the
+// --report-relative capability.
+func TestHubOtherBadRequestIsNotBlamedOnReportRelative(t *testing.T) {
+	a, s, _, hub, _ := hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
+	s.Report = filepath.Join(a.Jobs, "job-a", "report.md")
+	hub.node = func(HubSpawnRequest) (HubSpawnReply, error) {
+		return HubSpawnReply{}, &HubError{Kind: hubRejected, Status: http.StatusBadRequest, Code: "machine_unknown"}
+	}
+	_, _, e := a.placeAuto(context.Background(), s, "brief")
+	if e != nil && strings.Contains(e.Error(), "--report-relative capability") {
+		t.Fatalf("a non-invalid_request 400 was blamed on --report-relative: %v", e)
+	}
+}
+
+// The relative report path follows panewire's validHubSpawnDocKey: ':' and
+// '@' and dot segments are refused before the hub, "report..md" is a name.
+func TestHubReportRelativeMatchesPanewireRule(t *testing.T) {
+	for rel, ok := range map[string]bool{
+		"job-a/report.md":   true,
+		"job-a/report..md":  true,
+		"job-a/rep:ort.md":  false,
+		"job-a/r@port.md":   false,
+		"job-a/../x.md":     false,
+		"job-a//report.md":  false,
+		"/job-a/report.md":  false,
+		"job-a/report.md/":  false,
+		"./job-a/report.md": false,
+	} {
+		if got := hubReportRelativeOK(rel); got != ok {
+			t.Errorf("%q: got %v want %v", rel, got, ok)
+		}
+	}
+}
