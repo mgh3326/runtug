@@ -242,6 +242,19 @@ func TestR03PlacementReadsCanonicalMachineAndFiltersDisconnected(t *testing.T) {
 		t.Fatalf("%v", views)
 	}
 }
+func TestR03PlacementReadsHubLoadRatio(t *testing.T) {
+	raw := `{"decision":"host-a","candidates":[{"machine":"host-a","connected":true,"load_ratio":0.25,"reason":"available"},{"machine":"host-b","connected":true}]}`
+	views, e := parseHubHosts(raw)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if views[0].LoadRatio == nil || *views[0].LoadRatio != 0.25 {
+		t.Fatalf("load_ratio must be read from the hub: %+v", views[0])
+	}
+	if views[1].LoadRatio != nil {
+		t.Fatalf("a missing reading stays unknown: %+v", views[1])
+	}
+}
 func TestR04TaskStateAndBindingUseCLIResponse(t *testing.T) {
 	for _, state := range []string{"merged", "dropped", "hold", "needs_decision"} {
 		t.Run(state, func(t *testing.T) {
