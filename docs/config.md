@@ -181,6 +181,11 @@ runtug:
    message naming the missing capability instead of retrying with an absolute
    path. Upgrade panewire on the hub to a version whose spawn allowlist carries the
    flag.
+   `--builder-family` may be sent without `--builder-job` for `--role reviewer`
+   only (the author's job is not bound to the task): the reviewer then runs as
+   a top-level job, still excludes that family, and neither claims nor links
+   the task, so several passes on one task all spawn. Any other role keeps the
+   "go together" refusal (exit 2).
 4. the node's `spawn.json` must map the repo name as a `cwd_key` and set
    `work_root`; `spawn_disabled`, `cwd_unmapped`, `runtug_missing` and
    `brief_doc_unavailable` refuse that host (recorded as `hub_<reason>`) and
