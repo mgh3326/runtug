@@ -235,7 +235,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 func (a *App) help(cmd string) error {
 	switch cmd {
 	case "spawn":
-		fmt.Fprintln(a.Out, "Usage: runtug spawn -c CWD [-m PROFILE|auto] -p BRIEF -w WORKSPACE -l LABEL --t T0..T3 [--task ID|--parent-job JOB] [--effort E] [--role worker|builder|tester|reviewer|counsel] [--routing-role lead|implementer|explorer|verifier|reviewer|judge] [--lane L] [--parent L] [--owner L] [--job ID] [--host auto|local|NAME] [--tags a,b,c] [--exclude-host a,b] [--report PATH] [-L live|mock] [--keep] [--job-dup-ok] [--task-hk-bypass] [--allow-escalation] [--override-reason TEXT] [--operator-request REF] [--requested-by NAME] [--purpose PURPOSE] [--lane-defer HOST] [--report-relative PATH] [--wait] [--wait-timeout DUR] [--dry-run]")
+		fmt.Fprintln(a.Out, "Usage: runtug spawn -c CWD [-m PROFILE|auto] -p BRIEF -w WORKSPACE -l LABEL --t T0..T3 [--task ID|--parent-job JOB] [--effort E] [--role worker|builder|tester|reviewer|counsel] [--routing-role lead|consult|implementer|explorer|verifier|reviewer|judge] [--lane L] [--parent L] [--owner L] [--job ID] [--host auto|local|NAME] [--tags a,b,c] [--exclude-host a,b] [--report PATH] [-L live|mock] [--keep] [--job-dup-ok] [--task-hk-bypass] [--allow-escalation] [--override-reason TEXT] [--operator-request REF] [--requested-by NAME] [--purpose PURPOSE] [--lane-defer HOST] [--report-relative PATH] [--wait] [--wait-timeout DUR] [--dry-run]")
 	case "done":
 		fmt.Fprintln(a.Out, "Usage: runtug done JOB [--report PATH] [--result FILE]")
 	case "escalate":
@@ -253,9 +253,9 @@ func (a *App) help(cmd string) error {
 	case "delegate":
 		fmt.Fprintln(a.Out, "Usage: runtug delegate --role reader|verifier|reviewer --prompt FILE [--grade G] [--cwd DIR] [--timeout D] [--headless] [--patch] [--panel 2..4] [--family F] [--workspace W] [--json] (hand one bounded reading, verifying or cross-checking task to a free or spare-quota model; the answer is the last thing printed)")
 	case "plan":
-		fmt.Fprintln(a.Out, "Usage: runtug plan --grade G --t T0..T3 [--role R] [--tags a,b] [--effort E] [--urgency normal|urgent] [--exclude-host a,b] [--builder-family F] [--routing-role R] [--allow-escalation] [--json] (live, read-only: the host and model a spawn would get now; no task, spawn or job write)")
+		fmt.Fprintln(a.Out, "Usage: runtug plan [--grade G] --t T0..T3 [--role R] [--tags a,b] [--effort E] [--urgency normal|urgent] [--exclude-host a,b] [--builder-family F] [--routing-role R] [--allow-escalation] [--json] (live, read-only: the host and model a spawn would get now; no task, spawn or job write)")
 	case "resolve":
-		fmt.Fprintln(a.Out, "Usage: runtug resolve --role lead|implementer|explorer|verifier|reviewer|judge [--grade G] [--t T0..T3] [--builder-family F] [--json] (read-only: the profile and effort role routing and quota ordering pick now, for an in-session subagent; no host placement, spawn or job write; the answer is the last thing printed)")
+		fmt.Fprintln(a.Out, "Usage: runtug resolve --role lead|consult|implementer|explorer|verifier|reviewer|judge [--grade G] [--t T0..T3] [--builder-family F] [--json] (read-only: the profile and effort role routing and quota ordering pick now, for an in-session subagent; no host placement, spawn or job write; the answer is the last thing printed)")
 	case "preflight":
 		fmt.Fprintln(a.Out, "Usage: runtug preflight [--host NAME] [--pool P] [--json] (read-only: per remote host, hub acceptance, shared quota observation age, quota transport setting, hub load/memory, mergewake review config and runtug/panewire version skew, each with a named reason; exit 0 when all good, 78 otherwise)")
 	default:

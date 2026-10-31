@@ -23,6 +23,13 @@ func planFixture(t *testing.T) (*App, *fakeQuota, *fakeRunner, *fakeJobStore, *b
 	src := a.Source.(*fakePlacementSource)
 	src.hosts = []HostView{{Name: "host-b", Connected: true}}
 	src.presence = append(src.presence, PresenceRecord{HostID: "presence-b", AccountKey: key, LastSeen: a.Now()})
+	// All three pools are present on an eligible host. Local is disabled.
+	for _, rec := range append([]PresenceRecord{}, src.presence...) {
+		if rec.HostID == "local" {
+			rec.HostID = "presence-b"
+			src.presence = append(src.presence, rec)
+		}
+	}
 	src.accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true}
 	a.Config.Local["spawn"] = false
 	a.Config.Hosts = map[string]map[string]any{"host-b": {"presence_id": "presence-b"}}

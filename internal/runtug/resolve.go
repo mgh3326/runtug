@@ -36,6 +36,9 @@ type resolveResult struct {
 	Pool           string         `json:"pool,omitempty"`
 	Tier           string         `json:"tier,omitempty"`
 	RungEffort     string         `json:"rung_effort,omitempty"`
+	AccountKey     string         `json:"account_key,omitempty"`
+	Host           string         `json:"host,omitempty"`
+	OutcomeCode    string         `json:"outcome_code"`
 	Profile        string         `json:"profile,omitempty"`
 	Effort         string         `json:"effort,omitempty"`
 }
@@ -45,7 +48,7 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 	var asJSON bool
 	f := flags("resolve")
 	f.StringVar(&role, "role", "", "routing role")
-	f.StringVar(&grade, "grade", "C", "task grade (C, B, A, A+, S, S+)")
+	f.StringVar(&grade, "grade", "", "task grade (C, B, A, A+, S, S+; not for lead/consult)")
 	f.StringVar(&t, "t", "T0", "task scale T0..T3")
 	f.StringVar(&builderFamily, "builder-family", "", "author or parent family (reviewer/judge)")
 	f.BoolVar(&asJSON, "json", false, "print the decision as JSON")
@@ -59,7 +62,13 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		return fail(exitUsage, "resolve needs --role %s", strings.Join(routingRoles, "|"))
 	}
 	grade = strings.ToUpper(grade)
-	if _, ok := gradeOrder[grade]; !ok {
+	if topRoutingRole(role) && grade != "" {
+		return fail(exitConfig, "%s: --grade is not accepted for %s", noLeadGradeRule, role)
+	}
+	if grade == "" && !topRoutingRole(role) {
+		grade = "C"
+	}
+	if _, ok := gradeOrder[grade]; !ok && !topRoutingRole(role) {
 		return fail(exitUsage, "resolve needs --grade C|B|A|A+|S|S+")
 	}
 	t = strings.ToUpper(t)
@@ -80,6 +89,9 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 	}
 	route, e := a.routeFor(ctx, seatRole, role)
 	if e != nil {
+		if asJSON {
+			_ = writeJSON(a.Out, resolveResult{RoutingRole: role, OutcomeCode: outcomeForError(e), Error: e.Error()})
+		}
 		return e
 	}
 	cwd, _ := os.Getwd()
@@ -87,6 +99,7 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 	req := selReq{grade: grade, t: t, role: seatRole, builderFamily: builderFamily, urgency: urgencyNormal, urgencySource: "default", route: route}
 	sel, selErr := a.selectFor(ctx, s, req)
 	r := resolveResult{RoutingRole: role, SeatRole: seatRole, Grade: grade, T: t, RoutingVersion: route.version, PolicySource: route.source}
+	r.OutcomeCode = outcomeForError(selErr)
 	if sel != nil {
 		// A downgrade retry carries its own routing decision.
 		route = sel.req.route
@@ -100,6 +113,7 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		c := sel.chosen
 		r.Seat, r.ModelID, r.Pool, r.Tier, r.RungEffort = c.seatName, c.row.ModelID, c.row.Pool, c.tierName, c.row.Effort
 		r.Profile, r.Effort = c.seat.Canon, route.effort(c.row.Effort)
+		r.AccountKey, r.Host = c.accountKey, c.host
 	}
 	if asJSON {
 		b, _ := json.MarshalIndent(r, "", "  ")

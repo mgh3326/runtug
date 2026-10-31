@@ -141,8 +141,8 @@ func (a *App) poolPolicy() (PoolPolicy, error) {
 	return LoadPoolPolicy(str(a.Config.Local, "pool_policy"))
 }
 
-// selCand is one catalog rung evaluated for this spawn. Reason records why it
-// was dropped; Tier and TierName record the policy bucket it ranked under.
+// selCand is one profile/rung/account choice. Static refusals have no account.
+// Reason records a drop; Tier and TierName record its quota-policy rank.
 type selCand struct {
 	row       CatalogRow
 	seat      *Seat
@@ -161,8 +161,13 @@ type selCand struct {
 	exhausted bool
 	// risk marks a paid pool at waste risk (PoolPolicy.wasteRisk); unused is
 	// its projected unused share at the longest window's reset.
-	risk   bool
-	unused *float64
+	risk        bool
+	unused      *float64
+	accountKey  string
+	host        string
+	hosts       []selHost
+	code        string
+	ignoreGrade bool
 }
 
 type selPlan struct {
@@ -180,6 +185,7 @@ type selPlan struct {
 	// is its downgrade_to retry.
 	routeRefusal string
 	before       *selPlan
+	outcome      string
 }
 type selReq struct {
 	grade           string
@@ -259,7 +265,9 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 	for _, name := range names {
 		seat := a.Policy.Profiles[name]
 		reason := ""
-		if row.Effort != "" && seat.Route != "" {
+		if !req.route.admitsSeat(seat) {
+			reason = "role_filtered"
+		} else if row.Effort != "" && seat.Route != "" {
 			// A routed harness runs at its own default; it has no named rung.
 			reason = "seat_rung"
 		} else if row.Effort == "" && (seat.needsEffort() || seat.Effort != "") {
@@ -424,26 +432,27 @@ type selHost struct {
 	wakeable bool
 	eligible bool
 	excluded bool
+	load     *float64
+	score    *float64
 }
 
-// selPresence enumerates the spawn hosts once for a selection round and
-// answers "does any host that could take this job show fresh presence for the
-// candidate's account". Enumeration mirrors plan(): local plus configured
-// hosts, hub views for connectivity, wakeable hosts counted while asleep.
+// selPresence snapshots eligible hosts and their current account bindings for
+// one selection round. Account reads and bounded refreshes are cached by key.
 type selPresence struct {
-	a        *App
-	hub      map[string]HostView
-	presErr  bool
-	presence []PresenceRecord
-	accounts map[string]SharedAccount
-	hosts    []selHost
-	presTTL  time.Duration
-	now      time.Time
-	degraded []string
+	a         *App
+	hub       map[string]HostView
+	presErr   bool
+	presence  []PresenceRecord
+	accounts  map[string]SharedAccount
+	hosts     []selHost
+	presTTL   time.Duration
+	now       time.Time
+	degraded  []string
+	refreshed map[string]string
 }
 
 func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *selPresence {
-	sp := &selPresence{a: a, now: a.Now(), presTTL: a.placementTTL("presence_ttl_s", 86400), accounts: map[string]SharedAccount{}}
+	sp := &selPresence{a: a, now: a.Now(), presTTL: a.placementTTL("presence_ttl_s", 86400), accounts: map[string]SharedAccount{}, refreshed: map[string]string{}}
 	sp.hub, sp.degraded = a.hostViews(ctx, s.CWD)
 	if a.Source == nil {
 		sp.presErr = true
@@ -455,11 +464,13 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *s
 		sp.presence = records
 	}
 	machine := a.machine()
+	excluded, _ := parseHosts(s.ExcludeHosts)
 	add := func(name string, cfg map[string]any, local bool) {
 		h := selHost{name: name, local: local, cfg: cfg, presence: firstNonempty(str(cfg, "presence_id"), name)}
 		if local {
 			h.presence = firstNonempty(str(cfg, "presence_id"), machine)
 			h.awake = true
+			h.load = a.localLoad(ctx)
 			if !boolean(cfg, "spawn", true) {
 				h.excluded = true
 			}
@@ -467,12 +478,16 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *s
 			h.wakeable = str(cfg, "wake") == "panewire"
 			if hv, reported := sp.hub[name]; reported {
 				h.awake = hv.Connected
+				h.load, h.score = hv.LoadRatio, hv.Score
 				if strings.Contains(hv.Reason, "not_accepting") {
 					h.excluded = true
 				}
 			} else {
 				h.awake = !h.wakeable || sp.hub == nil
 			}
+		}
+		if slices.Contains(excluded, name) || s.Host != "" && s.Host != "auto" && s.Host != name && !(local && s.Host == "local") {
+			h.excluded = true
 		}
 		h.eligible = true
 		for _, t := range required {
@@ -497,76 +512,6 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *s
 	return sp
 }
 
-// present reports whether some spawnable, tag-eligible host that can run the
-// seat's capability shows fresh presence for the pool's account. Degraded
-// presence or quota-cache reads make the answer false (fail closed).
-func (sp *selPresence) present(ctx context.Context, seat *Seat, pool string) bool {
-	if sp.presErr || pool == "" {
-		return false
-	}
-	keys := neededAccounts(nil, pool, sp.presence)
-	if len(keys) == 0 {
-		return false
-	}
-	for _, k := range keys {
-		if _, ok := sp.accounts[k]; !ok {
-			acc, e := sp.a.Source.SharedAccount(ctx, k)
-			if e != nil {
-				acc = SharedAccount{Key: k, Degraded: true}
-			}
-			sp.accounts[k] = acc
-		}
-	}
-	for _, h := range sp.hosts {
-		if !h.eligible || h.excluded || !h.awake && !h.wakeable {
-			continue
-		}
-		if seat.Capability != "standard" && !boolean(h.cfg, seat.Capability, false) {
-			continue
-		}
-		if sp.a.candidateLogin(sp.presence, sp.accounts, keys, h.presence, sp.now, sp.presTTL) == loginPresent {
-			return true
-		}
-	}
-	return false
-}
-
-// admit tries this rung on each eligible host. A remote attempt always names
-// that host's current account, even when the spawner has a different login.
-//
-// An exhausted rung (its account projects past the exclusion threshold) is
-// admitted only on a free-bucket gate basis; any other basis drops it.
-func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, pool, host string, exhausted bool) ([]quotaJudgment, error) {
-	var judgments []quotaJudgment
-	var last error
-	for _, h := range sp.hosts {
-		if host != "" && host != "auto" && host != h.name && !(h.local && host == "local") {
-			continue
-		}
-		if !h.eligible || h.excluded || !h.awake && !h.wakeable || seat.Capability != "standard" && !boolean(h.cfg, seat.Capability, false) {
-			continue
-		}
-		key := hostAccount(sp.presence, pool, h.presence, sp.now, sp.presTTL)
-		// Preserve the selector's existing pool-level presence prerequisite.
-		// Local admission itself uses the local gate without requiring that
-		// this host also publish readable shared evidence.
-		j, err := sp.a.judgeHost(ctx, qr, pool, h.name, h.local, key, sp.accounts[key])
-		if err == nil && exhausted && !strings.HasPrefix(j.Basis, freeBasisPrefix) {
-			j.Outcome, j.ExitCode = "refused", exitSeatRefused
-			err = fail(exitSeatRefused, "projected_exhaust: gate basis %q is not a free bucket", j.Basis)
-		}
-		judgments = append(judgments, j)
-		if err == nil {
-			return judgments, nil
-		}
-		last = err
-	}
-	if last == nil {
-		last = fail(exitEvictionUnconfirmed, "no host has usable quota evidence")
-	}
-	return judgments, last
-}
-
 // selectProfile runs automatic model selection when -m is omitted or "auto":
 // the bench catalog's live rungs are filtered to the task's grade, admission
 // gate, role and effort constraints, ordered by the versioned pool-order
@@ -583,7 +528,7 @@ func (sp *selPresence) admit(ctx context.Context, qr QuotaRequest, seat *Seat, p
 // pool projected to run out before reset is never a candidate.
 func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if a.Quota == nil {
-		return nil, fail(exitConfig, "auto selection needs the quota catalog")
+		return nil, fail(exitConfig, "POLICY_UNAVAILABLE: selection needs the quota catalog")
 	}
 	req := selReq{t: s.T, role: s.Role, effort: s.Effort, allowEscalation: s.AllowEscalation, builderFamily: s.ParentFamily, excludeFamilies: s.ExcludeFamilies, onlyFamily: s.OnlyFamily}
 	tags, e := parseTags(s.Tags)
@@ -595,48 +540,47 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 	if e != nil {
 		return nil, e
 	}
+	if req.route, e = a.routeFor(ctx, s.Role, s.RoutingRole); e != nil {
+		return nil, e
+	}
 	if s.Grade != "" {
+		if req.route.top() {
+			return nil, fail(exitConfig, "%s: --grade is not accepted for routing role %s", noLeadGradeRule, req.route.role)
+		}
 		req.grade = s.Grade
 	} else if m := taskMarker.FindStringSubmatch(task.Title); m != nil {
 		req.grade = strings.ToUpper(m[1])
 		if strings.ToUpper(m[2]) != s.T {
 			return nil, fail(exitSeatRefused, "task scale does not match --t")
 		}
-	} else {
+	} else if !req.route.top() {
 		return nil, fail(exitSeatRefused, "auto selection needs a readable task grade")
 	}
-	if _, ok := gradeOrder[req.grade]; !ok {
+	if _, ok := gradeOrder[req.grade]; !ok && !req.route.top() {
 		return nil, fail(exitSeatRefused, "unreadable task grade %q", req.grade)
 	}
 	req.urgency, req.urgencySource = resolveUrgency(s.Urgency, task)
-	if !s.Unrouted {
-		if req.route, e = a.routeFor(ctx, s.Role, s.RoutingRole); e != nil {
-			return nil, e
-		}
-	}
 	return a.selectFor(ctx, s, req)
 }
 
 // selectFor ranks and admits the catalog rungs for a resolved request. It is
-// the selection core shared by spawn and `runtug plan`: it reads the catalog
-// and pool status, asks presence and the quota gates, and writes nothing.
+// the selection core shared by spawn and `runtug plan`: it reads the catalog,
+// account observations, presence and quota gates, and writes no job state.
 func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, error) {
 	policy, e := a.poolPolicy()
 	if e != nil {
-		return nil, e
+		return nil, fail(exitConfig, "POLICY_UNAVAILABLE: %v", e)
 	}
 	p := &selPlan{policy: policy, order: slices.Clone(policy.Order), req: req, at: a.Now()}
 	rows, e := a.Quota.Catalog(ctx)
 	if e != nil {
-		return nil, fail(exitConfig, "bench catalog unreadable: %v", e)
+		return nil, fail(exitConfig, "POLICY_UNAVAILABLE: bench catalog unreadable: %v", e)
 	}
-	pools, poolsErr := a.Quota.Pools(ctx)
-	if poolsErr != nil {
-		p.degraded = append(p.degraded, "quota_status_unavailable")
-	}
+	pres := a.newSelPresence(ctx, s, req.tags)
+	p.degraded = append(p.degraded, pres.degraded...)
 	var pending []*selCand
 	for _, row := range rows {
-		c := &selCand{row: row, tier: -1}
+		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
 		p.cands = append(p.cands, c)
 		_, validGrade := gradeOrder[row.Grade]
 		switch {
@@ -648,7 +592,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			c.reason = "role_filtered"
 		case !validGrade:
 			c.reason = "grade_invalid"
-		case gradeOrder[row.Grade] < gradeOrder[req.grade]:
+		case !req.route.top() && gradeOrder[row.Grade] < gradeOrder[req.grade]:
 			c.reason = "grade_insufficient"
 		case row.Gate != "default" && row.Gate != "escalation" && row.Gate != "consult_only":
 			c.reason = "gate_unknown"
@@ -666,64 +610,69 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 				c.seatName = name
 			}
 		}
-		if v, ok := pools[row.Pool]; ok {
-			c.blocking, c.projected, c.urgency, c.resetHrs = v.Blocking, v.Projected, v.Urgency, v.ResetHours
-			free := policy.isFree(row)
-			c.risk, c.unused = policy.wasteRisk(row, free, v, poolsErr == nil)
-			if c.reason == "" && free && v.Projected != nil && *v.Projected >= *policy.ExcludeAt {
-				// The account projection does not bind a free bucket; the gate
-				// names its basis at admission, which decides.
-				c.exhausted = true
-			} else if c.reason == "" && !free {
-				c.reason = policy.exhaustReason(v, c.risk)
-			}
-		}
 		if c.reason != "" {
 			c.outcome = "dropped:" + c.reason
 			continue
 		}
-		tierName, n := policy.tierOf(row, p.order, pools, poolsErr == nil)
-		if n < 0 {
-			c.reason = "quota_unknown"
-			c.outcome = "dropped:quota_unknown"
+		// A candidate is a profile/rung/account, never a provider-level pool.
+		bindings := pres.bindings(c.seat, row.Pool)
+		if len(bindings) == 0 {
+			c.reason, c.code = "no_presence", outcomeAuthUnavailable
+			if !pres.hasHost(c.seat) {
+				c.reason, c.code = "no_eligible_host", outcomeNoEligibleHost
+			}
+			c.outcome = "dropped:" + c.reason
 			continue
 		}
-		c.tier, c.tierName = n, tierName
-		pending = append(pending, c)
+		p.cands = p.cands[:len(p.cands)-1]
+		for _, binding := range bindings {
+			x := *c
+			x.accountKey, x.hosts = binding.key, binding.hosts
+			p.cands = append(p.cands, &x)
+			acc := pres.account(ctx, binding.key, row.Pool, binding.hosts, false)
+			if why := sharedReason(binding.key, acc); why != "" || acc.Quota == nil {
+				x.reason, x.code, x.outcome = "quota_unknown", outcomeQuotaUnknown, "dropped:quota_unknown"
+				x.judgments = []quotaJudgment{pres.unknownJudgment(binding, why)}
+				continue
+			}
+			p.classify(&x, *acc.Quota)
+			if x.code == outcomeQuotaUnknown {
+				acc = pres.account(ctx, binding.key, row.Pool, binding.hosts, true)
+				if sharedReason(binding.key, acc) == "" && acc.Quota != nil {
+					x.reason, x.code, x.outcome = "", "", ""
+					p.classify(&x, *acc.Quota)
+				}
+			}
+			if x.reason == "" {
+				pending = append(pending, &x)
+			}
+		}
 	}
 	orderSelCands(pending)
 	p.ranked = pending
-	pres := a.newSelPresence(ctx, s, req.tags)
-	p.degraded = append(p.degraded, pres.degraded...)
 	for _, c := range pending {
 		if p.chosen != nil {
 			c.outcome = "below_choice"
 			continue
 		}
-		if !pres.present(ctx, c.seat, c.row.Pool) {
-			c.reason = "no_presence"
-			c.outcome = "dropped:no_presence"
-			continue
-		}
-		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
-		c.judgments, e = pres.admit(ctx, qr, c.seat, c.row.Pool, s.Host, c.exhausted)
-		if e != nil {
-			if c.exhausted && strings.HasPrefix(e.Error(), "projected_exhaust") {
-				c.reason, c.outcome = "projected_exhaust", "dropped:projected_exhaust"
-				continue
+		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose, AccountKey: c.accountKey}
+		j, err := pres.admitAccount(ctx, qr, c, p)
+		c.judgments = append(c.judgments, j)
+		if err != nil {
+			if c.reason == "" {
+				c.reason, c.code = fmt.Sprintf("gate_refused:%d", exitCode(err)), gateOutcome(err)
 			}
-			c.reason = fmt.Sprintf("gate_refused:%d", exitCode(e))
 			c.outcome = "dropped:gate_refused"
+			if c.reason == "projected_exhaust" {
+				c.outcome = "dropped:projected_exhaust"
+			}
 			continue
 		}
-		c.outcome = "chosen"
-		p.chosen = c
+		c.host, c.outcome, c.code = j.Host, "chosen", outcomeAdmitted
+		p.chosen, p.outcome = c, outcomeAdmitted
 	}
 	if p.chosen == nil {
-		if req.route != nil && req.route.rule != nil {
-			return a.roleExhausted(ctx, s, req, p)
-		}
-		return p, fail(exitSeatRefused, "auto selection admitted no candidate")
+		return a.selectionRefused(ctx, s, req, p)
 	}
 	return p, nil
 }
@@ -755,7 +704,7 @@ func orderSelCands(pending []*selCand) {
 			return x.tier - y.tier
 		}
 		// Grade fit: the lowest grade that satisfies the task.
-		if gx, gy := gradeOrder[x.row.Grade], gradeOrder[y.row.Grade]; gx != gy {
+		if gx, gy := gradeOrder[x.row.Grade], gradeOrder[y.row.Grade]; !x.ignoreGrade && gx != gy {
 			return gx - gy
 		}
 		// Paceable resets rank ahead of unpaceable ones: mixing the urgency
@@ -774,6 +723,11 @@ func orderSelCands(pending []*selCand) {
 		}
 		if c := cmp.Compare(rankBlocking(firstPct(x.projected, x.blocking)), rankBlocking(firstPct(y.projected, y.blocking))); c != 0 {
 			return c
+		}
+		if x.ignoreGrade {
+			if c := cmp.Compare(slices.Index(topProfiles, x.row.Profile), slices.Index(topProfiles, y.row.Profile)); c != 0 {
+				return c
+			}
 		}
 		if ex, ey := rankEffort(x.row.Effort), rankEffort(y.row.Effort); ex != ey {
 			return ex - ey
@@ -839,6 +793,7 @@ func (p *selPlan) record() map[string]any {
 	cands := []any{}
 	for _, c := range p.cands {
 		row := map[string]any{"profile": c.row.Profile, "effort": c.row.Effort, "grade": c.row.Grade, "pool": c.row.Pool, "gate": c.row.Gate, "model_id": c.row.ModelID, "outcome": c.outcome}
+		row["account_key"], row["host"], row["outcome_code"] = c.accountKey, c.host, c.code
 		if c.seatName != "" {
 			row["seat"] = c.seatName
 		}
@@ -882,6 +837,8 @@ func (p *selPlan) record() map[string]any {
 		tags = []string{}
 	}
 	rec := map[string]any{
+		"routing_role":   routingRole(p.req),
+		"outcome_code":   p.outcome,
 		"mode":           "auto",
 		"decision":       fmt.Sprintf("urgency=%s source=%s tiers=%s", p.req.urgency, p.req.urgencySource, strings.Join(p.order, ">")),
 		"rule":           fmt.Sprintf("waste-risk pools first (longest window projected >= %g%% unused at reset%s; ranked by waste urgency; sub-daily windows refuse only when exhausted), then tier, then lowest grade >= %s, then waste urgency (unused share per hour to the longest window's reset; a paceable reset ranks ahead of an unpaceable one, which keeps the lower projected-at-reset order; sub-daily windows never rank), then smaller effort; waste < %g%%, excluded >= %g%% projected", *p.policy.WasteRisk.MinUnusedPct, horizonClause(*p.policy.WasteRisk.HorizonHours), p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
@@ -901,6 +858,8 @@ func (p *selPlan) record() map[string]any {
 			canon = c.seat.Canon
 		}
 		chosen := map[string]any{"seat": c.seatName, "canon": canon, "effort": c.row.Effort, "model_id": c.row.ModelID, "pool": c.row.Pool, "gate": c.row.Gate, "tier": c.tierName, "grade": c.row.Grade, "waste_risk": c.risk}
+		chosen["account_key"], chosen["host"], chosen["outcome_code"] = c.accountKey, c.host, c.code
+		rec["account_key"], rec["host"] = c.accountKey, c.host
 		why := fmt.Sprintf("tier=%s grade=%s for task %s", c.tierName, c.row.Grade, p.req.grade)
 		if c.risk {
 			why = "waste_risk " + why

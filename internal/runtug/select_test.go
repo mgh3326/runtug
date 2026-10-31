@@ -24,8 +24,21 @@ func selFixture(t *testing.T, grade string, rows []CatalogRow, pools map[string]
 		presence = append(presence, PresenceRecord{HostID: "local", AccountKey: key, LastSeen: now.Add(-time.Hour)})
 		accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true, MeasuredAt: now.Add(-time.Hour)}
 	}
-	a.Source = &fakePlacementSource{presence: presence, accounts: accounts}
 	q := &fakeQuota{CatalogRows: rows, PoolViews: pools}
+	a.Source = &fakePlacementSource{presence: presence, accounts: accounts, quotaDo: func(key string) *PoolView {
+		pool, _, _ := strings.Cut(key, ":")
+		v, ok := q.PoolViews[pool]
+		if !ok && pool == "devin" {
+			v, ok = PoolView{Status: "ok", Class: "spend", Blocking: ptrF(0)}, true
+		}
+		if !ok || q.PoolsErr != nil && pool != "devin" {
+			return nil
+		}
+		if v.Status == "ok" && v.Class == "spend" && v.Blocking == nil && v.Projected == nil {
+			v.Blocking = ptrF(0)
+		}
+		return &v
+	}}
 	a.Quota = q
 	a.Config.Local = map[string]any{}
 	a.Runner = &fakeRunner{Do: func(c Command) Result {
@@ -202,8 +215,8 @@ func TestSelectUnknownOrDegradedQuotaNotAdmitted(t *testing.T) {
 	if got := candOutcome(rec, "sonnet", "high")["outcome"]; got != "dropped:quota_unknown" {
 		t.Fatalf("%v", got)
 	}
-	if degr, _ := rec["degraded"].([]string); len(degr) == 0 {
-		t.Fatal("a failed status read must be recorded as degraded input")
+	if rec["outcome_code"] != outcomeAdmitted {
+		t.Fatalf("account evidence survives an unrelated local status failure: %v", rec)
 	}
 }
 
@@ -484,7 +497,7 @@ func TestSpawnAutoDryRunPrintsSelection(t *testing.T) {
 	key := "example:0123456789abcdef"
 	a.Source = &fakePlacementSource{
 		presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: now}},
-		accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true}},
+		accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true, Quota: &PoolView{Status: "ok", Class: "spend", Blocking: ptrF(0)}}},
 	}
 	q.GateDo = func(r QuotaRequest) (string, error) { return "pool=example\n", nil }
 	if e := a.Spawn(context.Background(), s); e != nil {
@@ -542,7 +555,7 @@ func TestSpawnAutoSkipsDefaultRung(t *testing.T) {
 	key := "example:0123456789abcdef"
 	a.Source = &fakePlacementSource{
 		presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: now}},
-		accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true}},
+		accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true, Quota: &PoolView{Status: "ok", Class: "spend", Blocking: ptrF(0)}}},
 	}
 	q.GateDo = func(r QuotaRequest) (string, error) { return "pool=example\n", nil }
 	if e := a.Spawn(context.Background(), s); e != nil {

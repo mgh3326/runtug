@@ -50,6 +50,7 @@ type SharedAccount struct {
 	Fresh      bool
 	Degraded   bool
 	MeasuredAt time.Time
+	Quota      *PoolView
 }
 
 // PlacementSource supplies the external reads a placement decision needs:
@@ -497,6 +498,9 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 	}
 	for i := range enum {
 		c := &enum[i]
+		if c.excluded == "" && s.AccountKey != "" && hostAccount(presence, pool, firstNonempty(str(c.cfg, "presence_id"), c.name), now, presTTL) != s.AccountKey {
+			c.excluded = "different_account"
+		}
 		if c.excluded == "" && slices.Contains(excluded, c.name) {
 			c.excluded = "excluded_host"
 		}
@@ -1130,6 +1134,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		return a.spawnRemote(ctx, s, brief, c, resolveRepo(), false)
 	}
 	emit := func(chosen string) map[string]any {
+		a.stampSelection(&s, chosen)
 		rec := p.record(chosen)
 		a.attachSelection(rec, s)
 		if !s.DryRun {
@@ -1188,6 +1193,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 				continue
 			}
 			rec := p.record(c.name)
+			a.stampSelection(&s, c.name)
 			a.attachSelection(rec, s)
 			return false, rec, nil
 		}
@@ -1300,6 +1306,9 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 	pool := a.quotaPool(ctx, s)
 	spawn := func() candResult {
 		key, acc := a.remoteAccount(ctx, pool, c.name, c.cfg)
+		if s.AccountKey != "" && key != s.AccountKey {
+			return candResult{stop: fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: target no longer holds the selected account")}
+		}
 		j, err := a.judgeHost(ctx, qr, pool, c.name, false, key, acc)
 		rec["quota_gate"] = j
 		if err != nil {
@@ -1367,10 +1376,16 @@ func (a *App) quotaRequest(s Spawn) (QuotaRequest, bool) {
 	if effort == "" {
 		effort = seat.Effort
 	}
-	return QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}, true
+	return QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose, AccountKey: s.AccountKey}, true
 }
 
 func (a *App) quotaPool(ctx context.Context, s Spawn) string {
+	if s.AccountKey != "" {
+		pool, _, _ := strings.Cut(s.AccountKey, ":")
+		if validID(pool) {
+			return pool
+		}
+	}
 	if a.Quota == nil {
 		return ""
 	}

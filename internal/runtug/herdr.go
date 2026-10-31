@@ -559,12 +559,7 @@ func (a *App) hubGate(ctx context.Context, cwd, gate string) error {
 	if str(a.Config.Hub, "hub_token_env") == "" {
 		return nil
 	}
-	pool := ""
-	for _, word := range strings.Fields(strings.SplitN(gate, "\n", 2)[0]) {
-		if strings.HasPrefix(word, "pool=") {
-			pool = strings.TrimPrefix(word, "pool=")
-		}
-	}
+	pool := gatePool(gate)
 	if !validID(pool) {
 		return fail(exitConfig, "quota gate response lacks pool")
 	}

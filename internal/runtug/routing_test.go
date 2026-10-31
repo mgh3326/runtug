@@ -89,8 +89,8 @@ func TestRoutingLeadNeverDowngradesToSonnet(t *testing.T) {
 
 	// Control: without routing the incident reproduces — sonnet wins.
 	a, s, _ := leadFixture(t)
-	s.Role, s.Unrouted = "builder", true
-	sel, e := a.selectProfile(ctx, s)
+	s.Role = "builder"
+	sel, e := a.selectFor(ctx, s, selReq{grade: "A", t: s.T, role: s.Role, urgency: urgencyNormal, urgencySource: "default"})
 	if e != nil || sel.chosen.seat.Canon != "sonnet" {
 		t.Fatalf("control: unrouted builder must pick the cheapest rung, sonnet: %v %+v", e, sel)
 	}
@@ -113,7 +113,7 @@ func TestRoutingLeadNeverDowngradesToSonnet(t *testing.T) {
 			t.Fatalf("%s: sonnet must be role_filtered, got %v", tc.name, got)
 		}
 		rt := routingStamp(t, sel)
-		if rt["routing_role"] != "lead" || rt["routing_version"] != 1 || rt["policy_source"] != "hk" {
+		if rt["routing_role"] != map[string]string{"builder": "lead", "worker": "lead", "counsel": "consult"}[tc.role] || rt["routing_version"] != 1 || rt["policy_source"] != "hk" {
 			t.Fatalf("%s: routing stamp: %v", tc.name, rt)
 		}
 	}
@@ -122,7 +122,7 @@ func TestRoutingLeadNeverDowngradesToSonnet(t *testing.T) {
 	// refuse role_exhausted_wait with the earliest reset, never sonnet.
 	a, s, q := leadFixture(t)
 	s.Role = "builder"
-	q.GateDo = gatePools(map[string]string{"sonnet": "claude"})
+	q.GateDo = exhaustedGatePools(map[string]string{"sonnet": "claude"})
 	sel, e = a.selectProfile(ctx, s)
 	if exitCode(e) != exitRoleWait || !strings.Contains(e.Error(), reasonRoleExhaustWait) {
 		t.Fatalf("want exit %d %s, got %v", exitRoleWait, reasonRoleExhaustWait, e)
@@ -156,8 +156,13 @@ func TestRoutingImplementerKeepsPoolOrder(t *testing.T) {
 		a, s, q := selFixture(t, "A", rows, pools, []string{"devin", "claude", "codex"})
 		q.GateDo = gatePools(gates)
 		serveRouting(a, routingDocV1)
-		s.Unrouted = unrouted
-		sel, e := a.selectProfile(context.Background(), s)
+		var sel *selPlan
+		var e error
+		if unrouted {
+			sel, e = a.selectFor(context.Background(), s, selReq{grade: "A", t: s.T, role: s.Role, urgency: urgencyNormal, urgencySource: "default"})
+		} else {
+			sel, e = a.selectProfile(context.Background(), s)
+		}
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -263,7 +268,7 @@ func TestRoutingOnExhaustion(t *testing.T) {
 	block := strings.Replace(routingBlockV1, `"explorer":    {"allowed": ["sonnet", "haiku", "codex-luna", "devin-swe2-medium", "agy-flash38-high"]`, `"explorer":    {"allowed": ["sonnet", "codex-luna"]`, 1)
 	fixture := func(gates map[string]string) (*App, Spawn) {
 		a, s, q := selFixture(t, "A", rows, pools, []string{"claude", "codex"})
-		q.GateDo = gatePools(gates)
+		q.GateDo = exhaustedGatePools(gates)
 		serveRouting(a, routingDoc(block))
 		s.RoutingRole = "explorer"
 		return a, s
@@ -342,7 +347,7 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 	}
 
 	a, _, out := setup()
-	if e := a.Run(context.Background(), []string{"plan", "--grade", "A", "--t", "T1", "--routing-role", "lead", "--json"}); e != nil {
+	if e := a.Run(context.Background(), []string{"plan", "--t", "T1", "--routing-role", "lead", "--json"}); e != nil {
 		t.Fatalf("plan: %v\n%s", e, out)
 	}
 	var plan map[string]any
@@ -358,7 +363,7 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 	}
 
 	a, fr, out := setup()
-	if e := a.Run(context.Background(), []string{"resolve", "--role", "lead", "--grade", "A", "--json"}); e != nil {
+	if e := a.Run(context.Background(), []string{"resolve", "--role", "lead", "--json"}); e != nil {
 		t.Fatalf("resolve: %v\n%s", e, out)
 	}
 	var r resolveResult
@@ -386,7 +391,7 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 	// at each scale both choose the same profile and record the same request.
 	for _, scale := range []string{"T1", "T2"} {
 		a, _, out := setup()
-		if e := a.Run(context.Background(), []string{"plan", "--grade", "A", "--t", scale, "--routing-role", "lead", "--json"}); e != nil {
+		if e := a.Run(context.Background(), []string{"plan", "--t", scale, "--routing-role", "lead", "--json"}); e != nil {
 			t.Fatalf("plan --t %s: %v\n%s", scale, e, out)
 		}
 		var plan map[string]any
@@ -395,7 +400,7 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 		}
 		planSel := plan["selection"].(map[string]any)
 		a, _, out = setup()
-		if e := a.Run(context.Background(), []string{"resolve", "--role", "lead", "--grade", "A", "--t", scale, "--json"}); e != nil {
+		if e := a.Run(context.Background(), []string{"resolve", "--role", "lead", "--t", scale, "--json"}); e != nil {
 			t.Fatalf("resolve --t %s: %v\n%s", scale, e, out)
 		}
 		var r resolveResult
@@ -412,7 +417,7 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 
 	// Text form: the last line is the answer.
 	a, _, out = setup()
-	if e := a.Run(context.Background(), []string{"resolve", "--role", "lead", "--grade", "A"}); e != nil {
+	if e := a.Run(context.Background(), []string{"resolve", "--role", "lead"}); e != nil {
 		t.Fatal(e)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -420,7 +425,7 @@ func TestResolveMatchesPlanAndSpawnsNothing(t *testing.T) {
 		t.Fatalf("text answer last:\n%s", out)
 	}
 
-	for _, args := range [][]string{{"resolve"}, {"resolve", "--role", "boss"}, {"resolve", "--role", "reviewer"}, {"resolve", "--role", "lead", "--grade", "Z"}, {"resolve", "--role", "lead", "--t", "T9"}} {
+	for _, args := range [][]string{{"resolve"}, {"resolve", "--role", "boss"}, {"resolve", "--role", "reviewer"}, {"resolve", "--role", "implementer", "--grade", "Z"}, {"resolve", "--role", "lead", "--t", "T9"}} {
 		if e := a.Run(context.Background(), args); exitCode(e) != exitUsage {
 			t.Fatalf("%v: want usage exit, got %v", args, e)
 		}
@@ -462,7 +467,7 @@ func TestSpawnRecordsRouting(t *testing.T) {
 		key := "example:0123456789abcdef"
 		a.Source = &fakePlacementSource{
 			presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: a.Now()}},
-			accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true}},
+			accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true, Quota: &PoolView{Status: "ok", Class: "spend", Blocking: ptrF(0)}}},
 		}
 		q.GateDo = func(QuotaRequest) (string, error) { return "pool=example\n", nil }
 		serveRouting(a, routingDocV1)
