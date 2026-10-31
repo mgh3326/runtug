@@ -21,7 +21,8 @@ import (
 // spawn machinery.
 //
 // The data shape is one job per delegation, id delegate-<parent>-<n> (parent =
-// the enclosing job, ARBITER_JOB; delegate-<n> outside one). The job dir holds
+// the enclosing job, ARBITER_JOB; delegate_<host>_<n> outside one, host = the
+// node id, so ids stay unique across hosts). The job dir holds
 // the brief the model gets (brief.md), the result it files with
 // `runtug done JOB --result` (result.json, {"answer": TEXT}), its report
 // (report.md, the same answer in prose) and, with --patch, changes.patch.
@@ -267,12 +268,24 @@ func (a *App) delegateCaller(ctx context.Context, flagFamily string) (delegateCa
 	return c, nil
 }
 
-// delegateJobID reserves the next delegate-<parent>-<n> by creating its job
-// dir; mkdir is the atomic claim, so concurrent delegations never share an id.
+// delegateJobID reserves the next delegate-<parent>-<n> (or delegate_<host>_<n>
+// outside a job) by creating its job dir; mkdir is the atomic claim, so
+// concurrent delegations on this host never share an id. The counter is local,
+// so outside a job the id carries the host's node id: the hk claim is global,
+// and two hosts' delegate-1 would collide there. A parent job runs on one host
+// and its id is already unique, so its delegations need no host part. The two
+// forms differ in the separator after "delegate", because a node id can equal a
+// parent job id; node ids have no "_", so the host form parses unambiguously.
 func (a *App) delegateJobID(parent string) (string, error) {
 	prefix := "delegate-"
 	if parent != "" {
 		prefix += parent + "-"
+	} else {
+		host, ok := a.nodeID()
+		if !ok {
+			return "", fail(exitConfig, "delegate needs HUB_MACHINE_ID in the node env file: its job ids must be unique across hosts")
+		}
+		prefix = "delegate_" + host + "_"
 	}
 	if e := os.MkdirAll(a.Jobs, 0700); e != nil {
 		return "", e

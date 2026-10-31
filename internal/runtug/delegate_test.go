@@ -259,7 +259,7 @@ func TestDelegateJSONOutput(t *testing.T) {
 	if err := json.Unmarshal([]byte(e.out()), &r); err != nil {
 		t.Fatalf("--json prints exactly one JSON document: %v\n%s", err, e.out())
 	}
-	if r.Answer != "done" || r.Job != "delegate-1" || r.Role != "reader" || r.Mode != "pane" || r.Profile != "devin-swe2" || r.Result["answer"] != "done" {
+	if r.Answer != "done" || r.Job != "delegate_test-host_1" || r.Role != "reader" || r.Mode != "pane" || r.Profile != "devin-swe2" || r.Result["answer"] != "done" {
 		t.Fatalf("%+v", r)
 	}
 }
@@ -318,6 +318,93 @@ func TestDelegateInsideJobUsesParentFamilyAndIDs(t *testing.T) {
 	}
 }
 
+// A top-level delegation on a host whose node id equals a parent job's id must
+// not hand out the id a delegation under that parent gets on another host: both
+// land in the one hk namespace.
+func TestDelegateJobIDFormsDoNotCollide(t *testing.T) {
+	hostA := testApp(t)
+	nodeA := filepath.Join(t.TempDir(), "node.env")
+	if e := os.WriteFile(nodeA, []byte("HUB_MACHINE_ID=task42-builder\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("RUNTUG_NODE_ENV", nodeA)
+	top, e := hostA.delegateJobID("")
+	if e != nil {
+		t.Fatal(e)
+	}
+	hostBDir := t.TempDir()
+	hostB := &App{Jobs: filepath.Join(hostBDir, "jobs")}
+	under, e := hostB.delegateJobID("task42-builder")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if top == under {
+		t.Fatalf("a top-level id and a parent-form id must never be equal: %q", top)
+	}
+}
+
+// Two hosts share the hk job namespace but not their jobs dirs. A mkdir counter
+// alone hands both of them delegate-1, and the second host's hk claim is then
+// refused as a duplicate. Top-level delegate ids carry the reserving host's node
+// id, so the claims never meet.
+func TestDelegateJobIDsDoNotCollideAcrossHosts(t *testing.T) {
+	ctx := context.Background()
+	hk := newFakeJobStore()
+	hostA := testApp(t) // node id test-host
+	hostA.JobStore = hk
+	hostBDir := t.TempDir()
+	nodeB := filepath.Join(hostBDir, "node.env")
+	if e := os.WriteFile(nodeB, []byte("HUB_MACHINE_ID=host-b\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	hostB := &App{Jobs: filepath.Join(hostBDir, "jobs"), JobStore: hk}
+
+	var ids [][2]string // host, id
+	for range 2 {
+		id, e := hostA.delegateJobID("")
+		if e != nil {
+			t.Fatal(e)
+		}
+		ids = append(ids, [2]string{"test-host", id})
+	}
+	t.Setenv("RUNTUG_NODE_ENV", nodeB)
+	for range 2 {
+		id, e := hostB.delegateJobID("")
+		if e != nil {
+			t.Fatal(e)
+		}
+		ids = append(ids, [2]string{"host-b", id})
+	}
+	seen := map[string]bool{}
+	for _, c := range ids {
+		if seen[c[1]] {
+			t.Fatalf("job id %s reserved twice across hosts: %v", c[1], ids)
+		}
+		seen[c[1]] = true
+		if e := hk.Claim(ctx, c[1], "7", c[0]); e != nil {
+			t.Fatalf("hk refused the claim of %s on %s: %v", c[1], c[0], e)
+		}
+	}
+}
+
+func TestDelegateJobIDNeedsNodeIDOutsideJob(t *testing.T) {
+	a := testApp(t)
+	nodeless := filepath.Join(t.TempDir(), "node.env")
+	if e := os.WriteFile(nodeless, []byte("HUB_TOKEN=x\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("RUNTUG_NODE_ENV", nodeless)
+	if _, e := a.delegateJobID(""); code(e) != exitConfig {
+		t.Fatalf("a top-level delegate without a node id must refuse as config: %v", e)
+	}
+	if entries, _ := os.ReadDir(a.Jobs); len(entries) != 0 {
+		t.Fatalf("a refused id must reserve nothing: %v", entries)
+	}
+	if id, e := a.delegateJobID("task42-builder"); e != nil || id != "delegate-task42-builder-1" {
+		t.Fatalf("a job's delegations keep the parent form without a node id: %q %v", id, e)
+	}
+}
+
 func TestDelegateBriefPreamblesPerRole(t *testing.T) {
 	cases := []struct {
 		role  string
@@ -355,7 +442,7 @@ func TestDelegateBriefPreamblesPerRole(t *testing.T) {
 					t.Fatalf("%s brief must not contain %q:\n%s", tc.role, d, brief)
 				}
 			}
-			for _, w := range []string{"Where is the retry loop?", "runtug done delegate-1 --report", "--result"} {
+			for _, w := range []string{"Where is the retry loop?", "runtug done delegate_test-host_1 --report", "--result"} {
 				if !strings.Contains(brief, w) {
 					t.Fatalf("the brief must carry the task and the filing steps (%q):\n%s", w, brief)
 				}
@@ -505,12 +592,12 @@ func TestDelegateHeadlessRunsOneBoundedCLICall(t *testing.T) {
 	if !equalMaps(before, snapshot(t, e.cwd)) {
 		t.Fatal("headless delegate changed --cwd")
 	}
-	rec := a.JobStore.(*fakeJobStore).record(t, "delegate-1")
+	rec := a.JobStore.(*fakeJobStore).record(t, "delegate_test-host_1")
 	res, _ := rec["result"].(json.RawMessage)
 	if rec["state"] != "completed" || !strings.Contains(string(res), "retry loop") || rec["profile"] != "devin-swe2" {
 		t.Fatalf("the headless job completes its hk record with the result: %v", rec)
 	}
-	pools, err := a.ledger().QuotaPools(context.Background(), "delegate-1")
+	pools, err := a.ledger().QuotaPools(context.Background(), "delegate_test-host_1")
 	if err != nil || len(pools) != 0 {
 		t.Fatalf("done must release the quota lease: %v %v", pools, err)
 	}
@@ -534,10 +621,10 @@ func TestDelegateHeadlessTimeoutAndFailureLoseTheJob(t *testing.T) {
 		if strings.TrimSpace(e.out()) != "" {
 			t.Fatalf("a failed delegation prints no answer: %q", e.out())
 		}
-		if st := a.JobStore.(*fakeJobStore).record(t, "delegate-1")["state"]; st != "lost" {
+		if st := a.JobStore.(*fakeJobStore).record(t, "delegate_test-host_1")["state"]; st != "lost" {
 			t.Fatalf("the failed job's record must be lost, got %v", st)
 		}
-		if pools, _ := a.ledger().QuotaPools(context.Background(), "delegate-1"); len(pools) != 0 {
+		if pools, _ := a.ledger().QuotaPools(context.Background(), "delegate_test-host_1"); len(pools) != 0 {
 			t.Fatalf("the lease must be released on failure: %v", pools)
 		}
 	}
@@ -569,7 +656,7 @@ func TestDelegateHeadlessReviewerExcludesCallerFamily(t *testing.T) {
 	if len(e.runner.named("devin")) != 0 || len(e.runner.named("claude")) != 1 {
 		t.Fatal("the reviewer must not run on the caller's own family")
 	}
-	if st := e.a.JobStore.(*fakeJobStore).record(t, "delegate-1"); st["role"] != "reviewer" || st["state"] != "completed" {
+	if st := e.a.JobStore.(*fakeJobStore).record(t, "delegate_test-host_1"); st["role"] != "reviewer" || st["state"] != "completed" {
 		t.Fatalf("%v", st)
 	}
 }
