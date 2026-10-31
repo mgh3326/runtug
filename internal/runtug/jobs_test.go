@@ -778,3 +778,28 @@ func TestSpawnAbortAfterClaimMarksLost(t *testing.T) {
 		t.Fatalf("aborted claim state = %q, want lost", st)
 	}
 }
+
+// A concurrent duplicate that loses at the arbiter leaves the live spawn's
+// record alone.
+func TestSpawnDuplicateAtArbiterKeepsRecord(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	store := newFakeJobStore()
+	store.records[s.Job] = map[string]any{"job_id": s.Job, "task_id": s.Task, "host": "test-host", "state": "claimed"}
+	a.JobStore = store
+	origDo := f.Do
+	f.Do = func(c Command) Result {
+		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
+			return Result{Code: arbiterDuplicateClaim, Err: "duplicate"}
+		}
+		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "job-get" {
+			return Result{Out: `{"state":"claimed","owner_lane":"x","agent_label":"y","receipt":{}}`}
+		}
+		return origDo(c)
+	}
+	if code(a.Spawn(context.Background(), s)) != 74 {
+		t.Fatal("a duplicate must exit 74")
+	}
+	if st := str(store.records[s.Job], "state"); st != "claimed" {
+		t.Fatalf("duplicate rewrote the live record to %q", st)
+	}
+}

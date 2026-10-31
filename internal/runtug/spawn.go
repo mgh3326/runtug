@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -386,7 +387,11 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	}
 	recordSpawned := false
 	defer func() {
-		if err != nil && !recordSpawned {
+		// A duplicate loses to a live spawn of the same id (an identical hk
+		// claim replays as claimed); its record belongs to that spawn, so a
+		// duplicate never marks it lost.
+		var ee *ExitError
+		if err != nil && !recordSpawned && !(errors.As(err, &ee) && ee.Code == exitDuplicate) {
 			a.abandonJobRecord(context.WithoutCancel(ctx), s.Job)
 		}
 	}()
