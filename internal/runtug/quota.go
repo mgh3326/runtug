@@ -237,8 +237,11 @@ func (a *App) localAccountKeys(ctx context.Context, pool string) []string {
 // pacelever only refreshes on demand for an account the spawning host holds.
 func (a *App) measureTarget(ctx context.Context, host, pool string) error {
 	h, ok := a.Config.Hosts[host]
-	if !ok || !validID(pool) || str(h, "via") == "hub" {
+	if !ok || !validID(pool) {
 		return fail(exitConfig, "target %s pool %s cannot be measured", host, pool)
+	}
+	if str(h, "via") == "hub" {
+		return a.refreshViaHub(ctx, host, pool)
 	}
 	target := firstNonempty(str(h, "ssh"), host)
 	if strings.HasPrefix(target, "-") || strings.ContainsAny(target, "\r\n") {
@@ -267,6 +270,12 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		if (j.Reason == "stale" || j.Reason == "not_observed") && a.Source != nil && !slices.Contains(a.localAccountKeys(ctx, pool), key) {
 			if err := a.measureTarget(ctx, host, pool); err != nil {
 				j.Measured, j.Reason = "failed", "measure_failed"
+				if exitCode(err) == exitPlacement && str(a.Config.Hosts[host], "via") == "hub" {
+					// The hub is the only way to measure a hub host; its
+					// outage is a placement refusal, not an unconfirmed quota.
+					j.Reason = hubDown
+					return j, err
+				}
 				return j, fail(exitEvictionUnconfirmed, "target account measurement failed: %v", err)
 			}
 			j.Measured = "ok"
