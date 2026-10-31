@@ -16,7 +16,7 @@ import (
 // tests that need one set it with t.Setenv.
 var (
 	hermeticEnvPrefixes = []string{"RUNTUG_", "FLEET_", "WRK_", "SCOPEFUEL_", "ARBITER_", "HERDR_", "HANDOFFKEEP_", "HK_", "PANEWIRE_", "KIMI_CODE_", "CLINEPASS_", "MOCK_MCP_"}
-	hermeticEnvNames    = []string{"CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
+	hermeticEnvNames    = []string{"CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"}
 )
 
 func hermeticEnv(name string) bool {

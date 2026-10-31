@@ -174,6 +174,12 @@ type selPlan struct {
 	chosen   *selCand
 	degraded []string
 	at       time.Time
+	// routeRefusal names the role refusal (role_no_candidate,
+	// role_exhausted_wait, role_exhausted_escalate) when routing ended the
+	// selection; before is the role's own exhausted attempt when this plan
+	// is its downgrade_to retry.
+	routeRefusal string
+	before       *selPlan
 }
 type selReq struct {
 	grade           string
@@ -189,6 +195,8 @@ type selReq struct {
 	// one (delegate --panel picks one seat per distinct family).
 	excludeFamilies []string
 	onlyFamily      string
+	// route is the role routing decision (routing.go); nil filters nothing.
+	route *routing
 }
 
 // effortRank orders rung efforts cheap-first; an empty effort is the catalog's
@@ -601,6 +609,11 @@ func (a *App) selectProfile(ctx context.Context, s Spawn) (*selPlan, error) {
 		return nil, fail(exitSeatRefused, "unreadable task grade %q", req.grade)
 	}
 	req.urgency, req.urgencySource = resolveUrgency(s.Urgency, task)
+	if !s.Unrouted {
+		if req.route, e = a.routeFor(ctx, s.Role, s.RoutingRole); e != nil {
+			return nil, e
+		}
+	}
 	return a.selectFor(ctx, s, req)
 }
 
@@ -631,6 +644,8 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			c.reason = "retired"
 		case row.Profile == "" || row.ModelID == "" || row.Pool == "":
 			c.reason = "catalog_incomplete"
+		case !req.route.admits(row.Profile):
+			c.reason = "role_filtered"
 		case !validGrade:
 			c.reason = "grade_invalid"
 		case gradeOrder[row.Grade] < gradeOrder[req.grade]:
@@ -705,6 +720,9 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 		p.chosen = c
 	}
 	if p.chosen == nil {
+		if req.route != nil && req.route.rule != nil {
+			return a.roleExhausted(ctx, s, req, p)
+		}
 		return p, fail(exitSeatRefused, "auto selection admitted no candidate")
 	}
 	return p, nil
@@ -900,6 +918,15 @@ func (p *selPlan) record() map[string]any {
 	}
 	if len(p.degraded) > 0 {
 		rec["degraded"] = p.degraded
+	}
+	if p.req.route != nil {
+		rt := p.req.route.record(p.routeRefusal)
+		if p.before != nil {
+			// The role's own attempt, every profile exhausted, before the
+			// downgrade_to retry this record chose from.
+			rt["before_downgrade"] = p.before.record()["candidates"]
+		}
+		rec["routing"] = rt
 	}
 	return rec
 }

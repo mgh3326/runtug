@@ -465,7 +465,7 @@ carries `policy_file` and `policy_overrides`.
 
 `runtug plan --grade G --t T0..T3 [--role R] [--tags a,b] [--effort E]
 [--urgency normal|urgent] [--exclude-host a,b] [--builder-family F]
-[--allow-escalation] [--json]` answers "right now, which host and which
+[--routing-role R] [--allow-escalation] [--json]` answers "right now, which host and which
 model would a spawn get" without a task or brief. It is live and read-only:
 it runs the spawn's selection core (catalog, pool status, presence and each
 host's quota gate) with the grade from `--grade` instead of a task title,
@@ -497,8 +497,131 @@ placement record.
 | 77 | No catalog rung was admitted. |
 | 80 | Local spawning is disabled and no remote host admitted the seat. |
 | 81 | No host admitted the seat; hosts a spawn would wake are listed. |
+| 86 / 87 | Every profile the routing role allows is exhausted (`wait` / `escalate`); see "Role routing". |
 
-A local launch or gate refusal keeps its own code, as in `spawn`.
+A local launch or gate refusal keeps its own code, as in `spawn`. Plan
+applies role routing like `spawn`; its text output adds a `routing role=…
+version=… policy_source=…` line.
+
+## Role routing
+
+The hk document `policy/model-routing` (owned by the operator desk) decides
+which catalog profiles a role may run on. runtug constrains the candidate set
+with it **before** the pool order (`policy/quota-stop`) ranks anything; the
+grade, gate, seat and family rules still apply on top. This applies to
+automatic selection in `spawn` (no `-m`, or `-m auto`), `plan` and
+`resolve`. An explicit `-m PROFILE` is an operator override and is not
+routed; `runtug delegate` (including `--panel`) keeps its own spare-quota
+selection and is not routed either.
+
+### The table
+
+runtug reads the first fenced `json` block of the document:
+
+```json
+{
+  "version": 1,
+  "roles": {
+    "lead": {"allowed": ["opus", "fable", "codex-sol", "codex-astra"], "effort": "high", "on_exhaustion": "wait"},
+    "explorer": {"allowed": ["sonnet", "haiku"], "effort": "medium", "on_exhaustion": "downgrade_to", "downgrade_to": ["haiku"]},
+    "reviewer": {"allowed": ["*"], "effort": "high", "on_exhaustion": "escalate", "family_rule": "not_author"}
+  },
+  "runtug_role_map": {"builder": "lead", "worker": "implementer", "tester": "verifier", "reviewer": "reviewer", "counsel": "lead"}
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `version` | Must be `1`; any other version is unreadable. |
+| `roles.R.allowed` | Catalog profiles (pacelever launch profiles, e.g. `opus`, `codex-sol`, `devin-swe2`) role `R` may run on; `"*"` admits any profile. Matched against the catalog row's `profile`, not the seat alias. |
+| `roles.R.effort` | The role's starting effort; `resolve` prints it as the answer's effort. Spawn rung choice is unchanged. |
+| `roles.R.on_exhaustion` | `wait`, `escalate` or `downgrade_to`. |
+| `roles.R.downgrade_to` | Required with (and only with) `downgrade_to`: the profiles the retry may use. They are part of the role (they need not appear in `allowed`), used only after every allowed profile is exhausted, and always stamped `downgraded_from`. |
+| `roles.R.family_rule`, `fixed` | Recorded; family exclusion is enforced by the existing reviewer/tester `--builder-family` rule. |
+| `runtug_role_map` | Seat role → routing role. A seat role it does not list is not filtered. |
+
+Unknown fields are ignored. A duplicate key, an unknown `on_exhaustion`, a
+`downgrade_to` without its mode, or a role map naming an unknown role makes
+the document unreadable.
+
+### Which role
+
+The spawn's `--role` maps through `runtug_role_map`. `--routing-role
+lead|implementer|explorer|verifier|reviewer|judge` on `spawn` or `plan`
+overrides the map for that one call; the seat role (`--role`) still decides
+seat admission and the family rule.
+
+### Source and cache
+
+Each selection runs `handoffkeep doc get policy/model-routing`. A good read
+is written to `$XDG_STATE_HOME/runtug/model-routing.json` (default
+`~/.local/state/runtug/model-routing.json`) with its version, replaced
+atomically only when the policy changed.
+
+| hk | Cache | Result | `policy_source` |
+| --- | --- | --- | --- |
+| readable | — | the hk table | `hk` |
+| unreachable or unreadable | readable | the cached table, with a warning | `cache@v<N>` |
+| unreachable or unreadable | none | `lead` and `verifier` refused (exit 70); every other role runs unfiltered | `builtin_default` |
+
+Without a table, the built-in map above decides which seat roles are `lead`
+or `verifier`, so a builder is still refused.
+
+### Exhaustion
+
+After the role filter, a role's candidates are either dropped statically
+(grade, gate class, seat, effort) or by quota (`projected_exhaust`,
+`window_exhausted`, `quota_unknown`, `no_presence`, `gate_refused:*`). When
+nothing is admitted:
+
+| Case | Result |
+| --- | --- |
+| No candidate passed the static filters | `role_no_candidate`, exit 77. Never waits or downgrades. |
+| All quota-dropped, `wait` | `role_exhausted_wait`, exit 86, naming the earliest known reset of the role's pools. |
+| All quota-dropped, `escalate` | `role_exhausted_escalate`, exit 87: ask the parent lane. |
+| All quota-dropped, `downgrade_to` | Selection reruns once with only the `downgrade_to` profiles (grade still applies) and stamps `downgraded_from`. If those are exhausted too: `role_exhausted_wait`, exit 86. |
+
+Selection never silently uses a profile outside the role.
+
+### Record
+
+The selection record (`plan --json` `selection`, `spawn --dry-run`, the
+`job.placement` event) carries a `routing` object:
+
+```json
+"routing": {
+  "routing_role": "lead",
+  "routing_version": 1,
+  "policy_source": "hk",
+  "allowed": ["opus", "fable", "codex-sol", "codex-astra"],
+  "on_exhaustion": "wait",
+  "effort": "high"
+}
+```
+
+plus `downgraded_from` and `before_downgrade` (the role's own exhausted
+candidates) after a downgrade, and `refused` with the reason after a role
+refusal. Rows outside the role are dropped with reason `role_filtered`. The
+routing stamp sits in its own object because the record's top-level
+`policy_source` already names the pool-order document.
+
+### `runtug resolve`
+
+`runtug resolve --role lead|implementer|explorer|verifier|reviewer|judge
+[--grade G] [--t T0..T3] [--builder-family F] [--json]` runs the routed selection core —
+the same code `plan` and `spawn` run, including the quota gates — and prints
+the chosen profile and effort. It places no host, spawns nothing and writes
+no job or hk record. `--grade` defaults to `C`; `--t` takes plan's values
+(`T0`..`T3`) and defaults to `T0`, and is passed to selection as plan passes
+it. The seat role is `worker`,
+or `reviewer` for the `reviewer` and `judge` roles, which need
+`--builder-family` (the author's or parent's family). The answer is printed
+last: the text form ends with `profile=<catalog profile> effort=<effort>`,
+and `--json` prints an object whose last fields are `profile` and `effort`
+(plus `seat`, `model_id`, `pool`, `tier`, `rung_effort`, the routing stamp
+and the full `selection` record). `effort` is the role's starting effort when
+the table sets one, else the chosen rung's. A role refusal keeps its exit
+code (70, 77, 86, 87); usage errors exit 2.
 
 ## Delegation
 
@@ -718,6 +841,7 @@ for ownership and distribution.
 | `HERDR_BIN`, `PANEWIRE_BIN` | CLI executable overrides. |
 | `HANDOFFKEEP_BIN` | Must resolve to the canonical current-user ~/.local/bin executable in production. |
 | `XDG_DATA_HOME` | Data home of the local ledger (`$XDG_DATA_HOME/arbiter/state.db`); production guard requires the canonical `~/.local/share`. |
+| `XDG_STATE_HOME` | State home of the role routing cache (`$XDG_STATE_HOME/runtug/model-routing.json`); default `~/.local/state`. |
 | `RUNTUG_QUOTA_BIN` | Quota executable override; default `pacelever`. |
 | `RUNTUG_NODE_ENV` | Panewire node env file for `HUB_MACHINE_ID` (job record host id); default `~/.config/panewire/hub-node.env`, or `[quota].node_env`. |
 | `ARBITER_INBOX_ROOT` | Jobs root; production guard requires the canonical inbox. |
@@ -818,6 +942,8 @@ Behaviour differences from the script:
 | 83 | `spawn --wait` (and `delegate`): the job escalated. |
 | 84 | `spawn --wait`: the job was lost or revoked. |
 | 85 | `spawn --wait`: the wait deadline expired; the job is retained. |
+| 86 | Role routing: every profile the role allows is quota-exhausted and its `on_exhaustion` is `wait` (`role_exhausted_wait`, naming the earliest known reset), or its `downgrade_to` profiles are exhausted too. |
+| 87 | Role routing: every profile the role allows is quota-exhausted and its `on_exhaustion` is `escalate` (`role_exhausted_escalate`): ask the parent lane. |
 | 124 | A time-bounded CLI call reached its context deadline. |
 | 255 | SSH could not reach a remote host (repository check, clone or spawn leg). Never returned for a `via = "hub"` host. |
 

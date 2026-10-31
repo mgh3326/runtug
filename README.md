@@ -77,6 +77,37 @@ chosen host and model, the runners-up and every drop reason, without a task,
 brief, worktree, spawn, hk write or job record. Exit codes are in
 `docs/config.md`.
 
+## Role routing
+
+Before the pool order runs, a **role table** narrows the candidates. The
+table is the hk document `policy/model-routing` (its v1 JSON block); runtug
+reads it at selection time and caches the last good copy under
+`$XDG_STATE_HOME/runtug` (default `~/.local/state/runtug`). The seat role
+maps to a routing role (`builder`/`counsel` → `lead`, `worker` →
+`implementer`, `tester` → `verifier`, `reviewer` → `reviewer`);
+`--routing-role lead|implementer|explorer|verifier|reviewer|judge` overrides
+it for one spawn or plan. Only the role's `allowed` profiles are candidates,
+then grade, gate, the family rules and the pool order apply as before.
+
+When every allowed profile is quota-exhausted, the role's `on_exhaustion`
+decides: `wait` refuses `role_exhausted_wait` (exit 86) with the earliest
+known reset, `escalate` refuses `role_exhausted_escalate` (exit 87), and
+`downgrade_to` retries with only the listed profiles and stamps
+`downgraded_from`. Selection never falls back to a profile outside the role.
+hk unreachable: the cache is used (`policy_source=cache@vN`); no cache:
+`lead` and `verifier` are refused (exit 70), other roles run unfiltered
+(`builtin_default`). Explicit `-m PROFILE` and `runtug delegate` are not
+routed.
+
+```sh
+runtug resolve --role lead --grade A [--json]
+```
+
+`runtug resolve` runs the same routed selection without placing a host or
+spawning, and prints the chosen profile and effort last
+(`profile=opus effort=high`), so an in-session agent can pass them to its own
+subagent call. Details are in `docs/config.md` ("Role routing").
+
 ## Delegation
 
 ```sh
