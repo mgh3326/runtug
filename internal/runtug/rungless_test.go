@@ -215,11 +215,10 @@ func TestSpawnAliasedEscalationSeatRefusesWithoutFlag(t *testing.T) {
 			t.Fatalf("%+v", c)
 		}
 	}
-	for _, c := range f.Calls {
-		if c.Name == "arbiter" {
-			t.Fatalf("a refused spawn must claim nothing: %v", c.Args)
-		}
+	if _, e := os.Stat(a.ledger().DB); e == nil {
+		t.Fatal("a refused spawn must claim nothing")
 	}
+	_ = f
 	s.AllowEscalation = true
 	a.Spawn(context.Background(), s)
 	last := q.Calls[len(q.Calls)-1]

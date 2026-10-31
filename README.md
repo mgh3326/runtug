@@ -3,7 +3,7 @@
 Launch and supervise coding-agent runs across your hosts.
 
 runtug is a small Go CLI around herdr panes, the quota catalog, handoffkeep
-tasks, arbiter leases and panewire routing. It does not own review or landing;
+tasks, a local job ledger (leases, job events) and panewire routing. It does not own review or landing;
 [mergewake](https://github.com/mgh3326/mergewake) does.
 
 ```sh
@@ -122,7 +122,7 @@ lane inbox with bounded backoff — a plain blocking CLI, no resident process.
 `RUNTUG_COMPLETION_TIMEOUT_S`, then one hour. `--wait` refuses `--dry-run`.
 
 Every spawn also claims a job record in handoffkeep (`/v1/jobs`) on the
-executing host before the arbiter claim, then merges allowlisted metadata as
+executing host before the local claim, then merges allowlisted metadata as
 the job moves `claimed → spawned → completed | escalated | lost`. `done
 --result findings.json` writes a JSON findings object (≤64 KiB) together with
 `completed` in one PUT, before the relay emit. `--parent-job` resolves the
@@ -137,6 +137,7 @@ runtug restore task42-worker
 runtug reap --include-builders                   # preview
 runtug reap --include-builders --apply           # close verified terminal panes
 runtug prune --stale-age 24h                     # preview stale absent-pane jobs
+runtug gc                                        # expire leases, clean ledger records of agents gone from herdr
 runtug hosts
 runtug profiles
 runtug find task42-worker
@@ -166,9 +167,11 @@ automatically. For source builds, Go 1.27 is required:
 CGO_ENABLED=0 go build -trimpath -o dist/runtug ./cmd/runtug
 ```
 
-Dependencies are installed separately: herdr, handoffkeep, arbiter, panewire and
+Dependencies are installed separately: herdr, handoffkeep, panewire and
 `pacelever` (or a compatible quota CLI). No database server is needed
-by runtug. Artifact upload confirmation additionally uses the operator's Drive
+by runtug; the local job ledger is an embedded SQLite file (pure Go, no cgo)
+and runtug no longer executes the agent-skills `arbiter` script (see
+[docs/config.md](docs/config.md#local-job-ledger)). Artifact upload confirmation additionally uses the operator's Drive
 client and `fpbulk`; SSH transfers use rsync.
 
 The hosts config lives at `~/.config/fleet/hosts.toml`; a config left only at the

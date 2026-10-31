@@ -3,31 +3,21 @@ package runtug
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
 func ledgerRunner(t *testing.T, a *App) *fakeRunner {
 	t.Helper()
 	f := &fakeRunner{}
 	f.Do = func(c Command) Result {
-		if c.Name == "arbiter" && len(c.Args) > 0 {
-			switch c.Args[0] {
-			case "event":
-				var p map[string]any
-				if e := json.Unmarshal([]byte(c.Args[6]), &p); e != nil {
-					t.Fatal(e)
-				}
-				putEvent(t, a, c.Args[2], c.Args[4], p)
-			case "status":
-				return Result{Out: `{"quota_pool_records":[{"pool":"example"}]}`}
-			}
-		}
 		if c.Name == "herdr" && strings.Join(c.Args, " ") == "agent list" {
 			return Result{Out: `{"result":{"agents":[]}}`}
 		}
@@ -40,6 +30,46 @@ func seedJob(t *testing.T, a *App, id, role string) {
 	putEvent(t, a, id, "job.claim", map[string]any{"owner_lane": "owner", "parent_lane": "parent", "task_id": "42", "t_level": "T1", "role": role})
 	putEvent(t, a, id, "job.spawned", map[string]any{"pane_id": "w:p1", "tab_id": "w:t1", "label": "agent-a", "profile": "cmd-dsflash41", "family": "deepseek", "keep": false})
 }
+
+// seedLedger registers the job in the local ledger with a quota_pool record,
+// as a live local spawn leaves it.
+func seedLedger(t *testing.T, a *App, id string) {
+	t.Helper()
+	if _, e := a.ledger().Claim(context.Background(), arbiter.Claim{Job: id, Lane: "owner", T: "T1", AgentLabel: "agent-a"}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.ledger().RecordQuotaPool(context.Background(), arbiter.QuotaRun{Job: id, Profile: "cmd-dsflash41", Gate: arbiter.Gate{Pool: "example"}}); e != nil {
+		t.Fatal(e)
+	}
+}
+
+// ledgerState is the job's local ledger state and quota pools.
+func ledgerState(t *testing.T, a *App, id string) (string, []string) {
+	t.Helper()
+	v, e := a.ledger().JobGet(context.Background(), id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	pools, e := a.ledger().QuotaPools(context.Background(), id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return v.State, pools
+}
+
+func eventKindsOf(t *testing.T, a *App, id string) []string {
+	t.Helper()
+	evs, e := a.events(id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var kinds []string
+	for _, ev := range evs {
+		kinds = append(kinds, ev.Kind)
+	}
+	return kinds
+}
+
 func TestR07ReapProtectsBuildersKeepAndRevivedJobs(t *testing.T) {
 	for _, tt := range []struct {
 		name, role            string
@@ -74,12 +104,7 @@ func TestR07ReapProtectsBuildersKeepAndRevivedJobs(t *testing.T) {
 			if closed {
 				t.Fatal("absent pane should not receive close")
 			}
-			reaped := false
-			for _, c := range f.Calls {
-				if strings.Contains(strings.Join(c.Args, " "), "--kind job.reaped") {
-					reaped = true
-				}
-			}
+			reaped := slices.Contains(eventKindsOf(t, a, "j"), "job.reaped")
 			if reaped != tt.wantClose {
 				t.Fatalf("reaped=%t want %t", reaped, tt.wantClose)
 			}
@@ -119,11 +144,16 @@ func TestR08RestoreVerifiesExistingReleasedPane(t *testing.T) {
 	a := testApp(t)
 	f := ledgerRunner(t, a)
 	seedJob(t, a, "j", "worker")
+	seedLedger(t, a, "j")
+	if e := a.releaseQuota(context.Background(), Job{ID: "j"}); e != nil {
+		t.Fatal(e)
+	}
+	if st, _ := ledgerState(t, a, "j"); st != "released" {
+		t.Fatalf("setup: state %s", st)
+	}
 	original := f.Do
 	f.Do = func(c Command) Result {
 		switch strings.Join(c.Args, " ") {
-		case "job-get --job j --json":
-			return Result{Out: `{"state":"released"}`}
 		case "agent list":
 			return Result{Out: `{"result":{"agents":[{"pane_id":"w:p1","tab_id":"w:t1","name":"agent-a","agent_status":"working"}]}}`}
 		}
@@ -132,18 +162,16 @@ func TestR08RestoreVerifiesExistingReleasedPane(t *testing.T) {
 	if e := a.lifecycle(context.Background(), "restore", []string{"j"}); e != nil {
 		t.Fatal(e)
 	}
-	found := false
 	for _, c := range f.Calls {
-		s := strings.Join(c.Args, " ")
-		if strings.Contains(s, "--reclaim-released") {
-			found = true
-		}
-		if strings.HasPrefix(s, "tab create") {
+		if strings.HasPrefix(strings.Join(c.Args, " "), "tab create") {
 			t.Fatal("restore created a duplicate pane")
 		}
 	}
-	if !found {
-		t.Fatal("no arbiter reclaim")
+	if st, _ := ledgerState(t, a, "j"); st != "claimed" {
+		t.Fatalf("restore did not reclaim the released job: state %s", st)
+	}
+	if kinds := eventKindsOf(t, a, "j"); !slices.Contains(kinds, "job.reclaim") {
+		t.Fatalf("no reclaim event: %v", kinds)
 	}
 }
 func TestDoneDeduplicatesAndSnapshotsChangedReport(t *testing.T) {

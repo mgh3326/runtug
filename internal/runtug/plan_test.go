@@ -79,12 +79,15 @@ func TestPlanPrintsHostAndModelWithoutSideEffects(t *testing.T) {
 		case c.Name == "ssh" && len(c.Args) > 0 && c.Args[len(c.Args)-1] == probeScript:
 			probes++
 		case c.Name == "panewire" && strings.Join(c.Args, " ") == "--version":
-		case c.Name == "handoffkeep" || c.Name == "herdr" || c.Name == "arbiter" || c.Name == "panewire" || c.Name == "ssh":
+		case c.Name == "handoffkeep" || c.Name == "herdr" || c.Name == "panewire" || c.Name == "ssh":
 			t.Fatalf("plan must not spawn or write: %v", fr.Calls)
 		}
 	}
 	if probes != 1 {
 		t.Fatalf("plan probes each remote host once, got %d: %v", probes, fr.Calls)
+	}
+	if _, e := os.Stat(a.ledger().DB); e == nil {
+		t.Fatal("plan must not touch the ledger")
 	}
 	if entries, _ := os.ReadDir(a.Jobs); len(entries) != 0 {
 		t.Fatalf("plan must not write job state: %v", entries)

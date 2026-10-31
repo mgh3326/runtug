@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"time"
+
+	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
 // BuildVersion and BuildCommit are set by the binary's main from its link-time
@@ -28,11 +30,14 @@ type App struct {
 	Sleep        func(context.Context, time.Duration) error
 	Now          func() time.Time
 	Bins         map[string]string
-	warned       map[string]bool
-	Source       PlacementSource
-	Wake         Waker
-	LoadRatio    func(context.Context) (float64, error)
-	JobStore     JobStore
+	// Arbiter is the local job ledger (leases, job events, gc). Nil means the
+	// one under Home and Jobs; tests inject a store over a temp dir.
+	Arbiter   *arbiter.Store
+	warned    map[string]bool
+	Source    PlacementSource
+	Wake      Waker
+	LoadRatio func(context.Context) (float64, error)
+	JobStore  JobStore
 	// Version is the build line `runtug --version` prints, compared with the
 	// remote hosts' by the preflight.
 	Version string
@@ -68,7 +73,7 @@ func New(out, errout io.Writer) (*App, error) {
 	if v := os.Getenv("ARBITER_INBOX_ROOT"); v != "" {
 		a.Jobs = v
 	}
-	for bin, env := range map[string]string{"herdr": "HERDR_BIN", "arbiter": "ARBITER_BIN", "handoffkeep": "HANDOFFKEEP_BIN", "panewire": "PANEWIRE_BIN"} {
+	for bin, env := range map[string]string{"herdr": "HERDR_BIN", "handoffkeep": "HANDOFFKEEP_BIN", "panewire": "PANEWIRE_BIN"} {
 		a.Bins[bin] = bin
 		if v := os.Getenv(env); v != "" {
 			a.Bins[bin] = v
@@ -100,6 +105,30 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
+
+// ledger is the local job ledger: state.db under $XDG_DATA_HOME (default
+// ~/.local/share) and the events inbox under Jobs, the paths the arbiter
+// script used.
+func (a *App) ledger() *arbiter.Store {
+	if a.Arbiter != nil {
+		return a.Arbiter
+	}
+	data := os.Getenv("XDG_DATA_HOME")
+	if data == "" {
+		data = filepath.Join(a.Home, ".local", "share")
+	}
+	return &arbiter.Store{DB: arbiter.StatePath(data), Inbox: a.Jobs, Now: a.Now}
+}
+
+// ledgerFail turns a ledger error into the CLI error with the same exit
+// status the arbiter script gave it.
+func ledgerFail(e error, what string) error {
+	if e == nil {
+		return nil
+	}
+	return fail(arbiter.Code(e), "arbiter %s: %v", what, e)
+}
+
 func (a *App) call(ctx context.Context, bin string, args ...string) Result {
 	name := a.Bins[bin]
 	if name == "" {
@@ -150,7 +179,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
 		return a.help(args[0])
 	}
-	if a.EnforceTrust && (args[0] == "spawn" || args[0] == "plan" || args[0] == "_spawn-stdin" || args[0] == "done" || args[0] == "escalate" || args[0] == "restore" || args[0] == "reap" || args[0] == "prune" || args[0] == "artifacts" || args[0] == "_watch") {
+	if a.EnforceTrust && (args[0] == "spawn" || args[0] == "plan" || args[0] == "_spawn-stdin" || args[0] == "done" || args[0] == "escalate" || args[0] == "restore" || args[0] == "reap" || args[0] == "prune" || args[0] == "gc" || args[0] == "artifacts" || args[0] == "_watch") {
 		if e := a.trust(); e != nil {
 			return e
 		}
@@ -166,6 +195,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.lifecycle(ctx, args[0], args[1:])
 	case "reap", "prune":
 		return a.hygiene(ctx, args[0], args[1:])
+	case "gc":
+		return a.gc(ctx, args[1:])
 	case "hosts", "profiles", "find", "name-sync", "lanes-missing":
 		return a.diagnostics(ctx, args[0], args[1:])
 	case "artifacts":
@@ -198,6 +229,8 @@ func (a *App) help(cmd string) error {
 		fmt.Fprintln(a.Out, "Usage: runtug restore JOB (rebind a released job to its verified existing pane)")
 	case "reap", "prune":
 		fmt.Fprintf(a.Out, "Usage: runtug %s [--job ID[,ID]] [--lane L] [--grace 10m] [--include-builders] [--worktrees] [--apply]\n", cmd)
+	case "gc":
+		fmt.Fprintln(a.Out, "Usage: runtug gc [--json] (expire path/linear_permit leases, clean quota_pool records and release leased jobs whose agent left Herdr)")
 	case "artifacts":
 		fmt.Fprintln(a.Out, "Usage: runtug artifacts move SRC --dest DEST [--source-host HOST] [--apply] | sweep [--job JOB] [--age 7d] [--policy FILE] [--apply]")
 	case "simulate":
