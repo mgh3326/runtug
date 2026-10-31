@@ -450,3 +450,30 @@ func toStrings(v any) []string {
 	}
 	return out
 }
+
+// A candidate explained once is not probed again (the wake loop can refuse the
+// same candidate a second time), unless the first preflight skipped the probe.
+func TestAttachPreflightProbesACandidateOnce(t *testing.T) {
+	a, _, _, _ := preflightFixture(t)
+	fr := a.Runner.(*fakeRunner)
+	env := a.newPreflightEnv(context.Background())
+	probes := func() int {
+		n := 0
+		for _, c := range fr.Calls {
+			if c.Name == "ssh" && c.Args[len(c.Args)-1] == probeScript {
+				n++
+			}
+		}
+		return n
+	}
+	c := &placeCandidate{name: "host-b", cfg: a.Config.Hosts["host-b"]}
+	a.attachPreflight(context.Background(), env, c, "", false)
+	if probes() != 0 || !c.preflight.hasSkipped() {
+		t.Fatalf("a quota-refused candidate is not probed: %d", probes())
+	}
+	a.attachPreflight(context.Background(), env, c, "", true)
+	a.attachPreflight(context.Background(), env, c, "", true)
+	if probes() != 1 || c.preflight.hasSkipped() {
+		t.Fatalf("a later probe fills the skipped checks once: %d", probes())
+	}
+}

@@ -54,6 +54,15 @@ type hostPreflight struct {
 	Checks []preflightCheck `json:"checks"`
 }
 
+func (h hostPreflight) hasSkipped() bool {
+	for _, c := range h.Checks {
+		if c.Skipped {
+			return true
+		}
+	}
+	return false
+}
+
 // reasons lists every failed check as name:reason.
 func (h hostPreflight) reasons() []string {
 	out := []string{}
@@ -402,7 +411,8 @@ func (a *App) versionSkew(ctx context.Context, e *preflightEnv, p remoteProbe) p
 // attachPreflight records the preflight of a candidate the placement refused,
 // so the placement record says why the host is not usable.
 func (a *App) attachPreflight(ctx context.Context, e *preflightEnv, c *placeCandidate, pool string, probe bool) {
-	if c.local {
+	if c.local || (c.preflight != nil && (!probe || !c.preflight.hasSkipped())) {
+		// Already explained, and a repeat would only probe the host again.
 		return
 	}
 	h := a.preflightHost(ctx, e, c.name, c.cfg, pool, probe)

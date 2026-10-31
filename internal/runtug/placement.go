@@ -206,9 +206,11 @@ type candResult struct {
 	ok          bool
 	stop        error
 	unreachable bool
-	rc          int
-	note        string
-	res         Result
+	// quotaRefused marks a candidate the quota gate refused before any SSH.
+	quotaRefused bool
+	rc           int
+	note         string
+	res          Result
 }
 
 func (a *App) loadThreshold() float64 {
@@ -1096,7 +1098,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		j, err := a.judgeHost(ctx, qr, pool, c.name, false, key, acc)
 		c.judgment = &j
 		if err != nil {
-			return candResult{rc: exitCode(err), note: "quota_" + j.Outcome}
+			return candResult{rc: exitCode(err), note: "quota_" + j.Outcome, quotaRefused: true}
 		}
 		return a.spawnRemote(ctx, s, brief, c, resolveRepo(), false)
 	}
@@ -1123,7 +1125,7 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		if preEnv == nil {
 			preEnv = a.preflightEnvFrom(ctx, p)
 		}
-		a.attachPreflight(ctx, preEnv, c, pool, !strings.HasPrefix(res.note, "quota_"))
+		a.attachPreflight(ctx, preEnv, c, pool, !res.quotaRefused)
 	}
 	admitLocal := func(c *placeCandidate) bool {
 		if a.Quota == nil {
