@@ -732,3 +732,49 @@ func (failingJobStore) Put(context.Context, string, map[string]any) error {
 func (failingJobStore) Get(context.Context, string) (map[string]any, error) {
 	return nil, errors.New("handoffkeep request failed")
 }
+
+// An identical claim replayed onto a finished record is a used id, not a
+// fresh claim: refuse with 74 and never reach the arbiter.
+func TestJobClaimReplayOnTerminalRecordExits74(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	store := newFakeJobStore()
+	store.records[s.Job] = map[string]any{"job_id": s.Job, "task_id": s.Task, "host": "test-host", "state": "completed", "result": map[string]any{"findings": []any{}}}
+	a.JobStore = store
+	arbiterClaim := false
+	origDo := f.Do
+	f.Do = func(c Command) Result {
+		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
+			arbiterClaim = true
+		}
+		return origDo(c)
+	}
+	if code(a.Spawn(context.Background(), s)) != 74 {
+		t.Fatal("replay onto a completed record must exit 74")
+	}
+	if arbiterClaim {
+		t.Fatal("arbiter claim ran after a used id")
+	}
+	if st := str(store.records[s.Job], "state"); st != "completed" {
+		t.Fatalf("finished record touched: %s", st)
+	}
+}
+
+// A spawn that aborts after the hk claim marks the record lost.
+func TestSpawnAbortAfterClaimMarksLost(t *testing.T) {
+	a, s, f, _ := cmdFixture(t)
+	store := newFakeJobStore()
+	a.JobStore = store
+	origDo := f.Do
+	f.Do = func(c Command) Result {
+		if c.Name == "arbiter" && len(c.Args) > 0 && c.Args[0] == "claim" {
+			return Result{Code: 1, Err: "arbiter down"}
+		}
+		return origDo(c)
+	}
+	if a.Spawn(context.Background(), s) == nil {
+		t.Fatal("spawn must fail when the arbiter claim fails")
+	}
+	if st := str(store.records[s.Job], "state"); st != "lost" {
+		t.Fatalf("aborted claim state = %q, want lost", st)
+	}
+}

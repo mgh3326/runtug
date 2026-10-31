@@ -170,7 +170,26 @@ func (a *App) claimJobRecord(ctx context.Context, s Spawn) error {
 		}
 		return fail(exitConfig, "job record claim failed: %v", e)
 	}
+	// hk answers an identical claim as a replay whatever state the record is
+	// in. Job ids are never reused, so a replay that is past "claimed" is a
+	// finished or running job, not a fresh claim: refuse it like a duplicate.
+	rec, e := store.Get(ctx, s.Job)
+	if e != nil {
+		return fail(exitConfig, "job record claim unreadable: %v", e)
+	}
+	if st, _ := rec["state"].(string); st != "claimed" {
+		return fail(exitDuplicate, "job id %s already used (record state %q)", s.Job, st)
+	}
 	return nil
+}
+
+// abandonJobRecord marks a claimed record lost when the spawn aborts before
+// the pane exists, so waiters stop on it instead of reading a claim that
+// never runs. Best effort: a failure leaves job.record_failed.
+func (a *App) abandonJobRecord(ctx context.Context, id string) {
+	if e := a.putJobRecord(ctx, id, map[string]any{"state": "lost"}); e != nil {
+		a.jobRecordFailed(ctx, id, "abandon", e)
+	}
 }
 
 // putJobRecord merges allowlisted fields into the job's hk record.

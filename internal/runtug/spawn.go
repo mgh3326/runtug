@@ -384,6 +384,12 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e = a.claimJobRecord(ctx, s); e != nil {
 		return e
 	}
+	recordSpawned := false
+	defer func() {
+		if err != nil && !recordSpawned {
+			a.abandonJobRecord(context.WithoutCancel(ctx), s.Job)
+		}
+	}()
 	// The arbiter arbitrates concurrent duplicate claims; never infer a free job from pane status.
 	r := a.call(ctx, "arbiter", append(claim, "--json")...)
 	if r.Code == arbiterDuplicateClaim {
@@ -512,6 +518,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e = a.taskLink(ctx, s, bypassed); e != nil {
 		return e
 	}
+	recordSpawned = true
 	a.spawnedJobRecord(ctx, s, seat, launch, pane, pool, owner)
 	lane := s.Label
 	parent := owner
