@@ -225,3 +225,24 @@ func TestSimulateSetKeepsRecordedProjectionWithoutReset(t *testing.T) {
 		t.Fatalf("a --set without projected= and without a reset must keep the recorded projection: %v", got)
 	}
 }
+
+func TestSimulateReplaysBareRecordedSelection(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "simulate-recorded-p4-pw6.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatal(err)
+	}
+	sel := env["payload"].(map[string]any)["selection"]
+	for name, input := range map[string]any{"bare": sel, "payload": map[string]any{"payload": sel}} {
+		path := filepath.Join(t.TempDir(), name+".json")
+		if err := os.WriteFile(path, mustJSON(input), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runSimulate(t, "--selection", path); err != nil {
+			t.Fatalf("%s recorded selection must replay: %v", name, err)
+		}
+	}
+}

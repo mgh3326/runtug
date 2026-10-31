@@ -315,6 +315,11 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 			raw = payload
 		}
 	}
+	// A bare recorded selection record, or a payload carrying its fields
+	// directly, is recognised by its nested request.
+	if _, ok := raw["requested"].(map[string]any); ok {
+		recorded = true
+	}
 	var doc simDoc
 	if recorded {
 		// A recorded selection record carries fields the input document does
