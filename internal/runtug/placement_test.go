@@ -1,8 +1,8 @@
 package runtug
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"path/filepath"
 	"slices"
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
 type fakePlacementSource struct {
@@ -261,13 +263,6 @@ func remoteFixture(t *testing.T, src *fakePlacementSource, w *fakeWaker, taskCre
 		switch {
 		case c.Name == "handoffkeep" && strings.HasPrefix(args, "tasks show"):
 			return Result{Out: `{"id":42,"title":"work (grade B, T1)","state":"ready","refs":{},"created_at":` + strconv.Quote(taskCreated) + `}`}
-		case c.Name == "arbiter" && c.Args[0] == "event":
-			var p map[string]any
-			if e := json.Unmarshal([]byte(c.Args[6]), &p); e != nil {
-				t.Fatal(e)
-			}
-			putEvent(t, a, c.Args[2], c.Args[4], p)
-			return Result{}
 		case c.Name == "herdr" && strings.HasPrefix(args, "agent list"):
 			return Result{Out: `{"agents":[]}`}
 		case c.Name == "git" && strings.Contains(args, "rev-parse --show-toplevel"):
@@ -321,7 +316,7 @@ func TestPlacementRoundRefusalMovesToNextCandidate(t *testing.T) {
 
 func TestPlacementDecisionRecordedInJobEvents(t *testing.T) {
 	src := &fakePlacementSource{hosts: []HostView{{Name: "h1", Connected: true, LoadRatio: ptrF(0.1)}}}
-	a, s, _ := remoteFixture(t, src, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
+	a, s, fr := remoteFixture(t, src, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
 		if strings.Contains(args, "_spawn-stdin") {
 			return Result{Out: "OK pane=w:p1 job=job-a\n"}
 		}
@@ -349,6 +344,23 @@ func TestPlacementDecisionRecordedInJobEvents(t *testing.T) {
 	}
 	if c, ok := rec["candidates"].([]any); !ok || len(c) == 0 {
 		t.Fatal("candidate inputs must be recorded")
+	}
+	// The job is claimed on the remote host: there is no local claim, and
+	// recording the decision must not complain about it ("job not registered").
+	if w := a.Err.(*bytes.Buffer).String(); strings.Contains(w, "placement decision record failed") || strings.Contains(w, "claim") {
+		t.Fatalf("remote placement warned: %q", w)
+	}
+	if _, e := a.ledger().JobGet(context.Background(), "job-a"); arbiter.Code(e) != arbiter.ExitNotFound {
+		t.Fatalf("a remote placement must leave no local claim: %v", e)
+	}
+	kinds, _ := a.ledger().Events(context.Background(), "job-a")
+	if len(kinds) != 1 || kinds[0].Kind != "job.placement" || kinds[0].Payload["chose"] != "h1" {
+		t.Fatalf("ledger events: %+v", kinds)
+	}
+	for _, c := range fr.Calls {
+		if c.Name == "arbiter" {
+			t.Fatalf("runtug executed arbiter: %v", c.Args)
+		}
 	}
 }
 

@@ -16,6 +16,10 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) Run(_ context.Context, c Command) Result {
+	if c.Name == "arbiter" {
+		// The local ledger is in-process (internal/arbiter); runtug must never exec it.
+		panic("runtug executed arbiter: " + strings.Join(c.Args, " "))
+	}
 	f.Calls = append(f.Calls, c)
 	if f.Do != nil {
 		return f.Do(c)

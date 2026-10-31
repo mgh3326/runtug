@@ -72,9 +72,12 @@ func TestPlanPrintsHostAndModelWithoutSideEffects(t *testing.T) {
 		t.Fatalf("plan must not touch the job store: %v", store.calls)
 	}
 	for _, c := range fr.Calls {
-		if c.Name == "handoffkeep" || c.Name == "herdr" || c.Name == "arbiter" || c.Name == "panewire" || c.Name == "ssh" {
+		if c.Name == "handoffkeep" || c.Name == "herdr" || c.Name == "panewire" || c.Name == "ssh" {
 			t.Fatalf("plan must not spawn or write: %v", fr.Calls)
 		}
+	}
+	if _, e := os.Stat(a.ledger().DB); e == nil {
+		t.Fatal("plan must not touch the ledger")
 	}
 	if entries, _ := os.ReadDir(a.Jobs); len(entries) != 0 {
 		t.Fatalf("plan must not write job state: %v", entries)

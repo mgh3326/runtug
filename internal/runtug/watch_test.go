@@ -2,6 +2,7 @@ package runtug
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -10,6 +11,7 @@ func TestWatcherExpiryKeepsLiveLease(t *testing.T) {
 	a := testApp(t)
 	f := ledgerRunner(t, a)
 	seedJob(t, a, "j", "worker")
+	seedLedger(t, a, "j")
 	original := f.Do
 	f.Do = func(c Command) Result {
 		if c.Name == "herdr" && strings.Join(c.Args, " ") == "agent list" {
@@ -21,33 +23,28 @@ func TestWatcherExpiryKeepsLiveLease(t *testing.T) {
 	if e := a.watch(context.Background(), []string{"j"}); e != nil {
 		t.Fatal(e)
 	}
-	for _, c := range f.Calls {
-		if c.Name == "arbiter" && c.Args[0] == "release" {
-			t.Fatal("watch expiry released live job")
-		}
-		if strings.Contains(strings.Join(c.Args, " "), "job.lost") {
-			t.Fatal("watch expiry recorded loss")
-		}
+	if st, pools := ledgerState(t, a, "j"); st != "leased" || len(pools) != 1 {
+		t.Fatalf("watch expiry released a live job: %s %v", st, pools)
 	}
+	if kinds := eventKindsOf(t, a, "j"); slices.Contains(kinds, "job.lost") {
+		t.Fatal("watch expiry recorded loss")
+	}
+	_ = f
 }
-func TestWatcherMissingPaneReleasesThroughArbiter(t *testing.T) {
+func TestWatcherMissingPaneReleasesThroughLedger(t *testing.T) {
 	a := testApp(t)
-	f := ledgerRunner(t, a)
+	ledgerRunner(t, a)
 	seedJob(t, a, "j", "worker")
+	seedLedger(t, a, "j")
 	if e := a.watch(context.Background(), []string{"j"}); e != nil {
 		t.Fatal(e)
 	}
-	released, lost := false, false
-	for _, c := range f.Calls {
-		if c.Name == "arbiter" && c.Args[0] == "release" {
-			released = true
-		}
-		if strings.Contains(strings.Join(c.Args, " "), "job.lost") {
-			lost = true
-		}
+	st, pools := ledgerState(t, a, "j")
+	if st != "released" || len(pools) != 0 {
+		t.Fatalf("lost run not released: %s %v", st, pools)
 	}
-	if !released || !lost {
-		t.Fatal("lost run not settled")
+	if kinds := eventKindsOf(t, a, "j"); !slices.Contains(kinds, "job.lost") {
+		t.Fatalf("loss not recorded: %v", kinds)
 	}
 }
 func TestMalformedCatalogNeverUsesFallbackModel(t *testing.T) {

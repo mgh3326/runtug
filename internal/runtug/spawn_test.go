@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mgh3326/runtug/internal/arbiter"
 )
 
 type fakeQuota struct {
@@ -59,6 +62,9 @@ func testApp(t *testing.T) *App {
 	t.Setenv("RUNTUG_NODE_ENV", nodeEnv)
 	a := &App{Runner: &fakeRunner{}, Policy: p, Config: Config{}, Home: root, Jobs: filepath.Join(root, "work", "herdr-inbox", "jobs"), Bins: map[string]string{}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }, Sleep: func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }}
 	a.JobStore = newFakeJobStore()
+	// The ledger clock runs a second ahead of the putEvent seeds (a.Now()+n ns),
+	// so events the ledger writes sort after them.
+	a.Arbiter = &arbiter.Store{DB: arbiter.StatePath(filepath.Join(root, ".local", "share")), Inbox: a.Jobs, Now: func() time.Time { return a.Now().Add(time.Second) }}
 	return a
 }
 func putEvent(t *testing.T, a *App, job, kind string, p map[string]any) {
@@ -101,20 +107,6 @@ func cmdFixture(t *testing.T) (*App, Spawn, *fakeRunner, *int) {
 			return Result{Out: `{"id":42,"title":"implement (grade B, T1)","state":"ready","refs":{}}`}
 		case c.Name == "handoffkeep" && strings.HasPrefix(args, "tasks claim"):
 			return Result{Out: `{"claimed_by":"worker-a","refs":{"job_id":"job-a"}}`}
-		case c.Name == "arbiter" && c.Args[0] == "claim":
-			putEvent(t, a, s.Job, "job.claim", map[string]any{"owner_lane": "default", "task_id": "42", "role": "worker", "t_level": "T1"})
-			return Result{}
-		case c.Name == "arbiter" && c.Args[0] == "event":
-			var p map[string]any
-			if e := json.Unmarshal([]byte(c.Args[6]), &p); e != nil {
-				t.Fatal(e)
-			}
-			putEvent(t, a, c.Args[2], c.Args[4], p)
-			return Result{}
-		case c.Name == "arbiter" && c.Args[0] == "lease":
-			return Result{Out: `{"pool":"example","profile":"cmd-dsflash41","started_at":"now"}`}
-		case c.Name == "arbiter" && c.Args[0] == "status":
-			return Result{Out: `{"quota_pool_records":[{"pool":"example"}]}`}
 		case strings.HasPrefix(args, "tab create"):
 			return Result{Out: `{"result":{"root_pane":{"pane_id":"w:p1"},"tab_id":"w:t1"}}`}
 		case strings.HasPrefix(args, "pane process-info"):
@@ -209,10 +201,13 @@ func TestSpawnSubmissionFailureCleansPaneAndLease(t *testing.T) {
 	for _, c := range f.Calls {
 		calls += strings.Join(c.Args, " ") + "\n"
 	}
-	if !strings.Contains(calls, "pane close w:p1") || !strings.Contains(calls, "release --job job-a") {
-		t.Fatal("cleanup missing")
+	if !strings.Contains(calls, "pane close w:p1") {
+		t.Fatal("pane cleanup missing")
 	}
-	if strings.Contains(calls, "tasks claim") || strings.Contains(calls, "job.spawned") {
+	if st, pools := ledgerState(t, a, s.Job); st != "released" || len(pools) != 0 {
+		t.Fatalf("lease cleanup missing: %s %v", st, pools)
+	}
+	if strings.Contains(calls, "tasks claim") || slices.Contains(eventKindsOf(t, a, s.Job), "job.spawned") {
 		t.Fatal("failed spawn committed")
 	}
 }
@@ -280,24 +275,56 @@ func TestSpawnExplicitProfileWithoutSeatRefusesBeforePlacement(t *testing.T) {
 	}
 }
 
-func TestR12ArbiterIsSoleLedger(t *testing.T) {
+// The local ledger is in-process: a spawn claims, records the quota run and
+// logs its events through internal/arbiter and executes no `arbiter` command.
+func TestR12LocalLedgerIsInProcess(t *testing.T) {
 	a, s, f, _ := cmdFixture(t)
 	if e := a.Spawn(context.Background(), s); e != nil {
 		t.Fatal(e)
 	}
-	seen := map[string]bool{}
 	for _, c := range f.Calls {
 		if c.Name == "arbiter" {
-			seen[c.Args[0]] = true
+			t.Fatalf("runtug executed arbiter: %v", c.Args)
 		}
 	}
-	for _, name := range []string{"claim", "lease", "event"} {
-		if !seen[name] {
-			t.Fatal("missing arbiter " + name)
+	v, e := a.ledger().JobGet(context.Background(), s.Job)
+	if e != nil || v.State != "leased" || v.AgentLabel != s.Label || v.Receipt["pane_id"] != "w:p1" {
+		t.Fatalf("ledger job %+v %v", v, e)
+	}
+	pools, _ := a.ledger().QuotaPools(context.Background(), s.Job)
+	if len(pools) != 1 || pools[0] != "example" {
+		t.Fatalf("quota pools %v", pools)
+	}
+	kinds := eventKindsOf(t, a, s.Job)
+	for _, want := range []string{"job.claim", "job.placement", "quota_pool.record", "job.spawned"} {
+		if !slices.Contains(kinds, want) {
+			t.Fatalf("missing %s in %v", want, kinds)
 		}
 	}
 	if _, e := os.Stat(filepath.Join(a.Home, ".local", "share", "runtug", "state.db")); !os.IsNotExist(e) {
-		t.Fatal("runtug must not create a ledger")
+		t.Fatal("runtug must not create a second ledger")
+	}
+	if _, e := os.Stat(filepath.Join(a.Home, ".local", "share", "arbiter", "state.db")); e != nil {
+		t.Fatalf("ledger state is not at the arbiter path: %v", e)
+	}
+}
+
+// Non-test sources never name the arbiter binary: no exec, no ARBITER_BIN.
+func TestNoArbiterExecInSources(t *testing.T) {
+	files, e := filepath.Glob("*.go")
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		b, _ := os.ReadFile(name)
+		for _, bad := range []string{`"arbiter",`, `"arbiter")`, "ARBITER_BIN"} {
+			if strings.Contains(string(b), bad) {
+				t.Errorf("%s still refers to the arbiter binary (%s)", name, bad)
+			}
+		}
 	}
 }
 func TestTaskClaimMustConfirmAtomicBinding(t *testing.T) {
