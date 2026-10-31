@@ -536,7 +536,7 @@ runtug reads the first fenced `json` block of the document:
 | `roles.R.allowed` | Catalog profiles (pacelever launch profiles, e.g. `opus`, `codex-sol`, `devin-swe2`) role `R` may run on; `"*"` admits any profile. Matched against the catalog row's `profile`, not the seat alias. |
 | `roles.R.effort` | The role's starting effort; `resolve` prints it as the answer's effort. Spawn rung choice is unchanged. |
 | `roles.R.on_exhaustion` | `wait`, `escalate` or `downgrade_to`. |
-| `roles.R.downgrade_to` | Required with (and only with) `downgrade_to`: the profiles the retry may use. |
+| `roles.R.downgrade_to` | Required with (and only with) `downgrade_to`: the profiles the retry may use. They are part of the role (they need not appear in `allowed`), used only after every allowed profile is exhausted, and always stamped `downgraded_from`. |
 | `roles.R.family_rule`, `fixed` | Recorded; family exclusion is enforced by the existing reviewer/tester `--builder-family` rule. |
 | `runtug_role_map` | Seat role → routing role. A seat role it does not list is not filtered. |
 
