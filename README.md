@@ -146,6 +146,13 @@ Exit 0 means every host is good, 78 means at least one is not. `runtug plan`
 prints the same result per host, and `--host auto` records the reasons on
 each refused candidate in the placement record. See `docs/config.md`.
 
+Placement and the quota gate first read the panewire hub's fleet state, which
+holds the quota readings and host load the nodes publish. With a fresh reading
+from an alive publisher, runtug does not measure per spawn. Otherwise it
+measures directly as before, and the placement record's `state` object names
+the source used and the reason for the fallback. `[hub] state = "off"` turns
+the hub read off. See "Fleet state" in `docs/config.md`.
+
 ```sh
 runtug spawn -c ~/work/project.task42 -m cmd-dsflash41 \
   -p brief.md -w workers -l task42-worker --t T1 \

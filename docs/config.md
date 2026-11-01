@@ -116,6 +116,8 @@ grades and gates for each effort. The desk publishes the seed after merge.
 | `machine_id` | Host identity fallback. |
 | `session_machine_ids` | Herdr session → machine identity table used for lane placement. |
 | `quota_gate` | Only `"local"` is accepted: explicit local-only quota mode. It contradicts hub_token_env; remove one of those keys. |
+| `state` | `"on"` (default) reads the hub's fleet state for placement and the quota gate; `"off"` skips it and measures directly as before (the rollback switch). See [Fleet state](#fleet-state). |
+| `state_publisher_ttl_s` | Seconds a publisher heartbeat stays alive. Default 90. |
 
 Worker lane credentials use lanes_token_env, then hub_token_env. Builder lane
 credentials use lanes_token_env, then operator_token_env, then hub_token_env.
@@ -639,6 +641,46 @@ executing host checks the current binding again before launch. An explicit
 does not claim fleet exhaustion. Exhausted Claude accounts do not prevent
 selection of an eligible Codex lead, and exhausted Codex accounts do not
 prevent selection of an eligible Claude lead.
+
+### Fleet state
+
+Nodes publish the quota readings they measure and their host load to the
+panewire hub (panewire `docs/fleet-state.md`). Placement and the quota gate
+read the hub's snapshot (`GET /v1/state`, with the `[hub]` operator
+credential) once per run, and read it again once it is older than 15 seconds.
+With a fresh hub value runtug does not measure on the spawn path.
+
+A hub quota reading is used when both of these hold:
+
+1. **Its publisher is alive.** The publisher's latest heartbeat says
+   connected and is at most `state_publisher_ttl_s` (90 s) older than the
+   snapshot.
+2. **The reading is fresh.** Its `measured_at` is within `[quota]`
+   `fresh_ttl_s` of now, the same rule as the shared cache.
+
+When several hosts publish the same account key, the freshest alive reading
+wins. The hub host list replaces `panewire place` only when every placement
+host is connected with an alive publisher. A sleeping host sends placement back
+to `panewire place`, because that call also triggers the hub's wake-on-spill.
+
+Otherwise runtug falls back to the direct path: `panewire place`, the shared
+quota cache, and the on-target `pacelever refresh` when that reading is stale.
+It never falls back silently. The placement record, and the selection record
+inside it, carry a `state` object:
+
+```json
+"state": {
+  "hosts": {"source": "hub"},
+  "quota": {"claude:0123456789abcdef": {"source": "direct", "reason": "publisher_dead"}}
+}
+```
+
+Each `quota_gate` judgment also carries its own `state`. The reasons are
+`hub_state_off`, `hub_unavailable`, `hub_absent` (no value for the key),
+`publisher_dead`, `hub_stale` (alive, but past the TTL) and `hub_incomplete`.
+
+Rollout order is hub, then nodes, then runtug. To roll back runtug alone, set
+`[hub] state = "off"`.
 
 ### Outcomes
 

@@ -41,6 +41,10 @@ type App struct {
 	// Hub carries via="hub" spawns and quota refreshes; nil builds the HTTP
 	// client from [hub] on first use.
 	Hub HubTransport
+	// State reads the hub's fleet state snapshot; nil reads GET /v1/state
+	// with the [hub] operator credential. fleetLog records the sources used.
+	State    FleetStateReader
+	fleetLog *fleetStateLog
 	// spawnFn replaces Spawn where delegate starts its pane; tests only.
 	spawnFn func(context.Context, *App, Spawn) error
 	// Version is the build line `runtug --version` prints, compared with the
@@ -96,7 +100,7 @@ func New(out, errout io.Writer) (*App, error) {
 		quota = v
 	}
 	a.Quota = CLIQuota{a.Runner, quota}
-	a.Source = fleetSource{a}
+	a.Source = stateSource{a: a, inner: fleetSource{a}}
 	a.Wake = cliWaker{a}
 	a.LoadRatio = a.loadRatio
 	a.Version = fmt.Sprintf("runtug %s (%s)", BuildVersion, BuildCommit)
