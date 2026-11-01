@@ -15,7 +15,7 @@ import (
 // Role routing (hk document policy/model-routing, operator 2026-11-01).
 //
 // The v1 table filters profiles before account quota ordering. Lead and
-// consult ignore task grade and require native top profiles. Other roles
+// consult ignore task grade and require native top profiles or OMP top models. Other roles
 // retain grade, gate and seat constraints. Exhaustion never escapes the role.
 //
 // A valid hk read refreshes the disk cache. If neither hk nor the cache is
@@ -58,16 +58,38 @@ const noLeadGradeRule = "lead_consult_take_no_grade"
 
 var topProfiles = []string{"opus", "fable", "codex-sol", "codex-astra"}
 
+var ompTopModels = map[string]string{
+	"anthropic/claude-opus-5-5":  "opus",
+	"anthropic/claude-fable-5-1": "fable",
+	"openai/gpt-6.1-sol":         "codex-sol",
+	"openai/gpt-6-astra":         "codex-astra",
+}
+
+func topProfileRank(row CatalogRow) int {
+	profile := row.Profile
+	if native, ok := ompTopModels[row.ModelID]; ok {
+		profile = native
+	}
+	if i := slices.Index(topProfiles, profile); i >= 0 {
+		return i
+	}
+	return len(topProfiles)
+}
+
 func topRoutingRole(role string) bool { return role == "lead" || role == "consult" }
 
 func (r *routing) top() bool { return r != nil && topRoutingRole(r.role) }
 
-func (r *routing) admitsSeat(s Seat) bool {
+func (r *routing) admitsSeat(s Seat, model string) bool {
 	if !r.admits(s.Canon) {
 		return false
 	}
 	if !r.top() {
 		return true
+	}
+	if s.Kind == "omp" {
+		_, ok := ompTopModels[model]
+		return ok
 	}
 	switch s.Canon {
 	case "opus", "fable":
@@ -269,9 +291,6 @@ type routing struct {
 }
 
 func (r *routing) admits(profile string) bool {
-	if r.top() && !slices.Contains(topProfiles, profile) {
-		return false
-	}
 	return r == nil || r.allowed == nil || slices.Contains(r.allowed, profile)
 }
 

@@ -56,7 +56,7 @@ func TestSelectNormalKeepsFreeFirst(t *testing.T) {
 	if rec["urgency"] != "normal" || rec["urgency_source"] != "default" {
 		t.Fatalf("normal default must be recorded: %v %v", rec["urgency"], rec["urgency_source"])
 	}
-	if got := strings.Join(rec["tiers"].([]string), ","); got != "free,waste,credit,ranked" {
+	if got := strings.Join(rec["tiers"].([]string), ","); got != "free,waste,ranked,credit" {
 		t.Fatalf("normal tier order: %s", got)
 	}
 }
@@ -72,7 +72,8 @@ func TestSelectUrgentKeepsPolicyOrder(t *testing.T) {
 	}{
 		{"free first", nil, "devin-swe2", "free"},
 		{"waste after free", []string{"devin-swe2"}, "sonnet", "waste"},
-		{"credit after waste", []string{"devin-swe2", "sonnet"}, "opus", "credit"},
+		{"ranked before credit", []string{"devin-swe2", "sonnet"}, "codex-luna", "ranked"},
+		{"credit last", []string{"devin-swe2", "sonnet", "codex-luna", "grok-hi"}, "opus", "credit"},
 		{"ranked lowest sufficient grade", []string{"devin-swe2", "sonnet", "opus"}, "codex-luna", "ranked"},
 	}
 	for _, tt := range cases {
@@ -98,7 +99,7 @@ func TestSelectUrgentKeepsPolicyOrder(t *testing.T) {
 			if rec["urgency"] != "urgent" || rec["urgency_source"] != "flag" {
 				t.Fatalf("urgency record: %v %v", rec["urgency"], rec["urgency_source"])
 			}
-			if got := strings.Join(rec["tiers"].([]string), ","); got != "free,waste,credit,ranked" {
+			if got := strings.Join(rec["tiers"].([]string), ","); got != "free,waste,ranked,credit" {
 				t.Fatalf("urgent tier order: %s", got)
 			}
 		})

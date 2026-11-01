@@ -25,7 +25,7 @@ func (a *App) admitPinnedProfile(ctx context.Context, s *Spawn) error {
 	if err != nil {
 		return err
 	}
-	if !route.admitsSeat(seat) {
+	if !route.admits(seat.Canon) {
 		return fail(exitSeatRefused, "NO_ROLE_CANDIDATE: profile %s is outside routing role %s; --override-reason overrides placement only", s.Profile, route.role)
 	}
 	if a.Quota == nil {
@@ -37,28 +37,60 @@ func (a *App) admitPinnedProfile(ctx context.Context, s *Spawn) error {
 	}
 	active := false
 	for _, row := range rows {
-		if row.Profile == seat.Canon && row.RetiredAt == nil {
+		if row.Profile == seat.Canon && row.RetiredAt == nil && route.admitsSeat(seat, row.ModelID) {
 			active = true
 			break
 		}
 	}
 	if !active {
-		return fail(exitSeatRefused, "NO_ROLE_CANDIDATE: profile %s is retired or absent from the active catalog", s.Profile)
+		return fail(exitSeatRefused, "NO_ROLE_CANDIDATE: profile %s is retired, absent or ineligible for routing role %s", s.Profile, route.role)
 	}
 	s.RoutingRole = route.role
 	s.Sel = map[string]any{"mode": "override", "profile": s.Profile, "routing_role": route.role, "routing": route.record(""), "outcome_code": outcomeAdmitted, "account_key": s.AccountKey}
 	return nil
 }
 
-// admissionGate verifies the selected account before extracting lease fields.
-func admissionGate(profile, accountKey, receipt string) (arbiter.Gate, error) {
+// boundPool keeps every supplied pool claim consistent; an empty result means
+// the caller still needs a pool source before it can admit execution.
+func boundPool(pools ...string) (string, error) {
+	pool := ""
+	for _, claim := range pools {
+		if claim == "" {
+			continue
+		}
+		if !validID(claim) {
+			return "", fail(exitConfig, "invalid quota pool")
+		}
+		if pool != "" && pool != claim {
+			return "", fail(exitConfig, "quota gate pool mismatch")
+		}
+		pool = claim
+	}
+	return pool, nil
+}
+
+// admissionGate verifies the selected account and all pool claims before
+// extracting lease fields. Pool context is kept separate from the raw receipt.
+func admissionGate(profile, accountKey, expectedPool, receipt string) (arbiter.Gate, error) {
+	accountPool, _, _ := strings.Cut(accountKey, ":")
+	pool, err := boundPool(expectedPool, accountPool, gatePool(receipt))
+	if err != nil {
+		return arbiter.Gate{}, err
+	}
+	if pool == "" {
+		return arbiter.Gate{}, fail(exitConfig, "quota gate omitted the launch pool")
+	}
 	if accountKey != "" {
 		if _, err := readAccountGateReceipt(Result{Out: receipt}, accountKey); err != nil {
 			return arbiter.Gate{}, err
 		}
 	}
 	if !strings.HasPrefix(strings.TrimSpace(receipt), "{") {
-		return arbiter.ParseGate(profile, receipt)
+		g, err := arbiter.ParseGate(profile, receipt, pool)
+		if err != nil {
+			return g, fail(exitConfig, "%v", err)
+		}
+		return g, nil
 	}
 	g := arbiter.Gate{Audit: map[string]string{}}
 	var r struct {
@@ -68,10 +100,10 @@ func admissionGate(profile, accountKey, receipt string) (arbiter.Gate, error) {
 		OK      bool   `json:"ok"`
 		Exit    *int   `json:"exit_code"`
 	}
-	if uniqueJSON([]byte(receipt)) != nil || json.Unmarshal([]byte(receipt), &r) != nil || r.Schema != "scopefuel.gate.v1" || !r.OK || r.Exit == nil || *r.Exit != 0 || !validID(r.Pool) || r.Profile != "" && r.Profile != profile {
+	if uniqueJSON([]byte(receipt)) != nil || json.Unmarshal([]byte(receipt), &r) != nil || r.Schema != "scopefuel.gate.v1" || !r.OK || r.Exit == nil || *r.Exit != 0 || r.Profile != "" && r.Profile != profile {
 		return g, fail(exitConfig, "quota receipt does not admit the selected profile")
 	}
-	g.Pool = r.Pool
+	g.Pool = pool
 	var fields map[string]any
 	_ = json.Unmarshal([]byte(receipt), &fields)
 	for _, key := range []string{"escalation_override", "operator_request_ref", "requested_by", "ref_resolution"} {

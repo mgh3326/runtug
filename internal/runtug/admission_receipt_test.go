@@ -17,7 +17,7 @@ func TestAccountReceiptValidationAtBothBoundaries(t *testing.T) {
 		{"other account", strings.ReplaceAll(good, testClaudeB, testClaudeA), exitConfig},
 		{"other pool", strings.ReplaceAll(good, `"provider_id":"claude"`, `"provider_id":"codex"`), exitConfig},
 		{"missing account", strings.ReplaceAll(good, `"account_key":"`+testClaudeB+`",`, ""), exitConfig},
-		{"missing pool", strings.ReplaceAll(good, `"provider_id":"claude",`, ""), exitConfig},
+		{"pool from account", strings.ReplaceAll(good, `"provider_id":"claude",`, ""), 0},
 		{"other schema", strings.ReplaceAll(good, "scopefuel.gate.v1", "scopefuel.gate.v2"), exitConfig},
 		{"missing schema", strings.ReplaceAll(good, `"schema":"scopefuel.gate.v1",`, ""), exitConfig},
 		{"duplicate account", strings.ReplaceAll(good, `"ok":true`, `"account_key":"`+testClaudeB+`","ok":true`), exitConfig},
@@ -32,7 +32,7 @@ func TestAccountReceiptValidationAtBothBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cli := CLIQuota{Binary: "fake-quota", Runner: &fakeRunner{Do: func(Command) Result { return Result{Out: tc.receipt} }}}
 			_, gateErr := cli.Gate(context.Background(), QuotaRequest{Profile: "opus", AccountKey: testClaudeB})
-			_, leaseErr := admissionGate("opus", testClaudeB, tc.receipt)
+			_, leaseErr := admissionGate("opus", testClaudeB, "", tc.receipt)
 			if exitCode(gateErr) != tc.want || exitCode(leaseErr) != tc.want {
 				t.Fatalf("receipt boundary mismatch: cli=%v lease=%v want=%d", gateErr, leaseErr, tc.want)
 			}
@@ -42,7 +42,7 @@ func TestAccountReceiptValidationAtBothBoundaries(t *testing.T) {
 
 func TestAdmissionKeepsProfileAndAuditValidation(t *testing.T) {
 	good := `{"schema":"scopefuel.gate.v1","provider_id":"claude","account_key":"` + testClaudeB + `","ok":true,"exit_code":0,"profile":"opus","requested_by":"test-caller","escalation_override":true}`
-	g, err := admissionGate("opus", testClaudeB, good)
+	g, err := admissionGate("opus", testClaudeB, "", good)
 	if err != nil || g.Pool != "claude" || g.Audit["requested_by"] != "test-caller" || g.Audit["escalation_override"] != "true" {
 		t.Fatalf("bound lease lost pool or audit: %v %+v", err, g)
 	}
@@ -55,12 +55,12 @@ func TestAdmissionKeepsProfileAndAuditValidation(t *testing.T) {
 		{"text audit conflict", "", "pool=claude profile=opus requested_by=test-caller requested_by=other\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := admissionGate("opus", tc.account, tc.receipt); err == nil {
+			if _, err := admissionGate("opus", tc.account, "", tc.receipt); err == nil {
 				t.Fatal("receipt lost a profile or audit guard")
 			}
 		})
 	}
-	g, err = admissionGate("opus", "", "pool=claude profile=opus requested_by=test-caller\n")
+	g, err = admissionGate("opus", "", "", "pool=claude profile=opus requested_by=test-caller\n")
 	if err != nil || g.Pool != "claude" || g.Audit["requested_by"] != "test-caller" {
 		t.Fatalf("unbound legacy text changed: %v %+v", err, g)
 	}
@@ -68,10 +68,10 @@ func TestAdmissionKeepsProfileAndAuditValidation(t *testing.T) {
 
 func TestSpawnRejectsMismatchedAccountReceipt(t *testing.T) {
 	const key = "example:0123456789abcdef"
-	for _, tc := range []struct{ name, account, pool string }{
-		{"other account", "example:fedcba9876543210", "example"},
-		{"other pool", key, "other"},
-		{"missing account", "", "example"},
+	for _, tc := range []struct{ name, account, pool, refusal string }{
+		{"other account", "example:fedcba9876543210", "example", "quota gate did not confirm the target account"},
+		{"other pool", key, "other", "quota gate pool mismatch"},
+		{"missing account", "", "example", "quota gate did not confirm the target account"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, s, runner, _ := cmdFixture(t)
@@ -95,7 +95,7 @@ func TestSpawnRejectsMismatchedAccountReceipt(t *testing.T) {
 			if err == nil {
 				t.Fatalf("spawn admitted a valid v1 receipt for %s", tc.name)
 			}
-			if gates != 1 || !strings.Contains(err.Error(), "quota gate did not confirm the target account") {
+			if gates != 1 || !strings.Contains(err.Error(), tc.refusal) {
 				t.Fatalf("spawn refused before receipt validation: gates=%d err=%v", gates, err)
 			}
 			for _, c := range runner.Calls {
@@ -136,7 +136,11 @@ func TestHeadlessRejectsMismatchedAccountReceipt(t *testing.T) {
 			if err == nil {
 				t.Fatalf("headless launch admitted a valid v1 receipt for %s", mode)
 			}
-			if gates != 2 || !strings.Contains(err.Error(), "quota gate did not confirm the target account") {
+			refusal := "quota gate did not confirm the target account"
+			if mode == "other pool" {
+				refusal = "quota gate pool mismatch"
+			}
+			if gates != 2 || !strings.Contains(err.Error(), refusal) {
 				t.Fatalf("headless refused before receipt validation: gates=%d err=%v", gates, err)
 			}
 			if len(e.runner.named("devin")) != 0 {

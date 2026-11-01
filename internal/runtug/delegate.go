@@ -445,6 +445,7 @@ var oneShot = map[string]struct {
 	"devin":    {post: []string{"-p"}},
 	"cmd":      {post: []string{"-p"}},
 	"pi":       {post: []string{"-p"}},
+	"omp":      {post: []string{"-p"}},
 	"grok":     {post: []string{"-p"}},
 	"opencode": {pre: []string{"run"}},
 }
@@ -483,7 +484,7 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 	if e != nil {
 		return "", e
 	}
-	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, launch.Pool, gate)
 	if e != nil {
 		return "", ledgerFail(e, "lease")
 	}

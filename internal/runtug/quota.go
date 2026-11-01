@@ -185,7 +185,7 @@ type accountGateReceipt struct {
 func readAccountGateReceipt(x Result, key string) (accountGateReceipt, error) {
 	var receipt accountGateReceipt
 	pool, _, _ := strings.Cut(key, ":")
-	if uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != key || receipt.Pool != pool || receipt.OK == nil || *receipt.OK != (x.Code == 0) || receipt.ExitCode == nil || *receipt.ExitCode != x.Code {
+	if !validID(pool) || uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != key || receipt.Pool != "" && receipt.Pool != pool || receipt.OK == nil || *receipt.OK != (x.Code == 0) || receipt.ExitCode == nil || *receipt.ExitCode != x.Code {
 		return receipt, fail(exitConfig, "quota gate did not confirm the target account and result")
 	}
 	return receipt, nil
@@ -350,6 +350,25 @@ func (a *App) measureTarget(ctx context.Context, host, pool string) error {
 
 func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
 	j := quotaJudgment{Host: host, AccountKey: r.AccountKey, Source: "local", Outcome: "unknown", ExitCode: 4}
+	policy, err := a.poolPolicy()
+	if err != nil {
+		return j, err
+	}
+	if policy.isCredit(pool) {
+		if !local {
+			j.Source, j.AccountKey = "shared", key
+			if key == "" || r.AccountKey != "" && r.AccountKey != key {
+				j.Reason, j.ExitCode = "account_mismatch", exitAuthUnavailable
+				return j, fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: target no longer holds the selected account")
+			}
+			r.AccountKey = key
+		}
+		if err := a.creditPoolStatus(ctx, pool); err != nil {
+			j.Reason, j.ExitCode = strings.ToLower(gateOutcome(err)), exitCode(err)
+			return j, err
+		}
+		return a.judgeGate(ctx, r, pool, j)
+	}
 	if !local {
 		j.Source, j.AccountKey = "shared", key
 		j.Reason = sharedReason(key, acc)
@@ -392,6 +411,28 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		}
 		r.AccountKey = key
 	}
+	return a.judgeGate(ctx, r, pool, j)
+}
+
+// creditPoolStatus checks policy metadata, not a credit balance. A successful
+// read can omit a balance-less pool, but a failed read cannot clear exclusions.
+func (a *App) creditPoolStatus(ctx context.Context, pool string) error {
+	if a.Quota == nil {
+		return &gateRefusal{cause: fail(exitQuotaUnknown, "QUOTA_UNKNOWN: credit pool status unavailable"), outcome: outcomeQuotaUnknown}
+	}
+	views, err := a.Quota.Pools(ctx)
+	if err != nil {
+		return &gateRefusal{cause: fail(exitQuotaUnknown, "QUOTA_UNKNOWN: credit pool status unavailable"), outcome: outcomeQuotaUnknown}
+	}
+	if views[pool].Class == "exclude" {
+		return &gateRefusal{cause: fail(exitSeatRefused, "NO_ROLE_CANDIDATE: credit pool %s is excluded", pool), outcome: outcomeNoRoleCandidate}
+	}
+	return nil
+}
+
+// judgeGate preserves the quota gate's account, pool and policy authority.
+// Credit candidates use it without requiring a nonexistent balance reading.
+func (a *App) judgeGate(ctx context.Context, r QuotaRequest, pool string, j quotaJudgment) (quotaJudgment, error) {
 	if a.Quota == nil {
 		return j, fail(exitEvictionUnconfirmed, "quota gate unavailable")
 	}
@@ -405,8 +446,11 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		}
 	}
 	if err == nil {
-		if got := gatePool(gate); pool != "" && got != pool && (got != "" || !local) {
-			err = fail(exitConfig, "quota gate pool mismatch")
+		accountPool, _, _ := strings.Cut(r.AccountKey, ":")
+		var resolved string
+		resolved, err = boundPool(pool, accountPool, gatePool(gate))
+		if err == nil && resolved == "" {
+			err = fail(exitConfig, "quota gate omitted the launch pool")
 		}
 	}
 	j.Outcome, j.ExitCode = "admitted", 0

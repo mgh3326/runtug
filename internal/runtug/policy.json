@@ -1983,6 +1983,60 @@
       ],
       "route": "clinepass",
       "context_tokens": 1000000
+    },
+    "omp-opus": {
+      "canon": "omp-opus",
+      "kind": "omp",
+      "family": "anthropic",
+      "capability": "standard",
+      "effort": "high",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel",
+        "builder"
+      ]
+    },
+    "omp-sonnet": {
+      "canon": "omp-sonnet",
+      "kind": "omp",
+      "family": "anthropic",
+      "capability": "standard",
+      "effort": "high",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
+    },
+    "omp-sol": {
+      "canon": "omp-sol",
+      "kind": "omp",
+      "family": "openai",
+      "capability": "standard",
+      "effort": "high",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel",
+        "builder"
+      ]
+    },
+    "omp-terra61": {
+      "canon": "omp-terra61",
+      "kind": "omp",
+      "family": "openai",
+      "capability": "standard",
+      "effort": "high",
+      "roles": [
+        "worker",
+        "tester",
+        "reviewer",
+        "counsel"
+      ]
     }
   }
 }

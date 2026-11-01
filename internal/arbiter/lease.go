@@ -216,20 +216,26 @@ var (
 	auditKeys = []string{"escalation_override", "operator_request_ref", "requested_by", "ref_resolution"}
 )
 
-// ParseGate resolves a profile's quota pool from the gate output that
-// admitted the run. A profile named in the output must be the one asked for.
+// ParseGate resolves a profile's quota pool from the gate output or verified
+// launch context. When both supply a pool they must match. A profile named in
+// the output must be the one asked for.
 // An audit key that appears with two different values is refused, because
 // either choice would forge the record.
-func ParseGate(profile, text string) (Gate, error) {
-	g := Gate{Audit: map[string]string{}}
+func ParseGate(profile, text, expectedPool string) (Gate, error) {
+	g := Gate{Pool: expectedPool, Audit: map[string]string{}}
 	if m := gateProfile.FindStringSubmatch(text); m != nil && m[1] != profile {
 		return g, errf(ExitStorage, "gate output profile differs: %q != %q", m[1], profile)
 	}
 	m := gatePool.FindStringSubmatch(text)
-	if m == nil {
+	if m != nil {
+		if g.Pool != "" && g.Pool != m[1] {
+			return g, errf(ExitStorage, "gate output pool differs from launch")
+		}
+		g.Pool = m[1]
+	}
+	if g.Pool == "" {
 		return g, errf(ExitStorage, "gate output names no pool (profile=%s)", profile)
 	}
-	g.Pool = m[1]
 	for _, key := range auditKeys {
 		seen := map[string]bool{}
 		for _, v := range regexp.MustCompile(`\b`+key+`=(\S+)`).FindAllStringSubmatch(text, -1) {

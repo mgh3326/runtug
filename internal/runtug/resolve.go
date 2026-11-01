@@ -39,18 +39,20 @@ type resolveResult struct {
 	AccountKey     string         `json:"account_key,omitempty"`
 	Host           string         `json:"host,omitempty"`
 	OutcomeCode    string         `json:"outcome_code"`
+	OMPAgent       string         `json:"omp_agent,omitempty"`
 	Profile        string         `json:"profile,omitempty"`
 	Effort         string         `json:"effort,omitempty"`
 }
 
 func (a *App) resolveCmd(ctx context.Context, args []string) error {
-	var role, grade, t, builderFamily string
+	var role, grade, t, builderFamily, harness string
 	var asJSON bool
 	f := flags("resolve")
 	f.StringVar(&role, "role", "", "routing role")
 	f.StringVar(&grade, "grade", "", "task grade (C, B, A, A+, S, S+; not for lead/consult)")
 	f.StringVar(&t, "t", "T0", "task scale T0..T3")
 	f.StringVar(&builderFamily, "builder-family", "", "author or parent family (reviewer/judge)")
+	f.StringVar(&harness, "harness", "", "restrict selection to an agent harness, e.g. omp")
 	f.BoolVar(&asJSON, "json", false, "print the decision as JSON")
 	if e := f.Parse(args); e != nil {
 		return fail(exitUsage, "%v", e)
@@ -96,7 +98,7 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 	}
 	cwd, _ := os.Getwd()
 	s := Spawn{CWD: cwd, Profile: "auto", Host: "auto", Role: seatRole, T: t, ParentFamily: builderFamily, RoutingRole: role, DryRun: true}
-	req := selReq{grade: grade, t: t, role: seatRole, builderFamily: builderFamily, urgency: urgencyNormal, urgencySource: "default", route: route}
+	req := selReq{grade: grade, t: t, role: seatRole, builderFamily: builderFamily, harness: harness, urgency: urgencyNormal, urgencySource: "default", route: route}
 	sel, selErr := a.selectFor(ctx, s, req)
 	r := resolveResult{RoutingRole: role, SeatRole: seatRole, Grade: grade, T: t, RoutingVersion: route.version, PolicySource: route.source}
 	r.OutcomeCode = outcomeForError(selErr)
@@ -114,6 +116,9 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		r.Seat, r.ModelID, r.Pool, r.Tier, r.RungEffort = c.seatName, c.row.ModelID, c.row.Pool, c.tierName, c.row.Effort
 		r.Profile, r.Effort = c.seat.Canon, route.effort(c.row.Effort)
 		r.AccountKey, r.Host = c.accountKey, c.host
+		if c.seat.Kind == "omp" && (role == "implementer" || role == "explorer") {
+			r.OMPAgent = a.ompAgent(c.row.ModelID)
+		}
 	}
 	if asJSON {
 		b, _ := json.MarshalIndent(r, "", "  ")
@@ -130,6 +135,10 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		return selErr
 	}
 	fmt.Fprintf(a.Out, "chosen seat=%s model=%s pool=%s tier=%s rung_effort=%s\n", r.Seat, r.ModelID, r.Pool, r.Tier, firstNonempty(r.RungEffort, "default"))
-	fmt.Fprintf(a.Out, "profile=%s effort=%s\n", r.Profile, firstNonempty(r.Effort, "default"))
+	fmt.Fprintf(a.Out, "profile=%s effort=%s", r.Profile, firstNonempty(r.Effort, "default"))
+	if r.OMPAgent != "" {
+		fmt.Fprintf(a.Out, " omp_agent=%s", r.OMPAgent)
+	}
+	fmt.Fprintln(a.Out)
 	return nil
 }

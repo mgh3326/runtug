@@ -404,7 +404,7 @@ func TestLeaseNeedsARegisteredJob(t *testing.T) {
 func TestQuotaPoolRecordLifecycle(t *testing.T) {
 	s, clk := newStore(t)
 	claim(t, s, "j1")
-	gate, e := ParseGate("cmd-x", "pool=example profile=cmd-x ref_resolution=unverified-claim requested_by=op")
+	gate, e := ParseGate("cmd-x", "pool=example profile=cmd-x ref_resolution=unverified-claim requested_by=op", "")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -461,7 +461,7 @@ func TestQuotaPoolsOfAnAbsentLedgerIsEmpty(t *testing.T) {
 }
 
 func TestParseGate(t *testing.T) {
-	g, e := ParseGate("p", "ok pool=a profile=p\n# pool=a profile=p ref_resolution=x\nref_resolution=x")
+	g, e := ParseGate("p", "ok pool=a profile=p\n# pool=a profile=p ref_resolution=x\nref_resolution=x", "")
 	if e != nil || g.Pool != "a" || g.Audit["ref_resolution"] != "x" {
 		t.Fatalf("%+v %v", g, e)
 	}
@@ -470,7 +470,7 @@ func TestParseGate(t *testing.T) {
 		"no pool":         "profile=p",
 		"injected audit":  "pool=a ref_resolution=unverified ref_resolution=verified",
 	} {
-		_, e := ParseGate("p", text)
+		_, e := ParseGate("p", text, "")
 		if Code(e) != ExitStorage {
 			t.Errorf("%s: %v", name, e)
 		}
