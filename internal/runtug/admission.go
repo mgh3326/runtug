@@ -25,7 +25,7 @@ func (a *App) admitPinnedProfile(ctx context.Context, s *Spawn) error {
 	if err != nil {
 		return err
 	}
-	if !route.admitsSeat(seat) {
+	if !route.admits(seat.Canon) {
 		return fail(exitSeatRefused, "NO_ROLE_CANDIDATE: profile %s is outside routing role %s; --override-reason overrides placement only", s.Profile, route.role)
 	}
 	if a.Quota == nil {
@@ -37,13 +37,13 @@ func (a *App) admitPinnedProfile(ctx context.Context, s *Spawn) error {
 	}
 	active := false
 	for _, row := range rows {
-		if row.Profile == seat.Canon && row.RetiredAt == nil {
+		if row.Profile == seat.Canon && row.RetiredAt == nil && route.admitsSeat(seat, row.ModelID) {
 			active = true
 			break
 		}
 	}
 	if !active {
-		return fail(exitSeatRefused, "NO_ROLE_CANDIDATE: profile %s is retired or absent from the active catalog", s.Profile)
+		return fail(exitSeatRefused, "NO_ROLE_CANDIDATE: profile %s is retired, absent or ineligible for routing role %s", s.Profile, route.role)
 	}
 	s.RoutingRole = route.role
 	s.Sel = map[string]any{"mode": "override", "profile": s.Profile, "routing_role": route.role, "routing": route.record(""), "outcome_code": outcomeAdmitted, "account_key": s.AccountKey}

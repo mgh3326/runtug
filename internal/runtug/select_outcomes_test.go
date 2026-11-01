@@ -167,7 +167,7 @@ func TestSelectAccountTiersPreserveImplementerOrder(t *testing.T) {
 	for _, c := range sel.ranked {
 		got = append(got, c.row.Profile+":"+c.tierName)
 	}
-	if fmt.Sprint(got) != "[devin-swe2:free sonnet:waste opus:credit codex-sol:ranked]" {
+	if fmt.Sprint(got) != "[devin-swe2:free sonnet:waste codex-sol:ranked opus:credit]" {
 		t.Fatalf("account tier order changed: %v", got)
 	}
 }

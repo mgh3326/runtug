@@ -37,6 +37,8 @@ func (a *App) launchArgs(s Seat, l Launch) ([]string, []string, error) {
 		return []string{"--always-approve", "-m", m, "--effort", e}, env, nil
 	case "pi":
 		return []string{"--no-mcp", "--model", m + ":" + e}, env, nil
+	case "omp":
+		return []string{"--model", m + ":" + e}, env, nil
 	case "cmd":
 		return []string{"-m", m, "--effort", e, "--yolo", "--skip-onboarding", "--no-session"}, env, nil
 	case "kimi":
@@ -268,7 +270,7 @@ func (a *App) modelProof(ctx context.Context, s Seat, l Launch, cwd, pane, brief
 	if s.Kind == "cmd" {
 		ok = CmdProof(screen, l.ModelID, l.Effort, cwd, a.Home, brief)
 	}
-	if s.Kind == "pi" {
+	if s.Kind == "pi" || s.Kind == "omp" {
 		ok = PiProof(screen, l.ModelID, l.Effort, cwd, a.Home, brief)
 	}
 	if !ok {
@@ -406,7 +408,7 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			return fail(exitConfig, "Devin identity not proven")
 		}
 	}
-	if seat.Kind == "pi" || seat.Kind == "cmd" {
+	if seat.Kind == "pi" || seat.Kind == "omp" || seat.Kind == "cmd" {
 		if e := a.modelProof(ctx, seat, l, s.CWD, pane, ""); e != nil {
 			return e
 		}

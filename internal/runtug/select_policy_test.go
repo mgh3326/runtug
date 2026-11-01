@@ -49,14 +49,14 @@ func paceStatus(now time.Time, pools map[string]pace) string {
 // TestSelectionPolicyScenarios is the operator selection policy as a table:
 // a paid pool at waste risk (>= 20% projected unused at its reset) first, by
 // waste urgency; otherwise free first, then subscription quota that would be
-// wasted by reset, then credit, then ranked; never a pool projected to run
+// wasted by reset, then ranked, then credit; never a pool projected to run
 // out; the lowest grade that fits the task, then the lower projection, then
 // the smaller effort.
 // Seats come from policy.json and the pool order and projection thresholds
 // from the shipped pool-order policy.
 func TestSelectionPolicyScenarios(t *testing.T) {
-	// The credit pool has no automated balance reading yet (policy/quota-stop),
-	// so it is unknown and dropped unless a row gives it one.
+	// Credit has no automated balance reader and remains eligible after all
+	// subscription candidates are exhausted.
 	roomy := map[string]pace{"devin": {10, 0.5}, "claude": {15, 0.5}, "codex": {20, 0.5}}
 	// Paid pools near their projected cap: under 20% unused at reset, so not
 	// at waste risk.

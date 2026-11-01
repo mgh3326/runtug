@@ -102,7 +102,7 @@ func TestSelectGradeFilterPrefersCheapestCovering(t *testing.T) {
 	}
 }
 
-func TestSelectPolicyOrderFreeWasteCreditRanked(t *testing.T) {
+func TestSelectPolicyOrderFreeWasteRankedCredit(t *testing.T) {
 	waste, noWaste := true, false
 	mk := func() []CatalogRow {
 		return []CatalogRow{
@@ -128,7 +128,7 @@ func TestSelectPolicyOrderFreeWasteCreditRanked(t *testing.T) {
 	}{
 		{"free beats waste", mk(), pools, []string{"devin", "claude", "anthropic-api", "codex"}, "devin-swe2"},
 		{"waste beats credit and ranked", mk()[1:], pools, []string{"claude", "anthropic-api", "codex"}, "sonnet"},
-		{"credit beats ranked", mk()[2:], pools, []string{"anthropic-api", "codex"}, "opus"},
+		{"ranked beats credit", mk()[2:], pools, []string{"anthropic-api", "codex"}, "codex-sol"},
 		{"ranked by blocking", mk()[3:], pools, []string{"codex"}, "codex-sol"},
 	}
 	for _, tt := range cases {
@@ -166,8 +166,8 @@ func TestSelectWasteNeedsVerdict(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if sel.chosen.seatName != "opus" {
-		t.Fatalf("credit pool must come before ranked pools without a waste flag: %s", sel.chosen.seatName)
+	if sel.chosen.seatName != "sonnet" || sel.chosen.tierName != "ranked" {
+		t.Fatalf("subscription must come before credit even without a waste flag: %s", sel.chosen.seatName)
 	}
 	// With the flag set the same pool moves into the waste tier.
 	pools["claude"] = PoolView{Status: "ok", Class: "spend", Waste: &waste, Blocking: ptrF(5)}

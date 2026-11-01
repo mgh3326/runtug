@@ -377,6 +377,12 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		}
 		r.AccountKey = key
 	}
+	return a.judgeGate(ctx, r, pool, j)
+}
+
+// judgeGate preserves the quota gate's account, pool and policy authority.
+// Credit candidates use it without requiring a nonexistent balance reading.
+func (a *App) judgeGate(ctx context.Context, r QuotaRequest, pool string, j quotaJudgment) (quotaJudgment, error) {
 	if a.Quota == nil {
 		return j, fail(exitEvictionUnconfirmed, "quota gate unavailable")
 	}
@@ -390,7 +396,7 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		}
 	}
 	if err == nil {
-		if got := gatePool(gate); pool != "" && got != pool && (got != "" || !local) {
+		if got := gatePool(gate); pool != "" && got != pool && (got != "" || j.Source != "local") {
 			err = fail(exitConfig, "quota gate pool mismatch")
 		}
 	}
