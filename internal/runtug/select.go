@@ -307,10 +307,6 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 	return "", nil, firstReason
 }
 
-// tierOf classes a candidate under the operator pool order. A subscription
-// pool is waste when its projected use at reset stays below the policy
-// threshold; without a projection the quota adapter's verdict flag decides.
-// Pools without a readable spend status are unknown rather than ranked.
 func (p PoolPolicy) isFree(row CatalogRow) bool {
 	for _, fs := range p.Free {
 		if fs.Pool == row.Pool && (len(fs.Models) == 0 || slices.Contains(fs.Models, row.ModelID)) {
@@ -319,15 +315,14 @@ func (p PoolPolicy) isFree(row CatalogRow) bool {
 	}
 	return false
 }
-func (p PoolPolicy) tierOf(row CatalogRow, order []string, pools map[string]PoolView, poolsOK bool) (string, int) {
+
+// tierOf assigns a tier from this account's view and the pool policy.
+// Cross-candidate ordering belongs to orderSelCands, not tier assignment.
+func (p PoolPolicy) tierOf(row CatalogRow, order []string, v PoolView) (string, int) {
 	if p.isFree(row) {
 		return "free", slices.Index(order, "free")
 	}
-	if !poolsOK {
-		return "", -1
-	}
-	v, ok := pools[row.Pool]
-	if !ok || v.Status != "ok" || v.Stale || v.Class != "spend" {
+	if v.Status != "ok" || v.Stale || v.Class != "spend" {
 		return "", -1
 	}
 	tier := "ranked"
@@ -581,7 +576,6 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	var pending []*selCand
 	for _, row := range rows {
 		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
-		p.cands = append(p.cands, c)
 		_, validGrade := gradeOrder[row.Grade]
 		switch {
 		case row.RetiredAt != nil:
@@ -612,6 +606,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 		}
 		if c.reason != "" {
 			c.outcome = "dropped:" + c.reason
+			p.cands = append(p.cands, c)
 			continue
 		}
 		// A candidate is a profile/rung/account, never a provider-level pool.
@@ -622,9 +617,9 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 				c.reason, c.code = "no_eligible_host", outcomeNoEligibleHost
 			}
 			c.outcome = "dropped:" + c.reason
+			p.cands = append(p.cands, c)
 			continue
 		}
-		p.cands = p.cands[:len(p.cands)-1]
 		for _, binding := range bindings {
 			x := *c
 			x.accountKey, x.hosts = binding.key, binding.hosts
@@ -666,10 +661,9 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 		if err != nil {
 			if c.reason == "" {
 				c.reason, c.code = fmt.Sprintf("gate_refused:%d", exitCode(err)), gateOutcome(err)
-			}
-			c.outcome = "dropped:gate_refused"
-			if c.reason == "projected_exhaust" {
-				c.outcome = "dropped:projected_exhaust"
+				c.outcome = "dropped:gate_refused"
+			} else {
+				c.outcome = "dropped:" + c.reason
 			}
 			continue
 		}

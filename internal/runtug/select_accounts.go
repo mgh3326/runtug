@@ -195,7 +195,7 @@ func (p *selPlan) classify(c *selCand, v PoolView) {
 	if c.reason != "" {
 		c.code = outcomeQuotaExhausted
 	} else {
-		c.tierName, c.tier = p.policy.tierOf(c.row, p.order, map[string]PoolView{c.row.Pool: v}, true)
+		c.tierName, c.tier = p.policy.tierOf(c.row, p.order, v)
 		if c.tier < 0 || !free && v.Blocking == nil && v.Projected == nil {
 			c.reason, c.code = "quota_unknown", outcomeQuotaUnknown
 		}
@@ -300,15 +300,27 @@ func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *sel
 }
 
 func (a *App) selectionRefused(ctx context.Context, s Spawn, req selReq, p *selPlan) (*selPlan, error) {
+	// Binding absence describes a profile, not another quota. If accounts
+	// were found, their admission outcomes decide; missing logins or hosts
+	// only decide when there was no eligible account to judge.
+	accounts := make([]*selCand, 0, len(p.cands))
+	for _, c := range p.cands {
+		if c.accountKey != "" {
+			accounts = append(accounts, c)
+		}
+	}
+	if len(accounts) == 0 {
+		accounts = p.cands
+	}
 	for _, code := range []string{outcomeQuotaUnknown, outcomeAuthUnavailable, outcomeNoEligibleHost, outcomePolicyUnavailable, outcomeNoRoleCandidate} {
-		if !slices.ContainsFunc(p.cands, func(c *selCand) bool { return c.code == code }) {
+		if !slices.ContainsFunc(accounts, func(c *selCand) bool { return c.code == code }) {
 			continue
 		}
 		p.outcome = code
 		exit := map[string]int{outcomeQuotaUnknown: exitQuotaUnknown, outcomeAuthUnavailable: exitAuthUnavailable, outcomeNoEligibleHost: exitPlacement, outcomePolicyUnavailable: exitConfig, outcomeNoRoleCandidate: exitSeatRefused}[code]
 		return p, fail(exit, "%s: no account admitted routing role %s%s", code, routingRole(req), hostScope(s))
 	}
-	if slices.ContainsFunc(p.cands, func(c *selCand) bool { return c.code == outcomeQuotaExhausted }) {
+	if slices.ContainsFunc(accounts, func(c *selCand) bool { return c.code == outcomeQuotaExhausted }) {
 		p.outcome = outcomeQuotaExhausted
 		if req.route != nil && req.route.rule != nil {
 			return a.roleExhausted(ctx, s, req, p)

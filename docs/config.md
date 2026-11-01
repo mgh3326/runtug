@@ -596,8 +596,11 @@ When no candidate is admitted, the codes are distinct:
 | `POLICY_UNAVAILABLE` | 70 | Required policy, catalog evidence, or gate-tool configuration is unavailable. |
 | `NO_ROLE_CANDIDATE` | 77 | No active profile passes the role and static admission constraints. |
 
-Unknown evidence, missing logins, and absent hosts never count as measured
-exhaustion. An exhausted v1 role with `on_exhaustion=downgrade_to` retries
+Exhaustion ranges over actual eligible account bindings. If every bound
+account is measured exhausted, another profile with no login or capable
+host does not mask QUOTA_EXHAUSTED. Unknown quota or an authentication,
+transport, or policy failure on a bound account still prevents that claim.
+If no account is bound, missing-login or missing-host outcomes apply. An exhausted v1 role with `on_exhaustion=downgrade_to` retries
 once using only its listed profiles and records `downgraded_from`.
 Lead and consult never take this path. Exit 86 reports a refusal, not a
 scheduled retry.
