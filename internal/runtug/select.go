@@ -192,6 +192,10 @@ type selPlan struct {
 	routeRefusal string
 	before       *selPlan
 	outcome      string
+	// roleSkips names the lead/consult families skipped role_effort_unplaced;
+	// escalation records a chosen rung above the role effort.
+	roleSkips  []map[string]any
+	escalation map[string]any
 }
 type selReq struct {
 	grade           string
@@ -599,6 +603,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			p.degraded = append(p.degraded, "credit_pool_status_unavailable")
 		}
 	}
+	roleCap := req.route.roleEffortCap()
 	var pending []*selCand
 	for _, row := range rows {
 		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
@@ -618,6 +623,8 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			c.reason = "gate_unknown"
 		case row.Gate != "default" && !req.allowEscalation:
 			c.reason = "gate_class"
+		case aboveEffort(row.Effort, roleCap) && !req.allowEscalation:
+			c.reason = reasonAboveRoleEffort
 		case req.effort != "" && row.Effort != req.effort:
 			c.reason = "effort_mismatch"
 		case !validID(row.Pool):
@@ -707,10 +714,63 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 		c.host, c.outcome, c.code = judgments[len(judgments)-1].Host, "chosen", outcomeAdmitted
 		p.chosen, p.outcome = c, outcomeAdmitted
 	}
+	p.markRoleEffort(roleCap)
 	if p.chosen == nil {
 		return a.selectionRefused(ctx, s, req, p)
 	}
 	return p, nil
+}
+
+// markRoleEffort records how the lead/consult role-effort cap shaped the
+// selection. Without --allow-escalation a rung above the role effort is never
+// a candidate (above_role_effort). When its family's role-effort rung was not
+// placed either — dropped by seat rules, refused at its gate (an unplaced E6
+// seat), or absent from the catalog — the family is skipped
+// role_effort_unplaced with that cause, so the choice falls through to the
+// next family at the role effort instead of climbing. With
+// --allow-escalation a chosen rung above the role effort is the escalation.
+func (p *selPlan) markRoleEffort(roleCap string) {
+	if roleCap == "" {
+		return
+	}
+	placed := map[string]bool{}
+	causes := map[string]string{}
+	for _, c := range p.cands {
+		if c.row.Effort != roleCap {
+			continue
+		}
+		if c.outcome == "chosen" || c.outcome == "below_choice" {
+			placed[c.row.Profile] = true
+		} else if _, ok := causes[c.row.Profile]; !ok {
+			causes[c.row.Profile] = c.reason
+		}
+	}
+	cause := func(profile string) string {
+		if why, ok := causes[profile]; ok && why != "" {
+			return why
+		}
+		return "no_role_effort_rung"
+	}
+	if c := p.chosen; c != nil && aboveEffort(c.row.Effort, roleCap) {
+		p.escalation = map[string]any{"profile": c.row.Profile, "role_effort": roleCap, "chosen_effort": c.row.Effort, "by": "allow_escalation", "role_effort_cause": cause(c.row.Profile)}
+		if placed[c.row.Profile] {
+			p.escalation["role_effort_cause"] = "ranked_after"
+		}
+	}
+	// An explicit --effort pins another rung: the role-effort rung was never
+	// asked, so it cannot be called unplaced.
+	if p.req.allowEscalation || p.req.effort != "" && p.req.effort != roleCap {
+		return
+	}
+	for _, c := range p.cands {
+		if c.reason != reasonAboveRoleEffort || placed[c.row.Profile] {
+			continue
+		}
+		c.reason, c.outcome = reasonRoleEffortUnplaced, "dropped:"+reasonRoleEffortUnplaced
+		if !slices.ContainsFunc(p.roleSkips, func(m map[string]any) bool { return m["profile"] == c.row.Profile }) {
+			p.roleSkips = append(p.roleSkips, map[string]any{"profile": c.row.Profile, "reason": reasonRoleEffortUnplaced, "role_effort": roleCap, "cause": cause(c.row.Profile)})
+		}
+	}
 }
 
 // orderSelCands ranks tiered candidates: waste-risk pools first (by waste
@@ -920,6 +980,12 @@ func (p *selPlan) record() map[string]any {
 			// The role's own attempt, every profile exhausted, before the
 			// downgrade_to retry this record chose from.
 			rt["before_downgrade"] = p.before.record()["candidates"]
+		}
+		if len(p.roleSkips) > 0 {
+			rt["skipped"] = p.roleSkips
+		}
+		if p.escalation != nil {
+			rt["escalation"] = p.escalation
 		}
 		rec["routing"] = rt
 	}

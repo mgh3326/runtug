@@ -46,13 +46,14 @@ type resolveResult struct {
 
 func (a *App) resolveCmd(ctx context.Context, args []string) error {
 	var role, grade, t, builderFamily, harness string
-	var asJSON bool
+	var asJSON, allowEscalation bool
 	f := flags("resolve")
 	f.StringVar(&role, "role", "", "routing role")
 	f.StringVar(&grade, "grade", "", "task grade (C, B, A, A+, S, S+; not for lead/consult)")
 	f.StringVar(&t, "t", "T0", "task scale T0..T3")
 	f.StringVar(&builderFamily, "builder-family", "", "author or parent family (reviewer/judge)")
 	f.StringVar(&harness, "harness", "", "restrict selection to an agent harness, e.g. omp")
+	f.BoolVar(&allowEscalation, "allow-escalation", false, "admit escalation rungs, and lead/consult rungs above the role effort")
 	f.BoolVar(&asJSON, "json", false, "print the decision as JSON")
 	if e := f.Parse(args); e != nil {
 		return fail(exitUsage, "%v", e)
@@ -97,8 +98,8 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 		return e
 	}
 	cwd, _ := os.Getwd()
-	s := Spawn{CWD: cwd, Profile: "auto", Host: "auto", Role: seatRole, T: t, ParentFamily: builderFamily, RoutingRole: role, DryRun: true}
-	req := selReq{grade: grade, t: t, role: seatRole, builderFamily: builderFamily, harness: harness, urgency: urgencyNormal, urgencySource: "default", route: route}
+	s := Spawn{CWD: cwd, Profile: "auto", Host: "auto", Role: seatRole, T: t, ParentFamily: builderFamily, RoutingRole: role, AllowEscalation: allowEscalation, DryRun: true}
+	req := selReq{grade: grade, t: t, role: seatRole, allowEscalation: allowEscalation, builderFamily: builderFamily, harness: harness, urgency: urgencyNormal, urgencySource: "default", route: route}
 	sel, selErr := a.selectFor(ctx, s, req)
 	r := resolveResult{RoutingRole: role, SeatRole: seatRole, Grade: grade, T: t, RoutingVersion: route.version, PolicySource: route.source}
 	r.OutcomeCode = outcomeForError(selErr)
