@@ -1,8 +1,10 @@
 package runtug
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +94,87 @@ func TestRefreshExitThreeIsNotGateExhaustion(t *testing.T) {
 	}
 }
 
+func TestUnreadableGateExitThreeGetsOneRefresh(t *testing.T) {
+	bound := `{"schema":"scopefuel.gate.v1","provider_id":"claude","account_key":"` + testClaudeB + `","ok":false,"exit_code":3,"outcome_code":"QUOTA_EXHAUSTED"}`
+	admitted := `{"schema":"scopefuel.gate.v1","provider_id":"claude","account_key":"` + testClaudeB + `","ok":true,"exit_code":0}`
+	for _, tc := range []struct {
+		name, out string
+		recovers  bool
+	}{
+		{"empty", "", false},
+		{"prose", "window_exhausted", false},
+		{"invalid JSON", `{"schema":`, false},
+		{"missing fields", `{}`, false},
+		{"wrong schema", strings.ReplaceAll(bound, "scopefuel.gate.v1", "scopefuel.gate.v2"), false},
+		{"duplicate field", strings.ReplaceAll(bound, `"ok":false`, `"ok":false,"ok":false`), false},
+		{"conflicting codes", strings.ReplaceAll(bound, `"ok":false`, `"ok":false,"role_denied":true`), false},
+		{"recovers", "window_exhausted", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, s, q, src := accountLeadFixture(t)
+			q.CatalogRows = q.CatalogRows[1:2]
+			// Account A is measured exhausted; B's unreadable gate must
+			// stay unknown rather than turn their aggregate into policy failure.
+			src.presence = src.presence[:2]
+			gates, refreshes := 0, 0
+			a.Runner = wrapRunner(a.Runner, func(c Command) (Result, bool) {
+				if c.Name == "ssh" {
+					refreshes++
+					return Result{}, true
+				}
+				return Result{}, false
+			})
+			gateRunner := &fakeRunner{Do: func(Command) Result {
+				gates++
+				if tc.recovers && gates > 1 {
+					return Result{Out: admitted}
+				}
+				return Result{Out: tc.out, Code: quotaGateBlocked}
+			}}
+			a.Quota = refusalQuota{fakeQuota: q, gate: CLIQuota{Runner: gateRunner, Binary: "fake-quota"}}
+			sel, err := a.selectProfile(context.Background(), s)
+			if tc.recovers {
+				if err != nil || sel.chosen.accountKey != testClaudeB || sel.chosen.judgments[len(sel.chosen.judgments)-1].Host != "host-b" {
+					t.Fatalf("refreshed valid receipt did not admit account B: %v", err)
+				}
+			} else if exitCode(err) != exitQuotaUnknown || sel.outcome != outcomeQuotaUnknown {
+				t.Fatalf("unreadable exit-3 receipt became %s/%d, want QUOTA_UNKNOWN/89: %v", sel.outcome, exitCode(err), err)
+			}
+			if gates != 2 || refreshes != 1 {
+				t.Fatalf("gate calls=%d refreshes=%d, want one refresh and one gate retry", gates, refreshes)
+			}
+		})
+	}
+}
+
+func TestPlanKeepsTypedGateRefusalOutcome(t *testing.T) {
+	a, _, q, src := accountLeadFixture(t)
+	a.Config.Local["spawn"] = true
+	a.Config.Hosts, a.Config.HostOrder = nil, nil
+	src.presence = src.presence[1:2]
+	src.presence[0].HostID = "local"
+	q.CatalogRows = q.CatalogRows[1:2]
+	q.LaunchValue = Launch{Profile: "opus", ModelID: "opus-m", Effort: "high", Grade: "S", Gate: "default", Pool: "claude"}
+	gates := 0
+	q.GateDo = func(QuotaRequest) (string, error) {
+		gates++
+		if gates == 1 {
+			return "pool=claude\n", nil
+		}
+		return "", &gateRefusal{cause: fail(quotaGateBlocked, "unreadable receipt"), outcome: outcomeQuotaUnknown}
+	}
+	out := &bytes.Buffer{}
+	a.Out = out
+	err := a.planCmd(context.Background(), []string{"--role", "builder", "--t", "T1", "--json"})
+	var doc map[string]any
+	if parseErr := json.Unmarshal(out.Bytes(), &doc); parseErr != nil {
+		t.Fatalf("plan JSON: %v", parseErr)
+	}
+	if gates != 2 || exitCode(err) != quotaGateBlocked || doc["outcome_code"] != outcomeQuotaUnknown {
+		t.Fatalf("plan lost typed gate outcome: %v/%v, gate calls=%d", err, doc["outcome_code"], gates)
+	}
+}
+
 func TestStructuredGateRefusalMustConfirmItsAccountAndCode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -99,12 +182,17 @@ func TestStructuredGateRefusalMustConfirmItsAccountAndCode(t *testing.T) {
 		want   string
 		status int
 	}{
-		{"different account", func(r map[string]any) { r["account_key"] = testClaudeA }, outcomePolicyUnavailable, exitConfig},
-		{"different pool", func(r map[string]any) { r["provider_id"] = "codex" }, outcomePolicyUnavailable, exitConfig},
-		{"different exit", func(r map[string]any) { r["exit_code"] = 0 }, outcomePolicyUnavailable, exitConfig},
-		{"contradictory ok", func(r map[string]any) { r["ok"] = true }, outcomePolicyUnavailable, exitConfig},
-		{"conflicting flags", func(r map[string]any) { r["role_denied"] = true }, outcomePolicyUnavailable, exitConfig},
-		{"conflicting reason", func(r map[string]any) { r["reason_code"] = "role_denied" }, outcomePolicyUnavailable, exitConfig},
+		{"different account", func(r map[string]any) { r["account_key"] = testClaudeA }, outcomeQuotaUnknown, 3},
+		{"different pool", func(r map[string]any) { r["provider_id"] = "codex" }, outcomeQuotaUnknown, 3},
+		{"different exit", func(r map[string]any) { r["exit_code"] = 0 }, outcomeQuotaUnknown, 3},
+		{"contradictory ok", func(r map[string]any) { r["ok"] = true }, outcomeQuotaUnknown, 3},
+		{"missing account", func(r map[string]any) { delete(r, "account_key") }, outcomeQuotaUnknown, 3},
+		{"missing pool", func(r map[string]any) { delete(r, "provider_id") }, outcomeQuotaUnknown, 3},
+		{"missing exit", func(r map[string]any) { delete(r, "exit_code") }, outcomeQuotaUnknown, 3},
+		{"missing ok", func(r map[string]any) { delete(r, "ok") }, outcomeQuotaUnknown, 3},
+		{"invalid field type", func(r map[string]any) { r["ok"] = "false" }, outcomeQuotaUnknown, 3},
+		{"conflicting flags", func(r map[string]any) { r["role_denied"] = true }, outcomeQuotaUnknown, 3},
+		{"conflicting reason", func(r map[string]any) { r["reason_code"] = "role_denied" }, outcomeQuotaUnknown, 3},
 		{"unknown outcome", func(r map[string]any) { r["outcome_code"] = "future_outcome" }, outcomeQuotaUnknown, 3},
 		{"ambiguous full usage", func(r map[string]any) { delete(r, "outcome_code"); r["used_pct"] = 100 }, outcomeQuotaUnknown, 3},
 	} {

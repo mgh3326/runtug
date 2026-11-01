@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -97,6 +98,10 @@ func (a *App) stampSelection(s *Spawn, host string) {
 func outcomeForError(err error) string {
 	if err == nil {
 		return outcomeAdmitted
+	}
+	var refusal *gateRefusal
+	if errors.As(err, &refusal) {
+		return refusal.outcome
 	}
 	switch exitCode(err) {
 	case exitRoleWait, exitRoleEscalate:

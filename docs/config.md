@@ -610,9 +610,14 @@ scheduled retry.
 Account-bound gate refusals validate the same schema, account, pool, and
 process/receipt result as successful gates. Recognized `outcome_code`,
 `reason_code`, or machine refusal flags determine their category. Diagnostic
-prose never determines exhaustion. An ambiguous JSON exit 3 remains
-`QUOTA_UNKNOWN`, even when `used_pct` is present. Publishing stable typed
-reason codes from pacelever is tracked separately as hk 2477.
+prose never determines exhaustion. An ambiguous or unreadable exit-3 receipt
+remains `QUOTA_UNKNOWN`, even when `used_pct` is present. This includes prose,
+invalid JSON, missing or inconsistent identity/result fields, unsupported
+schemas, and conflicting refusal codes. Selection refreshes that account once
+within its bounded deadline, then reports `QUOTA_UNKNOWN` if evidence remains
+unknown. An invalid success receipt or an actual non-3 configuration failure
+remains `POLICY_UNAVAILABLE`. Publishing stable typed reason codes from
+pacelever is tracked separately as hk 2477.
 
 Legacy `QuotaGate` adapters can use raw gate exit 3 for quota-blocked
 compatibility. That interpretation is attached only at the gate boundary;

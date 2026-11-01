@@ -135,15 +135,21 @@ func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
 	}
 	if r.AccountKey != "" && (x.Code == 0 || x.Code == quotaGateBlocked) {
 		receipt, err := readAccountGateReceipt(x, r.AccountKey)
+		if x.Code == quotaGateBlocked {
+			outcome := outcomeQuotaUnknown
+			if err == nil {
+				outcome, err = receipt.refusalOutcome()
+			}
+			reason := clip(receipt.Reason, 200)
+			if err != nil {
+				// A blocked gate with untrusted evidence cannot establish
+				// exhaustion or a policy failure. Keep it typed for refresh.
+				outcome, reason = outcomeQuotaUnknown, err.Error()
+			}
+			return "", &gateRefusal{cause: fail(x.Code, "quota gate: %s", reason), outcome: outcome}
+		}
 		if err != nil {
 			return "", err
-		}
-		if x.Code == quotaGateBlocked {
-			outcome, err := receipt.refusalOutcome()
-			if err != nil {
-				return "", err
-			}
-			return "", &gateRefusal{cause: fail(x.Code, "quota gate: %s", clip(receipt.Reason, 200)), outcome: outcome}
 		}
 	}
 	if e := check(x, "quota gate"); e != nil {
@@ -152,8 +158,8 @@ func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
 	return x.Out, nil
 }
 
-// gateRefusal carries verified machine evidence independently of diagnostic
-// prose. Unwrap preserves the dependency exit code for existing callers.
+// gateRefusal carries a gate outcome independently of diagnostic prose;
+// untrusted receipts stay unknown. Unwrap preserves the dependency exit code.
 type gateRefusal struct {
 	cause   error
 	outcome string
