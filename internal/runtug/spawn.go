@@ -44,6 +44,9 @@ type Spawn struct {
 	// RoutingRole and AccountKey bind delegated admission to the selection.
 	RoutingRole string `json:"routing_role,omitempty"`
 	AccountKey  string `json:"account_key,omitempty"`
+	// TaskGrade is the grade placement checks against a host's grades
+	// list, empty for lead and consult.
+	TaskGrade string `json:"-"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {
