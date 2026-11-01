@@ -340,12 +340,29 @@ func (a *App) routeFor(ctx context.Context, seatRole, override string) (*routing
 	return r, nil
 }
 
-// effort is the role's starting effort, else the chosen rung's.
+// effort is the role's starting effort, else the chosen rung's. A lead or
+// consult rung escalated above the role effort reports its own effort.
 func (r *routing) effort(rung string) string {
-	if r != nil && r.rule != nil && r.rule.Effort != "" {
+	if r != nil && r.rule != nil && r.rule.Effort != "" && !aboveEffort(rung, r.roleEffortCap()) {
 		return r.rule.Effort
 	}
 	return rung
+}
+
+// roleEffortCap is the effort a lead or consult never climbs above without
+// --allow-escalation (policy/model-routing: max only on a recorded
+// escalation); "" for every other role, which keeps grade-driven selection.
+func (r *routing) roleEffortCap() string {
+	if !r.top() || r.rule == nil {
+		return ""
+	}
+	return r.rule.Effort
+}
+
+// aboveEffort reports whether a named rung ranks above the cap. The catalog's
+// default rung ("") is never above it.
+func aboveEffort(rung, cap string) bool {
+	return cap != "" && rung != "" && rankEffort(rung) > rankEffort(cap)
 }
 
 // record renders the routing stamp carried in the selection record.
@@ -376,6 +393,12 @@ const (
 	reasonRoleNoCandidate  = "role_no_candidate"
 	reasonRoleExhaustWait  = "role_exhausted_wait"
 	reasonRoleExhaustEscal = "role_exhausted_escalate"
+)
+
+// Candidate drop reasons of the lead/consult role-effort cap.
+const (
+	reasonAboveRoleEffort    = "above_role_effort"
+	reasonRoleEffortUnplaced = "role_effort_unplaced"
 )
 
 // roleExhausted handles a routed selection that admitted nothing. With no

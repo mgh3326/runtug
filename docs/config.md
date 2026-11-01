@@ -587,6 +587,34 @@ accept no `--grade`. An explicit grade returns exit 70 and the named rule
 `resolve --role consult` also take no grade. Other resolve roles default to
 grade `C`. Other plan roles require a grade.
 
+### Role effort for lead and consult
+
+A lead or consult never runs above its role's `effort` (`high` in the
+current table) unless the request passes `--allow-escalation`. This rule
+applies the same way to `spawn -m auto`, `plan`, and `resolve`. `delegate`
+routes only as implementer, explorer, verifier, or reviewer, so the cap does
+not apply to it.
+It does not use task grade. Other roles keep grade-driven selection and
+today's ordering.
+
+- A catalog rung above the role effort is not a candidate. Its row records
+  `above_role_effort`.
+- Suppose the family's role-effort rung is not placed. The seat rules drop
+  it, its gate refuses it, or the catalog has no such rung. For example,
+  `codex-sol@high` is an unplaced E6 seat and its gate refuses
+  `e6_arm_required`. Then runtug skips that family's higher rungs with
+  `role_effort_unplaced`. Selection falls through to the next family at the
+  role effort, for example `opus@high`. It does not climb to
+  `codex-sol@max`. The `routing.skipped` list names each skipped family,
+  the role effort, and the cause.
+- With `--allow-escalation`, a higher rung is a candidate again and ranks
+  by the usual pool order. If one is chosen, `routing.escalation` records
+  the profile, `role_effort`, `chosen_effort`, `by: allow_escalation`, and
+  the cause from the family's role-effort rung. `resolve` then prints
+  `effort=<chosen rung>` instead of the role effort.
+- An explicit `--effort` above the role effort also needs
+  `--allow-escalation`.
+
 The document remains v1. If it has no `consult` entry, runtug uses its
 `lead` rule with the distinct `consult` identity. Lead and consult always
 wait on exhaustion and never downgrade. Neither seat role can override its
@@ -734,12 +762,14 @@ the allowlist, and the exhaustion rule. The hk job metadata schema is
 unchanged.
 
 `runtug resolve --role lead|consult|implementer|explorer|verifier|reviewer|judge
-[--grade G] [--t T0..T3] [--builder-family F] [--harness KIND] [--json]` runs the same
+[--grade G] [--t T0..T3] [--builder-family F] [--harness KIND] [--allow-escalation] [--json]` runs the same
 selection core without a launch or job write. `--t` defaults to `T0`.
 Reviewer and judge require `--builder-family` to exclude that family.
 The result names the account and host selected now; it is not a reservation.
 The text answer ends with `profile=<profile> effort=<effort>`.
 `effort` is the role's starting effort, or the selected rung's when absent.
+For a lead or consult rung chosen above the role effort with
+`--allow-escalation`, `effort` is the chosen rung's.
 
 `--harness omp` restricts selection to OMP seats before quota ordering. For
 `--role implementer` or `--role explorer`, an OMP choice also returns
