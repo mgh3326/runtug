@@ -484,6 +484,12 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 	}
 	machine := a.machine()
 	excluded, _ := parseHosts(s.ExcludeHosts)
+	// A lead or consult has no grade, whatever the task title says; the
+	// placement plan clears it the same way (placeAuto, planHosts).
+	grade := req.grade
+	if req.route.top() {
+		grade = ""
+	}
 	add := func(name string, cfg map[string]any, local bool) {
 		h := selHost{name: name, local: local, cfg: cfg, presence: firstNonempty(str(cfg, "presence_id"), name)}
 		if local {
@@ -508,7 +514,7 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 		if slices.Contains(excluded, name) || s.Host != "" && s.Host != "auto" && s.Host != name && !(local && s.Host == "local") {
 			h.excluded = true
 		}
-		h.eligible = len(missingCaps(cfg, required)) == 0 && roleRefusal(cfg, req.role, req.grade) == ""
+		h.eligible = len(missingCaps(cfg, required)) == 0 && roleRefusal(cfg, req.role, grade) == ""
 		sp.hosts = append(sp.hosts, h)
 	}
 	add(machine, a.Config.Local, true)
