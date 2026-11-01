@@ -254,6 +254,22 @@ func sharedReason(key string, acc SharedAccount) string {
 	return ""
 }
 
+// selectedAccountReason names why the executing host cannot confirm that it
+// holds the selected account, or "" when it can. held is the account its own
+// fresh presence names; outside credit pools the shared reading must also be
+// observed, fresh and not degraded. Unknown evidence always refuses.
+func selectedAccountReason(selected, held string, acc SharedAccount, credit bool) string {
+	switch {
+	case held == "":
+		return "no_usable_presence"
+	case held != selected:
+		return "account_mismatch (host holds " + held + ")"
+	case credit:
+		return ""
+	}
+	return sharedReason(held, acc)
+}
+
 // quotaJudgment binds a gate attempt to its host and, for shared evidence, the
 // exact account passed to pacelever. Unknown evidence never invokes a local gate.
 type quotaJudgment struct {
