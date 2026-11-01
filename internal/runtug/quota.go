@@ -267,6 +267,9 @@ type quotaJudgment struct {
 	Basis string `json:"basis,omitempty"`
 	// Measured records an on-target measurement: "ok" or "failed".
 	Measured string `json:"measured,omitempty"`
+	// State is where the shared reading came from: the hub's fleet state or
+	// a direct read (fleet_state.go).
+	State *StateUse `json:"state,omitempty"`
 }
 
 // freeBasisPrefix opens the gate_basis of an admit that drew on a free bucket.
@@ -350,6 +353,7 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 	if !local {
 		j.Source, j.AccountKey = "shared", key
 		j.Reason = sharedReason(key, acc)
+		j.State = acc.State
 		// Every path that leaves this block with a reason refuses the host
 		// and records exactly one quota_observation event, here.
 		observed := ""

@@ -613,8 +613,15 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 	return launch, gate, nil
 }
 func (a *App) attachSelection(rec map[string]any, s Spawn) {
+	state := a.fleetStateRecord()
 	if s.Sel != nil {
+		if state != nil {
+			s.Sel["state"] = state
+		}
 		rec["selection"] = s.Sel
+	}
+	if state != nil {
+		rec["state"] = state
 	}
 	if s.OverrideReason != "" {
 		rec["override_reason"] = s.OverrideReason

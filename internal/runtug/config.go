@@ -120,6 +120,14 @@ func LoadConfig(path string) (Config, error) {
 			return c, fail(exitConfig, "hub.quota_gate accepts only local and contradicts hub_token_env")
 		}
 	}
+	if v, ok := c.Hub["state"]; ok && v != "on" && v != "off" {
+		return c, fail(exitConfig, "hub.state accepts only on or off")
+	}
+	if v, ok := c.Hub["state_publisher_ttl_s"]; ok {
+		if n, ok := v.(int64); !ok || n < 1 || n > 3600 {
+			return c, fail(exitConfig, "hub.state_publisher_ttl_s must be 1..3600")
+		}
+	}
 	if str(c.Hub, "hub_token_env") != "" && str(c.Hub, "hub_url") == "" {
 		return c, fail(exitConfig, "hub_token_env requires hub_url")
 	}
