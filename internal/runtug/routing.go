@@ -14,17 +14,13 @@ import (
 
 // Role routing (hk document policy/model-routing, operator 2026-11-01).
 //
-// A role table constrains the candidate set before policy/quota-stop orders
-// the pools: only the role's "allowed" catalog profiles are candidates, grade
-// and gate still apply, and when every allowed profile is exhausted the
-// role's on_exhaustion decides — wait or escalate refuse, downgrade_to retries
-// with only the listed profiles. Selection never falls back to a profile
-// outside the role.
+// The v1 table filters profiles before account quota ordering. Lead and
+// consult ignore task grade and require native top profiles. Other roles
+// retain grade, gate and seat constraints. Exhaustion never escapes the role.
 //
-// The table is read from hk at selection time and the last good copy is
-// cached under the runtug state dir. hk unreachable: the cache is used
-// (policy_source=cache@vN). No cache: lead and verifier are refused, every
-// other role proceeds unfiltered (policy_source=builtin_default).
+// A valid hk read refreshes the disk cache. If neither hk nor the cache is
+// usable, lead, consult and verifier refuse; other roles retain v1's
+// builtin_default fallback.
 
 const routingDocKey = "policy/model-routing"
 
@@ -48,15 +44,39 @@ type RoutingRule struct {
 }
 
 // routingRoles are the values --routing-role accepts.
-var routingRoles = []string{"lead", "implementer", "explorer", "verifier", "reviewer", "judge"}
+var routingRoles = []string{"lead", "consult", "implementer", "explorer", "verifier", "reviewer", "judge"}
 
 // routingStrictRoles are refused when neither hk nor a cached copy can say
 // which profiles they may run on.
-var routingStrictRoles = []string{"lead", "verifier"}
+var routingStrictRoles = []string{"lead", "consult", "verifier"}
 
 // builtinRoleMap maps seat roles to routing roles when no table is readable,
 // so a builder is still known to be a lead (and refused) without one.
-var builtinRoleMap = map[string]string{"builder": "lead", "worker": "implementer", "tester": "verifier", "reviewer": "reviewer", "counsel": "lead"}
+var builtinRoleMap = map[string]string{"builder": "lead", "worker": "implementer", "tester": "verifier", "reviewer": "reviewer", "counsel": "consult"}
+
+const noLeadGradeRule = "lead_consult_take_no_grade"
+
+var topProfiles = []string{"opus", "fable", "codex-sol", "codex-astra"}
+
+func topRoutingRole(role string) bool { return role == "lead" || role == "consult" }
+
+func (r *routing) top() bool { return r != nil && topRoutingRole(r.role) }
+
+func (r *routing) admitsSeat(s Seat) bool {
+	if !r.admits(s.Canon) {
+		return false
+	}
+	if !r.top() {
+		return true
+	}
+	switch s.Canon {
+	case "opus", "fable":
+		return s.Kind == "claude"
+	case "codex-sol", "codex-astra":
+		return s.Kind == "codex"
+	}
+	return false
+}
 
 const (
 	exhaustWait      = "wait"
@@ -249,6 +269,9 @@ type routing struct {
 }
 
 func (r *routing) admits(profile string) bool {
+	if r.top() && !slices.Contains(topProfiles, profile) {
+		return false
+	}
 	return r == nil || r.allowed == nil || slices.Contains(r.allowed, profile)
 }
 
@@ -258,11 +281,18 @@ func (a *App) routeFor(ctx context.Context, seatRole, override string) (*routing
 	if override != "" && !slices.Contains(routingRoles, override) {
 		return nil, fail(exitUsage, "--routing-role must be one of %s", strings.Join(routingRoles, "|"))
 	}
+	// Execution authority cannot be relabelled to escape lead admission.
+	if required := builtinRoleMap[seatRole]; topRoutingRole(required) {
+		if override != "" && override != required {
+			return nil, fail(exitSeatRefused, "NO_ROLE_CANDIDATE: --role %s requires routing role %s", seatRole, required)
+		}
+		override = required
+	}
 	p, source, e := a.routingPolicy(ctx)
 	if e != nil {
 		role := firstNonempty(override, builtinRoleMap[seatRole])
 		if slices.Contains(routingStrictRoles, role) {
-			return nil, fail(exitConfig, "routing role %s refused: %s unavailable (%v)", role, routingDocKey, e)
+			return nil, fail(exitConfig, "POLICY_UNAVAILABLE: routing role %s refused: %s unavailable (%v)", role, routingDocKey, e)
 		}
 		a.warn("%s unavailable (%v); %s proceeds unfiltered (builtin_default)", routingDocKey, e, firstNonempty(role, seatRole))
 		return &routing{role: role, source: routingSourceBuiltin}, nil
@@ -273,8 +303,16 @@ func (a *App) routeFor(ctx context.Context, seatRole, override string) (*routing
 		return r, nil
 	}
 	rule, ok := p.Roles[role]
+	if role == "consult" && !ok {
+		// v1 has no consult entry: counsel uses lead eligibility while keeping
+		// its distinct routing identity. No v2 document is required.
+		rule, ok = p.Roles["lead"]
+	}
 	if !ok {
-		return nil, fail(exitConfig, "%s v%d has no role %s", routingDocKey, p.Version, role)
+		return nil, fail(exitConfig, "POLICY_UNAVAILABLE: %s v%d has no role %s", routingDocKey, p.Version, role)
+	}
+	if topRoutingRole(role) {
+		rule.OnExhaustion, rule.DowngradeTo = exhaustWait, nil
 	}
 	r.rule = &rule
 	if !slices.Contains(rule.Allowed, "*") {
@@ -314,17 +352,6 @@ func (r *routing) record(refusal string) map[string]any {
 	return m
 }
 
-// quotaDrop reports whether a candidate's drop reason is quota exhaustion
-// (pool projection, an exhausted window, unreadable status, no presence or a
-// gate refusal) rather than a static mismatch (grade, gate class, seat).
-func quotaDrop(reason string) bool {
-	switch reason {
-	case "projected_exhaust", "window_exhausted", "quota_unknown", "no_presence":
-		return true
-	}
-	return strings.HasPrefix(reason, "gate_refused")
-}
-
 // Refusal reasons a role selection can end with.
 const (
 	reasonRoleNoCandidate  = "role_no_candidate"
@@ -342,7 +369,7 @@ func (a *App) roleExhausted(ctx context.Context, s Spawn, req selReq, p *selPlan
 	var earliest *float64
 	exhausted := 0
 	for _, c := range p.cands {
-		if !quotaDrop(c.reason) {
+		if c.code != outcomeQuotaExhausted {
 			continue
 		}
 		exhausted++
@@ -364,7 +391,7 @@ func (a *App) roleExhausted(ctx context.Context, s Spawn, req selReq, p *selPlan
 	}
 	if rt.downgradedFrom != "" {
 		p.routeRefusal = reasonRoleExhaustWait
-		return p, fail(exitRoleWait, "%s: role %s and its downgrade_to profiles (%s) are exhausted; earliest reset %s", reasonRoleExhaustWait, rt.downgradedFrom, allowed, reset)
+		return p, fail(exitRoleWait, "%s: QUOTA_EXHAUSTED: role %s and its downgrade_to profiles (%s) are exhausted; earliest reset %s%s", reasonRoleExhaustWait, rt.downgradedFrom, allowed, reset, hostScope(s))
 	}
 	switch rt.rule.OnExhaustion {
 	case exhaustDowngrade:
@@ -379,9 +406,9 @@ func (a *App) roleExhausted(ctx context.Context, s Spawn, req selReq, p *selPlan
 		return q, e
 	case exhaustEscalate:
 		p.routeRefusal = reasonRoleExhaustEscal
-		return p, fail(exitRoleEscalate, "%s: every %s profile (%s) is exhausted; ask the parent lane", reasonRoleExhaustEscal, rt.role, allowed)
+		return p, fail(exitRoleEscalate, "%s: QUOTA_EXHAUSTED: every eligible %s account (%s) is measured exhausted; ask the parent lane%s", reasonRoleExhaustEscal, rt.role, allowed, hostScope(s))
 	default:
 		p.routeRefusal = reasonRoleExhaustWait
-		return p, fail(exitRoleWait, "%s: every %s profile (%s) is exhausted; earliest reset %s", reasonRoleExhaustWait, rt.role, allowed, reset)
+		return p, fail(exitRoleWait, "%s: QUOTA_EXHAUSTED: every eligible %s account (%s) is measured exhausted; earliest reset %s%s", reasonRoleExhaustWait, rt.role, allowed, reset, hostScope(s))
 	}
 }

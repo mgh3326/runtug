@@ -204,7 +204,7 @@ func (a *App) delegateRun(ctx context.Context, d delegateReq, id, onlyFamily str
 	if err = os.WriteFile(paths.brief, []byte(delegatePreamble(o.role, o.patch, o.panel > 0, id, paths)+"\n\n"+d.body), 0600); err != nil {
 		return res, err
 	}
-	s := Spawn{CWD: work, Profile: "auto", Prompt: paths.brief, Workspace: o.workspace, Label: id, T: "T0", Job: id, Role: d.seatRole, Host: "auto", Report: paths.report, Grade: o.grade, ParentFamily: d.caller.family, Task: d.caller.task, ParentJob: d.caller.parent, OnlyFamily: onlyFamily, ExcludeFamilies: exclude, Unrouted: true}
+	s := Spawn{CWD: work, Profile: "auto", Prompt: paths.brief, Workspace: o.workspace, Label: id, T: "T0", Job: id, Role: d.seatRole, RoutingRole: d.routingRole(), Host: "auto", Report: paths.report, Grade: o.grade, ParentFamily: d.caller.family, Task: d.caller.task, ParentJob: d.caller.parent, OnlyFamily: onlyFamily, ExcludeFamilies: exclude}
 	if o.patch || o.headless {
 		s.Host = "local"
 		s.OverrideReason = "delegate " + map[bool]string{true: "--headless runs", false: "--patch uses a scratch checkout"}[o.headless] + " on this host"
@@ -235,6 +235,13 @@ func (a *App) delegateRun(ctx context.Context, d delegateReq, id, onlyFamily str
 }
 
 type delegatePaths struct{ brief, report, result, patch string }
+
+func (d delegateReq) routingRole() string {
+	if d.o.patch {
+		return "implementer"
+	}
+	return map[string]string{"reader": "explorer", "verifier": "verifier", "reviewer": "reviewer"}[d.o.role]
+}
 
 func isNumeric(s string) bool {
 	_, e := strconv.ParseUint(s, 10, 64)
@@ -458,6 +465,7 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 		return "", e
 	}
 	s.Profile, s.Effort = sel.chosen.seatName, firstNonempty(sel.chosen.row.Effort, s.Effort)
+	s.AccountKey, s.RoutingRole = sel.chosen.accountKey, sel.req.route.role
 	seat := a.Policy.Profiles[s.Profile]
 	shot, ok := oneShot[seat.Kind]
 	if !ok {
@@ -475,7 +483,7 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 	if e != nil {
 		return "", e
 	}
-	granted, e := arbiter.ParseGate(seat.gateName(), gate)
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
 	if e != nil {
 		return "", ledgerFail(e, "lease")
 	}

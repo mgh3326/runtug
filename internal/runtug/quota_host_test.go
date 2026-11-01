@@ -24,7 +24,8 @@ func TestCLIQuotaAccountReceipt(t *testing.T) {
 		{"text only", "pool=claude\n", 0, 70},
 		{"missing result", strings.ReplaceAll(good, `,"exit_code":0`, ""), 0, 70},
 		{"denied receipt", strings.ReplaceAll(good, `"ok":true`, `"ok":false`), 0, 70},
-		{"quota denial", good, 3, 3},
+		{"inconsistent blocked exit", good, 3, 3},
+		{"configuration error", "invalid gate configuration", exitConfig, exitConfig},
 		{"role denial", good, 5, 77},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,7 +212,7 @@ func TestSelectUsesRemoteAccountAfterLocalQuotaRefusal(t *testing.T) {
 	var judged []string
 	q.GateDo = func(r QuotaRequest) (string, error) {
 		judged = append(judged, r.AccountKey)
-		if r.AccountKey == "" {
+		if r.AccountKey == "claude:0000000000000001" {
 			return "", fail(3, "local quota exhausted")
 		}
 		if r.AccountKey != key {
@@ -220,41 +221,47 @@ func TestSelectUsesRemoteAccountAfterLocalQuotaRefusal(t *testing.T) {
 		return "pool=claude\n", nil
 	}
 	sel, err := a.selectProfile(context.Background(), s)
-	if err != nil || sel.chosen == nil || !reflect.DeepEqual(judged, []string{"", key}) {
+	if err != nil || sel.chosen == nil || !reflect.DeepEqual(judged, []string{"claude:0000000000000001", key}) {
 		t.Fatalf("judged=%v err=%v", judged, err)
 	}
 	gates := sel.chosen.judgments
-	if len(gates) != 2 || gates[1].Host != "host-b" || gates[1].AccountKey != key || gates[1].Outcome != "admitted" {
+	if len(gates) != 1 || gates[0].Host != "host-b" || gates[0].AccountKey != key || gates[0].Outcome != "admitted" {
 		t.Fatalf("host/account selection evidence: %+v", gates)
 	}
 	// The exact same evidence cannot admit an explicitly local placement.
 	s.Host = "local"
 	judged = nil
-	if _, err := a.selectProfile(context.Background(), s); err == nil || !reflect.DeepEqual(judged, []string{""}) {
+	if _, err := a.selectProfile(context.Background(), s); err == nil || !reflect.DeepEqual(judged, []string{"claude:0000000000000001"}) {
 		t.Fatalf("local override used remote account: %v %v", judged, err)
 	}
 	// A degraded remote account cannot rescue the refused local login.
 	s.Host = "auto"
 	src.accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true, Degraded: true}
 	judged = nil
-	if _, err := a.selectProfile(context.Background(), s); err == nil || !reflect.DeepEqual(judged, []string{""}) {
+	if _, err := a.selectProfile(context.Background(), s); err == nil || !reflect.DeepEqual(judged, []string{"claude:0000000000000001"}) {
 		t.Fatalf("degraded target admitted: %v %v", judged, err)
 	}
 }
 
-func TestSpawnHostLocalKeepsLocalQuota(t *testing.T) {
+func TestSpawnHostLocalRecordsLocalAccount(t *testing.T) {
 	a, s, _, _ := cmdFixture(t)
-	a.Source = &fakePlacementSource{presenceDo: func() []PresenceRecord { t.Fatal("--host local read remote account evidence"); return nil }}
+	const key = "example:0000000000000001"
+	a.Source = &fakePlacementSource{presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: a.Now()}}, accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true}}}
 	q := a.Quota.(*fakeQuota)
-	q.GateDo = func(r QuotaRequest) (string, error) {
-		if r.AccountKey != "" {
-			t.Fatalf("local gate named a remote account: %+v", r)
-		}
-		return "pool=example\n", nil
-	}
+	q.GateDo = func(r QuotaRequest) (string, error) { return "pool=example\n", nil }
 	if err := a.Spawn(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
+	evs, _ := a.events(s.Job)
+	for _, ev := range evs {
+		if ev.Kind == "job.placement" {
+			if sel, _ := ev.Payload["selection"].(map[string]any); sel["account_key"] != key {
+				t.Fatalf("local account receipt: %v", sel)
+			}
+			return
+		}
+	}
+	t.Fatal("missing placement receipt")
 }
 
 func TestPlacementRechecksAccountAfterWake(t *testing.T) {
@@ -312,7 +319,7 @@ func TestPlacementRechecksAccountAfterWake(t *testing.T) {
 	}
 }
 
-func TestSelectLocalGateDoesNotRequireLocalSharedEvidence(t *testing.T) {
+func TestSelectRequiresAccountEvidenceOnLocalHost(t *testing.T) {
 	for _, host := range []string{"auto", "local"} {
 		for _, mode := range []string{"missing local presence", "degraded local observation"} {
 			t.Run(host+"/"+mode, func(t *testing.T) {
@@ -332,17 +339,20 @@ func TestSelectLocalGateDoesNotRequireLocalSharedEvidence(t *testing.T) {
 				a.Config.Hosts = map[string]map[string]any{"host-b": {}}
 				a.Config.HostOrder = []string{"host-b"}
 				q.GateDo = func(r QuotaRequest) (string, error) {
-					if r.AccountKey != "" {
-						t.Fatalf("local admission unexpectedly selected a shared account: %+v", r)
+					if r.AccountKey != remote {
+						t.Fatalf("only the measured remote account may admit: %+v", r)
 					}
 					return "pool=claude\n", nil
 				}
 				sel, err := a.selectProfile(context.Background(), s)
-				if err != nil || sel.chosen == nil {
-					t.Fatalf("local gate was not selectable: %v", err)
+				if host == "local" {
+					if err == nil || sel.chosen != nil {
+						t.Fatal("local without usable account evidence admitted")
+					}
+					return
 				}
-				if len(sel.chosen.judgments) != 1 || sel.chosen.judgments[0].Source != "local" {
-					t.Fatalf("unexpected judgements: %+v", sel.chosen.judgments)
+				if err != nil || sel.chosen == nil || sel.chosen.accountKey != remote {
+					t.Fatalf("remote account was not selectable: %v", err)
 				}
 			})
 		}

@@ -46,6 +46,10 @@ func (q *fakeQuota) Gate(_ context.Context, r QuotaRequest) (string, error) {
 	return "pool=example profile=cmd-dsflash41\n", q.GateError
 }
 func (q *fakeQuota) Catalog(context.Context) ([]CatalogRow, error) {
+	if q.CatalogRows == nil && q.LaunchValue.Profile != "" {
+		l := q.LaunchValue
+		return []CatalogRow{{Profile: l.Profile, Effort: l.Effort, Grade: l.Grade, ModelID: l.ModelID, Gate: l.Gate, Pool: l.Pool}}, q.CatalogErr
+	}
 	return q.CatalogRows, q.CatalogErr
 }
 func (q *fakeQuota) Pools(context.Context) (map[string]PoolView, error) {
@@ -238,8 +242,10 @@ func TestSpawnDryRunShowsPreambleWithoutSideEffects(t *testing.T) {
 	if e := a.Spawn(context.Background(), s); e != nil {
 		t.Fatal(e)
 	}
-	if len(f.Calls) != 0 {
-		t.Fatalf("dry run executed %d commands", len(f.Calls))
+	for _, c := range f.Calls {
+		if c.Name != "handoffkeep" || strings.Join(c.Args, " ") != "doc get "+routingDocKey {
+			t.Fatalf("dry run mutated state: %+v", c)
+		}
 	}
 	if !strings.Contains(a.Out.(*bytes.Buffer).String(), "fleet-v1") {
 		t.Fatal("preamble missing")

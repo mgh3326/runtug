@@ -139,7 +139,7 @@ func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[s
 	if e6 && arm != s.Canon+"@"+l.Effort {
 		return fail(exitSeatRefused, "requires RUNTUG_E6_ARM=%s@%s", s.Canon, l.Effort)
 	}
-	if grade != "" {
+	if grade != "" && role != "builder" && role != "counsel" {
 		n, ok := gradeOrder[grade]
 		if !ok || gradeOrder[l.Grade] < n {
 			return fail(exitSeatRefused, "canon grade %s does not cover task grade %s", l.Grade, grade)
