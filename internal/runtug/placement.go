@@ -642,6 +642,7 @@ func (p *placePlan) record(chosen string) map[string]any {
 	if p.wake != nil {
 		rec["wake"] = p.wake
 	}
+	rec["ranking"] = p.ranking()
 	return rec
 }
 
@@ -1083,7 +1084,8 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	return candResult{rc: r.Code, note: fmt.Sprintf("refused rc=%d", r.Code), res: r}
 }
 
-func (a *App) place(ctx context.Context, s Spawn, brief string) (bool, map[string]any, error) {
+func (a *App) place(ctx context.Context, s Spawn, brief string) (handled bool, rec map[string]any, err error) {
+	defer func() { a.placementEvent(s, rec, err) }()
 	if s.Host != "auto" {
 		return a.placeForced(ctx, s, brief)
 	}

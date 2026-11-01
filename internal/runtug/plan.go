@@ -33,7 +33,8 @@ type planOpts struct {
 	allowEscalation, json                                                      bool
 }
 
-func (a *App) planCmd(ctx context.Context, args []string) error {
+func (a *App) planCmd(ctx context.Context, args []string) (err error) {
+	defer func() { a.refusalEvent("plan", "", err) }()
 	var o planOpts
 	f := flags("plan")
 	f.StringVar(&o.grade, "grade", "", "task grade (C, B, A, A+, S, S+)")
