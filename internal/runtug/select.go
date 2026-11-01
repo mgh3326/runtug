@@ -61,7 +61,7 @@ type FreeSet struct {
 	Models []string `json:"models"`
 }
 
-var poolTiers = []string{"free", "waste", "credit", "ranked"}
+var poolTiers = []string{"free", "waste", "ranked", "credit"}
 
 func LoadPoolPolicy(path string) (PoolPolicy, error) {
 	b := defaultPoolOrder
@@ -87,7 +87,10 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 // validate checks a decoded pool policy and fills absent thresholds with
 // their defaults. It is rerun after simulate's --policy-set overrides.
 func (p *PoolPolicy) validate() error {
-	if p.Version != 1 || len(p.Order) == 0 {
+	if p.Version != 2 {
+		return fail(exitConfig, "pool order policy version %d is unsupported; migrate to version 2 with order free,waste,ranked,credit and credit_pools anthropic-api,openai-api (docs/config.md)", p.Version)
+	}
+	if len(p.Order) == 0 {
 		return fail(exitConfig, "invalid pool order policy")
 	}
 	for _, tier := range poolTiers {
@@ -99,6 +102,9 @@ func (p *PoolPolicy) validate() error {
 		if !slices.Contains(poolTiers, tier) {
 			return fail(exitConfig, "unknown pool order tier %q", tier)
 		}
+	}
+	if slices.Index(p.Order, "credit") != len(p.Order)-1 {
+		return fail(exitConfig, "pool order policy v2 requires credit last, after ranked")
 	}
 	for _, fs := range p.Free {
 		if !validID(fs.Pool) {
@@ -201,6 +207,7 @@ type selReq struct {
 	// one (delegate --panel picks one seat per distinct family).
 	excludeFamilies []string
 	onlyFamily      string
+	harness         string
 	// route is the role routing decision (routing.go); nil filters nothing.
 	route *routing
 }
@@ -265,8 +272,10 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 	for _, name := range names {
 		seat := a.Policy.Profiles[name]
 		reason := ""
-		if !req.route.admitsSeat(seat) {
+		if !req.route.admitsSeat(seat, row.ModelID) {
 			reason = "role_filtered"
+		} else if req.harness != "" && seat.Kind != req.harness {
+			reason = "harness_filtered"
 		} else if row.Effort != "" && seat.Route != "" {
 			// A routed harness runs at its own default; it has no named rung.
 			reason = "seat_rung"
@@ -316,11 +325,21 @@ func (p PoolPolicy) isFree(row CatalogRow) bool {
 	return false
 }
 
+func (p PoolPolicy) isCredit(pool string) bool {
+	return slices.Contains(p.CreditPools, pool)
+}
+
 // tierOf assigns a tier from this account's view and the pool policy.
 // Cross-candidate ordering belongs to orderSelCands, not tier assignment.
 func (p PoolPolicy) tierOf(row CatalogRow, order []string, v PoolView) (string, int) {
 	if p.isFree(row) {
 		return "free", slices.Index(order, "free")
+	}
+	if v.Class == "exclude" {
+		return "", -1
+	}
+	if p.isCredit(row.Pool) || v.Class == "credit" {
+		return "credit", slices.Index(order, "credit")
 	}
 	if v.Status != "ok" || v.Stale || v.Class != "spend" {
 		return "", -1
@@ -328,9 +347,6 @@ func (p PoolPolicy) tierOf(row CatalogRow, order []string, v PoolView) (string, 
 	tier := "ranked"
 	if v.Projected != nil && *v.Projected < *p.WasteBelow || v.Projected == nil && v.Waste != nil && *v.Waste {
 		tier = "waste"
-	}
-	if slices.Contains(p.CreditPools, row.Pool) {
-		tier = "credit"
 	}
 	return tier, slices.Index(order, tier)
 }
@@ -348,7 +364,7 @@ func (p PoolPolicy) wasteRisk(row CatalogRow, free bool, v PoolView, ok bool) (b
 		return false, nil
 	}
 	unused := *v.Urgency * *v.ResetHours
-	if free || slices.Contains(p.CreditPools, row.Pool) || v.Status != "ok" || v.Stale || v.Class != "spend" {
+	if free || p.isCredit(row.Pool) || v.Status != "ok" || v.Stale || v.Class != "spend" {
 		return false, &unused
 	}
 	wr := p.WasteRisk
@@ -573,6 +589,16 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	}
 	pres := a.newSelPresence(ctx, s, req.tags)
 	p.degraded = append(p.degraded, pres.degraded...)
+	// API credit has no balance reader. Pool classes still carry the
+	// operator's exclusion, and the account-bound gate remains authoritative.
+	var creditViews map[string]PoolView
+	var creditErr error
+	if slices.ContainsFunc(rows, func(row CatalogRow) bool { return policy.isCredit(row.Pool) }) {
+		creditViews, creditErr = a.Quota.Pools(ctx)
+		if creditErr != nil {
+			p.degraded = append(p.degraded, "credit_pool_status_unavailable")
+		}
+	}
 	var pending []*selCand
 	for _, row := range rows {
 		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
@@ -624,6 +650,17 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			x := *c
 			x.accountKey, x.hosts = binding.key, binding.hosts
 			p.cands = append(p.cands, &x)
+			if policy.isCredit(row.Pool) {
+				if creditErr != nil {
+					x.reason, x.code, x.outcome = "quota_unknown", outcomeQuotaUnknown, "dropped:quota_unknown"
+					continue
+				}
+				p.classify(&x, creditViews[row.Pool])
+				if x.reason == "" {
+					pending = append(pending, &x)
+				}
+				continue
+			}
 			acc := pres.account(ctx, binding.key, row.Pool, binding.hosts, false)
 			if why := sharedReason(binding.key, acc); why != "" || acc.Quota == nil {
 				x.code = pres.accountFailureCode(binding.key)
@@ -724,7 +761,7 @@ func orderSelCands(pending []*selCand) {
 			return c
 		}
 		if x.ignoreGrade {
-			if c := cmp.Compare(slices.Index(topProfiles, x.row.Profile), slices.Index(topProfiles, y.row.Profile)); c != 0 {
+			if c := cmp.Compare(topProfileRank(x.row), topProfileRank(y.row)); c != 0 {
 				return c
 			}
 		}

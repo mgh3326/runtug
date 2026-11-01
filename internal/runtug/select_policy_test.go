@@ -49,14 +49,14 @@ func paceStatus(now time.Time, pools map[string]pace) string {
 // TestSelectionPolicyScenarios is the operator selection policy as a table:
 // a paid pool at waste risk (>= 20% projected unused at its reset) first, by
 // waste urgency; otherwise free first, then subscription quota that would be
-// wasted by reset, then credit, then ranked; never a pool projected to run
+// wasted by reset, then ranked, then credit; never a pool projected to run
 // out; the lowest grade that fits the task, then the lower projection, then
 // the smaller effort.
 // Seats come from policy.json and the pool order and projection thresholds
 // from the shipped pool-order policy.
 func TestSelectionPolicyScenarios(t *testing.T) {
-	// The credit pool has no automated balance reading yet (policy/quota-stop),
-	// so it is unknown and dropped unless a row gives it one.
+	// Credit has no automated balance reader and remains eligible after all
+	// subscription candidates are exhausted.
 	roomy := map[string]pace{"devin": {10, 0.5}, "claude": {15, 0.5}, "codex": {20, 0.5}}
 	// Paid pools near their projected cap: under 20% unused at reset, so not
 	// at waste risk.
@@ -206,11 +206,11 @@ func TestPoolPolicyProjectionThresholds(t *testing.T) {
 	}
 	dir := t.TempDir()
 	for body, ok := range map[string]bool{
-		`{"version":1,"order":["free","waste","credit","ranked"]}`:                                                                true,
-		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":80,"exclude_at_projected_pct":100}`:  true,
-		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":110,"exclude_at_projected_pct":100}`: false,
-		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":0}`:                                  true,
-		`{"version":1,"order":["free","waste","credit","ranked"],"exclude_at_projected_pct":0}`:                                   false,
+		`{"version":2,"order":["free","waste","ranked","credit"]}`:                                                                true,
+		`{"version":2,"order":["free","waste","ranked","credit"],"waste_below_projected_pct":80,"exclude_at_projected_pct":100}`:  true,
+		`{"version":2,"order":["free","waste","ranked","credit"],"waste_below_projected_pct":110,"exclude_at_projected_pct":100}`: false,
+		`{"version":2,"order":["free","waste","ranked","credit"],"waste_below_projected_pct":0}`:                                  true,
+		`{"version":2,"order":["free","waste","ranked","credit"],"exclude_at_projected_pct":0}`:                                   false,
 	} {
 		path := dir + "/p.json"
 		if e := os.WriteFile(path, []byte(body), 0600); e != nil {

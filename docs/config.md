@@ -89,6 +89,21 @@ Additional boolean capabilities can be named by custom seat policy rows. A
 missing or nonboolean capability fails closed. `standard` in seat policy means
 no additional host capability beyond local admission and proven harness startup.
 
+The embedded OMP profiles use the `omp` binary with standard host admission:
+
+| Profile | Harness | Model selector | Pool class | Pool |
+| --- | --- | --- | --- | --- |
+| `omp-opus` | `omp` | `anthropic/claude-opus-5-5` | `credit` | `anthropic-api` |
+| `omp-sonnet` | `omp` | `anthropic/claude-sonnet-5-5` | `credit` | `anthropic-api` |
+| `omp-sol` | `omp` | `openai/gpt-6.1-sol` | `credit` | `openai-api` |
+| `omp-terra61` | `omp` | `openai/gpt-6.1-terra` | `credit` | `openai-api` |
+
+OMP launches with `--model <provider/model>:<effort>` and uses `-p` for a
+headless delegate. Startup and brief delivery require a visible footer that
+matches the model, effort, and working directory. The catalog seed at
+[`catalog/omp-credit-seed.json`](catalog/omp-credit-seed.json) mirrors native
+grades and gates for each effort. The desk publishes the seed after merge.
+
 ## `[hub]`
 
 | Key | Meaning |
@@ -320,7 +335,8 @@ live bench catalog and pool status from the quota CLI, then orders candidates
 under the versioned pool-order policy (`[local].pool_policy` or
 `RUNTUG_POOL_POLICY`, else the embedded copy): paid pools at waste risk
 first (see below), then free pool/model sets, then WASTE subscription pools,
-then named credit pools, then ranked spend pools. Inside a tier the lowest catalog grade that satisfies the task wins,
+then ranked subscription pools, then credit pools. API credit is spent only
+after eligible subscription capacity. Inside a tier the lowest catalog grade that satisfies the task wins,
 then the pool with the higher waste urgency — the unused projected share
 (100 − projected) per hour until its longest account window's reset (7d,
 monthly; sub-daily windows such as a 5h rate window never rank a pool, they
@@ -328,6 +344,16 @@ stay admission gates only). A pool whose longest window's reset can be paced
 always ranks ahead of one whose cannot; unpaceable pools keep the lower
 projected use at reset (the used percentage when it cannot be paced yet) —
 then the smaller effort, then the catalog score.
+
+The pool-order policy is version `2`. A version `1` file supplied through
+`[local].pool_policy`, `RUNTUG_POOL_POLICY`, or `simulate --policy` is refused
+with exit 70 and a migration error. To migrate, copy
+`internal/runtug/pool-order.json`, retain any custom thresholds and free
+model sets, and set `version` to `2`. The order is
+`["free", "waste", "ranked", "credit"]`, and `credit_pools` includes both
+`anthropic-api` and `openai-api`. Version 2 requires credit last, after ranked.
+This version changes credit admission as well as the tier order: credit no
+longer requires a balance observation, but its pool class must remain readable.
 
 The projection is pacelever's pace: for each account-scope bucket in the
 quota status, used percentage ÷ elapsed share of its window, paced at the
@@ -367,10 +393,29 @@ Both keys live in the pool-order policy under `"waste_risk": {...}`; absent
 keys take the defaults, and `runtug simulate --policy`/`--policy-set` try
 other values before the policy is changed.
 
-Non-free candidates additionally need a
-readable `ok` nonstale spend status; every candidate needs fresh
+Subscription candidates additionally need a readable `ok` nonstale spend
+status. The named credit pools, `anthropic-api` and `openai-api`, have no
+balance reader and remain admissible without a balance observation. An
+operator pool class of `exclude` refuses them. Their selection record carries
+`tier=credit`, with absent balance values left unset.
+If the pool-status query fails, credit candidates are dropped as
+`QUOTA_UNKNOWN` with reason `quota_unknown` and the selection records
+`credit_pool_status_unavailable` in `degraded`. Healthy subscription candidates
+remain eligible. Remote placement and executing-host admission recheck credit
+pool classes and the selected login, then use the account-bound gate without
+requesting a balance refresh.
+The pool comes from the launch response, the selected account key, or the gate
+receipt. Every supplied pool must agree; a different pool refuses with exit 70,
+regardless of its class. The receipt may omit its pool when the launch or
+account key already provides one. If all three omit it, admission refuses.
+The resolved pool is passed to hub admission and the quota lease, with credit
+class checks before execution. Account-bound receipts still require the exact
+account key, v1 schema, approval flag, and exit status. Their `provider_id` is
+optional when the account key provides the pool, and must match when present.
+
+Every candidate needs fresh
 host-presence evidence for its quota account on a spawn-eligible host and a
-passing quota gate. Any unknown,
+passing quota gate. For subscription pools, any unknown,
 stale or degraded evidence drops the candidate — selection never guesses and
 fails closed. Every catalog row's outcome (grade, gate, policy tier,
 presence, quota or seat reason) is recorded on the `job.placement` event;
@@ -521,9 +566,17 @@ is refused before placement.
 
 `spawn --role builder` maps to routing role `lead`. `--role counsel` maps
 to `consult`. Both admit only `opus` and `fable` through `claude`, or
-`codex-sol` and `codex-astra` through `codex`. An `agy` or `pi` seat running
-an Anthropic model is ineligible. These constraints also apply to a wildcard
+`codex-sol` and `codex-astra` through `codex`. OMP also admits the exact model
+selectors `anthropic/claude-opus-5-5`, `anthropic/claude-fable-5-1`,
+`openai/gpt-6.1-sol`, and `openai/gpt-6-astra`.
+The shipped `omp-opus` and `omp-sol` profiles qualify. `omp-sonnet` and
+`omp-terra61` cannot lead or consult. An `agy` or `pi` seat running an
+Anthropic model is ineligible. These constraints also apply to a wildcard
 in the v1 table and to explicit profiles.
+
+The routing table's profile allowlist still applies. OMP profiles must be
+listed by name or covered by `"*"`. Catalog and launch model IDs are checked,
+so a top-profile name cannot admit a non-top OMP model.
 
 Task grade is recorded but does not filter or rank a lead or consult.
 `spawn --role builder`, `spawn --role counsel`, and their `plan` forms
@@ -639,12 +692,20 @@ the allowlist, and the exhaustion rule. The hk job metadata schema is
 unchanged.
 
 `runtug resolve --role lead|consult|implementer|explorer|verifier|reviewer|judge
-[--grade G] [--t T0..T3] [--builder-family F] [--json]` runs the same
+[--grade G] [--t T0..T3] [--builder-family F] [--harness KIND] [--json]` runs the same
 selection core without a launch or job write. `--t` defaults to `T0`.
 Reviewer and judge require `--builder-family` to exclude that family.
 The result names the account and host selected now; it is not a reservation.
 The text answer ends with `profile=<profile> effort=<effort>`.
 `effort` is the role's starting effort, or the selected rung's when absent.
+
+`--harness omp` restricts selection to OMP seats before quota ordering. For
+`--role implementer` or `--role explorer`, an OMP choice also returns
+`omp_agent` when a user agent's frontmatter `model:` exactly matches the
+selected `model_id`. Runtug reads only the frontmatter of regular Markdown
+files in `~/.omp/agent/agents/`, in filename order. The first matching agent's
+`name:` supplies the hint. Missing or malformed frontmatter leaves the JSON
+field absent. Text output appends `omp_agent=<name>` when available.
 
 ## Delegation
 

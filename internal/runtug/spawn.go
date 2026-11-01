@@ -375,7 +375,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e != nil {
 		return e
 	}
-	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, launch.Pool, gate)
 	if e != nil {
 		return ledgerFail(e, "lease")
 	}
@@ -519,7 +519,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e = a.deliver(ctx, seat.Kind, pane, pointer); e != nil {
 		return e
 	}
-	if seat.Kind == "pi" || seat.Kind == "cmd" {
+	if seat.Kind == "pi" || seat.Kind == "omp" || seat.Kind == "cmd" {
 		if e = a.modelProof(ctx, seat, launch, s.CWD, pane, pointer); e != nil {
 			return e
 		}
@@ -587,6 +587,9 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 	}
 	if topRoutingRole(s.RoutingRole) {
 		grade = ""
+		if !(&routing{role: s.RoutingRole}).admitsSeat(seat, launch.ModelID) {
+			return Launch{}, "", fail(exitSeatRefused, "NO_ROLE_CANDIDATE: model %s in harness %s cannot lead or consult", launch.ModelID, seat.Kind)
+		}
 	}
 	if e = seat.Check(launch, s.Role, grade, builderFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
 		return Launch{}, "", e
@@ -597,17 +600,41 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 		return Launch{}, "", fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
 	}
 	qr.Effort = launch.Effort
+	accountPool, _, _ := strings.Cut(s.AccountKey, ":")
+	pool, err := boundPool(launch.Pool, accountPool)
+	if err != nil {
+		return Launch{}, "", err
+	}
+	policy, err := a.poolPolicy()
+	if err != nil {
+		return Launch{}, "", err
+	}
 	if s.AccountKey != "" {
-		key, acc := a.remoteAccount(ctx, firstNonempty(launch.Pool, strings.SplitN(s.AccountKey, ":", 2)[0]), a.machine(), a.Config.Local)
-		if key != s.AccountKey || sharedReason(key, acc) != "" {
+		key, acc := a.remoteAccount(ctx, pool, a.machine(), a.Config.Local)
+		if key != s.AccountKey || !policy.isCredit(pool) && sharedReason(key, acc) != "" {
 			return Launch{}, "", fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: executing host no longer holds the selected account")
+		}
+	}
+	if policy.isCredit(pool) {
+		if err := a.creditPoolStatus(ctx, pool); err != nil {
+			return Launch{}, "", err
 		}
 	}
 	gate, e := a.Quota.Gate(ctx, qr)
 	if e != nil {
 		return Launch{}, "", e
 	}
-	if e = a.hubGate(ctx, s.CWD, gate); e != nil {
+	granted, err := admissionGate(seat.gateName(), s.AccountKey, pool, gate)
+	if err != nil {
+		return Launch{}, "", err
+	}
+	if pool == "" && policy.isCredit(granted.Pool) {
+		if err := a.creditPoolStatus(ctx, granted.Pool); err != nil {
+			return Launch{}, "", err
+		}
+	}
+	launch.Pool = granted.Pool
+	if e = a.hubGate(ctx, s.CWD, launch.Pool); e != nil {
 		return Launch{}, "", e
 	}
 	return launch, gate, nil

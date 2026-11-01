@@ -181,6 +181,13 @@ func (sp *selPresence) unknownJudgment(b accountBinding, why string) quotaJudgme
 
 func (p *selPlan) classify(c *selCand, v PoolView) {
 	c.blocking, c.projected, c.urgency, c.resetHrs = v.Blocking, v.Projected, v.Urgency, v.ResetHours
+	if p.policy.isCredit(c.row.Pool) || v.Class == "credit" {
+		c.tierName, c.tier = "credit", slices.Index(p.order, "credit")
+		if v.Class == "exclude" {
+			c.reason, c.code, c.outcome = "pool_excluded", outcomeNoRoleCandidate, "dropped:pool_excluded"
+		}
+		return
+	}
 	free := p.policy.isFree(c.row)
 	c.risk, c.unused = p.policy.wasteRisk(c.row, free, v, true)
 	if free {
@@ -238,33 +245,45 @@ func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *sel
 	}
 	// An earlier rung may have refreshed this account after candidates were
 	// ranked. Reuse its current reading before admitting another rung.
-	acc := sp.accounts[c.accountKey]
-	if why := sharedReason(c.accountKey, acc); why != "" || acc.Quota == nil {
-		c.code = sp.accountFailureCode(c.accountKey)
-		c.reason = strings.ToLower(c.code)
-		j := sp.unknownJudgment(accountBinding{key: c.accountKey, hosts: ordered}, why)
-		if cause := sp.refreshed[c.accountKey].err; cause != nil {
-			return []quotaJudgment{j}, cause
+	if c.tierName != "credit" {
+		acc := sp.accounts[c.accountKey]
+		if why := sharedReason(c.accountKey, acc); why != "" || acc.Quota == nil {
+			c.code = sp.accountFailureCode(c.accountKey)
+			c.reason = strings.ToLower(c.code)
+			j := sp.unknownJudgment(accountBinding{key: c.accountKey, hosts: ordered}, why)
+			if cause := sp.refreshed[c.accountKey].err; cause != nil {
+				return []quotaJudgment{j}, cause
+			}
+			return []quotaJudgment{j}, fail(exitEvictionUnconfirmed, "account quota remains unknown after refresh")
 		}
-		return []quotaJudgment{j}, fail(exitEvictionUnconfirmed, "account quota remains unknown after refresh")
-	}
-	p.classify(c, *acc.Quota)
-	if c.reason != "" {
-		j := quotaJudgment{Host: ordered[0].name, AccountKey: c.accountKey, Source: "shared", Outcome: "unknown", ExitCode: exitEvictionUnconfirmed, Reason: c.reason}
-		if ordered[0].local {
-			j.Source = "local"
+		p.classify(c, *acc.Quota)
+		if c.reason != "" {
+			j := quotaJudgment{Host: ordered[0].name, AccountKey: c.accountKey, Source: "shared", Outcome: "unknown", ExitCode: exitEvictionUnconfirmed, Reason: c.reason}
+			if ordered[0].local {
+				j.Source = "local"
+			}
+			if c.code == outcomeQuotaExhausted {
+				j.Outcome, j.ExitCode = "refused", 3
+			}
+			return []quotaJudgment{j}, fail(j.ExitCode, "%s: %s", c.code, c.reason)
 		}
-		if c.code == outcomeQuotaExhausted {
-			j.Outcome, j.ExitCode = "refused", 3
-		}
-		return []quotaJudgment{j}, fail(j.ExitCode, "%s: %s", c.code, c.reason)
 	}
 	var judgments []quotaJudgment
 	var last error
 	for _, h := range ordered {
 		acc := sp.accounts[c.accountKey]
-		j, err := sp.a.judgeHost(ctx, qr, c.row.Pool, h.name, h.local, c.accountKey, acc)
-		if err != nil && gateOutcome(err) == outcomeQuotaUnknown {
+		var j quotaJudgment
+		var err error
+		if c.tierName == "credit" {
+			source := "shared"
+			if h.local {
+				source = "local"
+			}
+			j, err = sp.a.judgeGate(ctx, qr, c.row.Pool, quotaJudgment{Host: h.name, AccountKey: c.accountKey, Source: source})
+		} else {
+			j, err = sp.a.judgeHost(ctx, qr, c.row.Pool, h.name, h.local, c.accountKey, acc)
+		}
+		if err != nil && c.tierName != "credit" && gateOutcome(err) == outcomeQuotaUnknown {
 			if _, refreshed := sp.refreshed[c.accountKey]; !refreshed {
 				acc = sp.account(ctx, c.accountKey, c.row.Pool, c.hosts, true)
 				if cause := sp.refreshed[c.accountKey].err; cause != nil {

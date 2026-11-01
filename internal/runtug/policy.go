@@ -60,7 +60,7 @@ func (s Seat) needsEffort() bool {
 	switch s.Kind {
 	case "claude":
 		return s.Route == ""
-	case "codex", "grok", "pi", "cmd", "kimi", "kiro":
+	case "codex", "grok", "pi", "omp", "cmd", "kimi", "kiro":
 		return true
 	}
 	return false

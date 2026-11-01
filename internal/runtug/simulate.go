@@ -466,7 +466,7 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 			c.risk, c.unused = policy.wasteRisk(row, free, v, true)
 			// A free rung is excluded only by an observed free limit, never by
 			// its shared pool's used or projected share.
-			if c.reason == "" && !free {
+			if c.reason == "" && !free && !policy.isCredit(row.Pool) && v.Class != "credit" {
 				c.reason = policy.exhaustReason(v, c.risk)
 			}
 		}
@@ -516,24 +516,13 @@ func (a *App) simulate(ctx context.Context, args []string) error {
 }
 
 // simTierOf is PoolPolicy.tierOf for simulate: the free flag on the input
-// candidate (or the policy free set) decides the free tier, and every pool is
-// expected in the input table — pools without an entry are quota_unknown.
+// candidate (or the policy free set) decides the free tier. Credit has no
+// balance reader; other pools without an entry are quota_unknown.
 func simTierOf(policy PoolPolicy, row CatalogRow, free bool, pools map[string]PoolView) (string, int) {
 	if free {
 		return "free", slices.Index(policy.Order, "free")
 	}
-	v, ok := pools[row.Pool]
-	if !ok || v.Status != "ok" || v.Stale || v.Class != "spend" {
-		return "", -1
-	}
-	tier := "ranked"
-	if v.Projected != nil && *v.Projected < *policy.WasteBelow || v.Projected == nil && v.Waste != nil && *v.Waste {
-		tier = "waste"
-	}
-	if slices.Contains(policy.CreditPools, row.Pool) {
-		tier = "credit"
-	}
-	return tier, slices.Index(policy.Order, tier)
+	return policy.tierOf(row, policy.Order, pools[row.Pool])
 }
 
 // policySetKeys are the pool-policy thresholds `simulate --policy-set` may
