@@ -173,15 +173,18 @@ type placeCandidate struct {
 	// can only refuse the spawn — offering it would burn a delegation round
 	// and its rc70 refusal would stop the whole round early.
 	missingCap string
-	awake      bool
-	wakeable   bool
-	excluded   string
-	login      string
-	judgment   *quotaJudgment
-	load       *float64
-	score      *float64
-	over       bool
-	outcome    string
+	// roleRefusal names a role or grade the host's roles/grades lists do
+	// not accept (host_fit.go).
+	roleRefusal string
+	awake       bool
+	wakeable    bool
+	excluded    string
+	login       string
+	judgment    *quotaJudgment
+	load        *float64
+	score       *float64
+	over        bool
+	outcome     string
 	// preflight is the remote-spawn preflight of a candidate the placement
 	// refused; it names why the host was not usable.
 	preflight *hostPreflight
@@ -434,7 +437,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 	presTTL := a.placementTTL("presence_ttl_s", 86400)
 	enum := []placeCandidate{}
 	machine := a.machine()
-	local := placeCandidate{name: machine, cfg: a.Config.Local, local: true, awake: true, tags: stringsValue(a.Config.Local, "tags")}
+	local := placeCandidate{name: machine, cfg: a.Config.Local, local: true, awake: true, tags: hostCaps(a.Config.Local)}
 	if !boolean(a.Config.Local, "spawn", true) {
 		local.excluded = "spawn_disabled"
 	}
@@ -474,7 +477,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 	enum = append(enum, local)
 	for i, name := range a.remoteHostNames() {
 		h := a.Config.Hosts[name]
-		c := placeCandidate{name: name, cfg: h, order: i + 1, tags: stringsValue(h, "tags"), wakeable: str(h, "wake") == "panewire"}
+		c := placeCandidate{name: name, cfg: h, order: i + 1, tags: hostCaps(h), wakeable: str(h, "wake") == "panewire"}
 		if hv, reported := hub[name]; reported {
 			switch {
 			case strings.Contains(hv.Reason, "not_accepting"):
@@ -507,15 +510,12 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		if c.excluded == "" && slices.Contains(excluded, c.name) {
 			c.excluded = "excluded_host"
 		}
-		for _, t := range required {
-			if !slices.Contains(c.tags, t) {
-				c.missing = append(c.missing, t)
-			}
-		}
+		c.missing = missingCaps(c.cfg, required)
 		if needCap != "" && !boolean(c.cfg, needCap, false) {
 			c.missingCap = needCap
 		}
-		c.eligible = len(c.missing) == 0 && c.missingCap == ""
+		c.roleRefusal = roleRefusal(c.cfg, s.Role, s.TaskGrade)
+		c.eligible = len(c.missing) == 0 && c.missingCap == "" && c.roleRefusal == ""
 		if !c.over && c.load != nil && *c.load >= threshold {
 			c.over = true
 		}
@@ -524,6 +524,8 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 			c.outcome = c.excluded
 		case c.missingCap != "":
 			c.outcome = "missing_capability:" + c.missingCap
+		case c.roleRefusal != "":
+			c.outcome = c.roleRefusal
 		case !c.eligible:
 			c.outcome = "missing_tags:" + strings.Join(c.missing, ",")
 		case c.awake:
@@ -1106,6 +1108,13 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	}
 	waited := taskWaited(task, a.Now())
 	pool := a.quotaPool(ctx, s)
+	s.TaskGrade = s.Grade
+	if m := taskMarker.FindStringSubmatch(task.Title); s.TaskGrade == "" && m != nil {
+		s.TaskGrade = strings.ToUpper(m[1])
+	}
+	if topRoutingRole(s.RoutingRole) {
+		s.TaskGrade = ""
+	}
 	p, e := a.plan(ctx, s, pool, waited)
 	if e != nil {
 		return true, nil, e

@@ -140,6 +140,7 @@ func (a *App) planHosts(ctx context.Context, s Spawn, grade string) (*placePlan,
 		grade = ""
 	}
 	pool := a.quotaPool(ctx, s)
+	s.TaskGrade = grade
 	p, e := a.plan(ctx, s, pool, 0)
 	if e != nil {
 		return nil, "", e
