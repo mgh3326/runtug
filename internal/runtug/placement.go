@@ -51,6 +51,9 @@ type SharedAccount struct {
 	Degraded   bool
 	MeasuredAt time.Time
 	Quota      *PoolView
+	// State names the source that answered: the hub's fleet state or the
+	// direct shared-cache read (fleet_state.go). Nil for a direct source.
+	State *StateUse
 }
 
 // PlacementSource supplies the external reads a placement decision needs:

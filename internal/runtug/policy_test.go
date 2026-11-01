@@ -86,7 +86,7 @@ func TestSeatPolicy(t *testing.T) {
 	}
 }
 func TestHostsConfigFailClosed(t *testing.T) {
-	for _, input := range []string{"[local]\nspawn = 'true'", "[local]\nspawn=true\nspawn=false", "[hub]\nquota_gate='typo'", "[hub]\nhub_token_env='TOKEN'", "spawn=true", "[local]\npi_anthropic=1"} {
+	for _, input := range []string{"[local]\nspawn = 'true'", "[local]\nspawn=true\nspawn=false", "[hub]\nquota_gate='typo'", "[hub]\nstate='maybe'", "[hub]\nstate_publisher_ttl_s=0", "[hub]\nhub_token_env='TOKEN'", "spawn=true", "[local]\npi_anthropic=1"} {
 		t.Run(input, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hosts.toml")
 			if e := os.WriteFile(path, []byte(input), 0600); e != nil {
