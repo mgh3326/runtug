@@ -240,3 +240,33 @@ func TestPlacementPlanHostFit(t *testing.T) {
 		t.Fatalf("cloud-small outcome %q", c.outcome)
 	}
 }
+
+// A lead or consult has no grade: the task title's grade marker must not let
+// a grade-limited host accept it (placement clears it the same way).
+func TestHostFitLeadIgnoresStaleTaskGrade(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		place    map[string]string
+		load     map[string]float64
+		wantHost string
+	}{
+		{"lead only on the grade-limited host", map[string]string{"cloud-tiny": testClaudeB}, nil, ""},
+		{"lead goes to the unlimited host", map[string]string{"cloud-tiny": testClaudeB, "mac-b": testClaudeB}, map[string]float64{"cloud-tiny": 0.0, "mac-b": 0.9}, "mac-b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Task title "(grade A, T1)": A is in cloud-tiny's grades list.
+			a, s, _, _ := hostFirstFixture(t, "builder", "A", leadRows, tc.place, tc.load)
+			delete(a.Config.Hosts["cloud-tiny"], "roles")
+			sel, err := a.selectProfile(context.Background(), s)
+			if tc.wantHost == "" {
+				if err == nil {
+					t.Fatalf("a lead was admitted on a grade-limited host: %s", sel.chosen.host)
+				}
+				return
+			}
+			if err != nil || sel.chosen.host != tc.wantHost {
+				t.Fatalf("want %s: %v %+v", tc.wantHost, err, sel)
+			}
+		})
+	}
+}
