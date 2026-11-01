@@ -78,7 +78,8 @@ local_delete_at = "drive_confirmed"
 | `pi_anthropic` | `false` | Literal capability opt-in required by pi policy rows. |
 | `cmd_dsflash41` | `false` | Literal capability opt-in required by cmd policy rows. The provisioned cmd account must have no persisted MCP servers. |
 | `clinepass` | `false` | Literal capability opt-in required by the `cc-*` seats, which route the Claude Code harness through the host's local ClinePass proxy (`CLINEPASS_GATE_URL`, key read at spawn time from `CLINEPASS_GATE_KEY_FILE`; defaults are a loopback URL and `~/.config/cliproxyapi-key.txt`). |
-| `tags` | unset | Capability tags offered by this host for job placement (`spawn --tags`). Lowercase tag names. |
+| `tags` | unset | Capability tags offered by this host for job placement (`spawn --tags`). Lowercase tag names. `caps` is an alias; both lists merge. |
+| `roles`, `grades` | unset | Light-host limits, as for [`[hosts.NAME]`](#hostsname): the spawn roles and task grades this machine accepts. |
 | `presence_id` | `machine_id` | Identity this host uses in pacelever host-presence records. |
 | `brief_policy` | embedded policy | Path to the versioned brief-policy JSON; leading `~/` expands. |
 | `brief_preamble` | selected policy block | Explicit named preamble block for this host. |
@@ -135,7 +136,9 @@ Panewire owns authentication and relay transport; runtug never prints credential
 | `cwd_keys` | legacy | Kept for legacy hub configurations; not used. A hub host's cwd key is the canonical repo name. |
 | `hub_wait` | `120` | `via = "hub"` only: seconds (1..300) the hub waits for the node to answer a spawn. A first spawn that clones a large repo may need more. |
 | `brief_doc_prefix` | `briefs/` | `via = "hub"` only: handoffkeep key prefix the brief is uploaded under; it must match the node's own `brief_doc_prefix` (ends in `/`). |
-| `tags` | unset | Capability tags offered by this host. A job's required `--tags` must be a subset for the host to be a placement candidate. |
+| `tags` | unset | Capability tags offered by this host (`caps` is an alias; both lists merge). A job's required `--tags` must be a subset for the host to be a placement candidate. A capability the host does not declare is unknown and fails closed for this host only: the host is excluded for jobs that need it and stays eligible for every other job. See [Host capabilities and light hosts](#host-capabilities-and-light-hosts). |
+| `roles` | unset (all) | Nonempty list of spawn roles (`worker`, `builder`, `tester`, `reviewer`, `counsel`) this host accepts. Other roles record `role_not_accepted:<role>`. |
+| `grades` | unset (all) | Nonempty list of task grades (`C`, `B`, `A`, `A+`, `S`, `S+`) this host accepts. Other grades record `grade_not_accepted:<grade>`; a lead or consult has no grade and records `grade_not_accepted:none`. |
 | `presence_id` | host `NAME` | Identity this host uses in pacelever host-presence records. |
 | `capacity` | unset | Inventory value displayed by hosts. Authoritative capacity comes from panewire placement and remote admission. |
 | `heavy` | legacy | Accepted and ignored; the `heavy` command and its host lock were removed. |
@@ -155,6 +158,51 @@ on the target or any failing step refuses the spawn with exit 81 — it never
 tries another host or falls back to local. An explicit `cwd_map` entry decides
 the worktree path (its clone is the canonical repo name beside it); an
 unreachable host is skipped as before. `--dry-run` prepares nothing.
+
+### Host capabilities and light hosts
+
+Declare what each machine can run, and limit small machines to light work.
+Capabilities use the `--tags` vocabulary: `macos`, `linux`, `unity`,
+`xcode`, `gpu`, `heavy-go`. A task needing a capability goes only to hosts
+that declare it; the others still get the work they can do.
+
+Recommended declarations by machine class:
+
+| Machine class | `tags` | Limits |
+| --- | --- | --- |
+| macOS development machines | `["macos", "unity", "xcode"]` | none |
+| Linux desktop | `["linux", "unity", "gpu"]` | none |
+| Small cloud VM | `["linux"]` | none; no `unity` |
+| One-core cloud VM | `["linux"]` | `roles = ["worker", "tester", "reviewer"]`, `grades = ["C", "B", "A"]` (no lead, no heavy grade) |
+| Raspberry Pi | `["linux"]` | `roles = ["worker", "tester"]`, `grades = ["C", "B"]` (Python and docs work) |
+
+```toml
+[hosts.mac-b]
+tags = ["macos", "unity", "xcode"]
+
+[hosts.linux-desk]
+tags = ["linux", "unity", "gpu"]
+
+[hosts.cloud-small]
+tags = ["linux"]
+
+[hosts.cloud-tiny]
+tags = ["linux"]
+roles = ["worker", "tester", "reviewer"]
+grades = ["C", "B", "A"]
+
+[hosts.pi]
+tags = ["linux"]
+roles = ["worker", "tester"]
+grades = ["C", "B"]
+```
+
+These are recommendations, not code defaults: a host without `tags` declares
+no capability. An invalid `roles` or `grades` value refuses the config with
+exit 70. Automatic selection applies the limits like `tags`, also under
+`--host NAME`. A pinned `-m` with a forced `--host NAME` skips placement, so
+neither tags nor limits are checked there; that override needs
+`--override-reason`, which is recorded.
 
 ### Hub transport (`via = "hub"`)
 
@@ -662,6 +710,9 @@ the final check, including model and free buckets. A host-scoped gate failure
 tries the next holder of that account. An account-scoped quota refusal ends
 that account attempt without retrying the same quota on another host. Local
 judgments retain `source=local` and the selected account key.
+
+When no host declares a required capability, the `NO_ELIGIBLE_HOST` refusal
+names it (`no host declares cap unity`).
 
 After choosing an account, placement considers only hosts holding it. The
 executing host checks the current binding again before launch. An explicit

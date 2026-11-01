@@ -153,11 +153,17 @@ func LoadConfig(path string) (Config, error) {
 		if e := validTags(h["tags"], "hosts."+name+".tags"); e != nil {
 			return c, e
 		}
+		if e := validHostFit(h, "hosts."+name); e != nil {
+			return c, e
+		}
 		if v := str(h, "presence_id"); v != "" && !validID(v) {
 			return c, fail(exitConfig, "hosts.%s.presence_id must be a machine ID", name)
 		}
 	}
 	if e := validTags(c.Local["tags"], "local.tags"); e != nil {
+		return c, e
+	}
+	if e := validHostFit(c.Local, "local"); e != nil {
 		return c, e
 	}
 	if v := str(c.Local, "presence_id"); v != "" && !validID(v) {

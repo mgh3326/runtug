@@ -196,6 +196,9 @@ type selPlan struct {
 	// escalation records a chosen rung above the role effort.
 	roleSkips  []map[string]any
 	escalation map[string]any
+	// capsGap names required caps no usable host declares, for the
+	// refusal text (host_fit.go).
+	capsGap string
 }
 type selReq struct {
 	grade           string
@@ -466,7 +469,8 @@ type selPresence struct {
 	refreshed map[string]accountRefresh
 }
 
-func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *selPresence {
+func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPresence {
+	required := req.tags
 	sp := &selPresence{a: a, now: a.Now(), presTTL: a.placementTTL("presence_ttl_s", 86400), accounts: map[string]SharedAccount{}, refreshed: map[string]accountRefresh{}}
 	sp.hub, sp.degraded = a.hostViews(ctx, s.CWD)
 	if a.Source == nil {
@@ -480,6 +484,12 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *s
 	}
 	machine := a.machine()
 	excluded, _ := parseHosts(s.ExcludeHosts)
+	// A lead or consult has no grade, whatever the task title says; the
+	// placement plan clears it the same way (placeAuto, planHosts).
+	grade := req.grade
+	if req.route.top() {
+		grade = ""
+	}
 	add := func(name string, cfg map[string]any, local bool) {
 		h := selHost{name: name, local: local, cfg: cfg, presence: firstNonempty(str(cfg, "presence_id"), name)}
 		if local {
@@ -504,12 +514,7 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, required []string) *s
 		if slices.Contains(excluded, name) || s.Host != "" && s.Host != "auto" && s.Host != name && !(local && s.Host == "local") {
 			h.excluded = true
 		}
-		h.eligible = true
-		for _, t := range required {
-			if !slices.Contains(stringsValue(cfg, "tags"), t) {
-				h.eligible = false
-			}
-		}
+		h.eligible = len(missingCaps(cfg, required)) == 0 && roleRefusal(cfg, req.role, grade) == ""
 		sp.hosts = append(sp.hosts, h)
 	}
 	add(machine, a.Config.Local, true)
@@ -591,7 +596,8 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	if e != nil {
 		return nil, fail(exitConfig, "POLICY_UNAVAILABLE: bench catalog unreadable: %v", e)
 	}
-	pres := a.newSelPresence(ctx, s, req.tags)
+	pres := a.newSelPresence(ctx, s, req)
+	p.capsGap = capsGap(pres.hosts, req.tags)
 	p.degraded = append(p.degraded, pres.degraded...)
 	// API credit has no balance reader. Pool classes still carry the
 	// operator's exclusion, and the account-bound gate remains authoritative.

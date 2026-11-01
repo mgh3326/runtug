@@ -50,6 +50,9 @@ type Spawn struct {
 	// time and stale at spawn time only because the two hosts set (or
 	// default) fresh_ttl_s differently.
 	FreshTTLS int64 `json:"fresh_ttl_s,omitempty"`
+	// TaskGrade is the grade placement checks against a host's grades
+	// list, empty for lead and consult.
+	TaskGrade string `json:"-"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {

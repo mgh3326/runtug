@@ -335,7 +335,11 @@ func (a *App) selectionRefused(ctx context.Context, s Spawn, req selReq, p *selP
 		}
 		p.outcome = code
 		exit := map[string]int{outcomeQuotaUnknown: exitQuotaUnknown, outcomeAuthUnavailable: exitAuthUnavailable, outcomeNoEligibleHost: exitPlacement, outcomePolicyUnavailable: exitConfig, outcomeNoRoleCandidate: exitSeatRefused}[code]
-		return p, fail(exit, "%s: no account admitted routing role %s%s", code, routingRole(req), hostScope(s))
+		gap := ""
+		if code == outcomeNoEligibleHost {
+			gap = p.capsGap
+		}
+		return p, fail(exit, "%s: no account admitted routing role %s%s%s", code, routingRole(req), hostScope(s), gap)
 	}
 	if slices.ContainsFunc(accounts, func(c *selCand) bool { return c.code == outcomeQuotaExhausted }) {
 		p.outcome = outcomeQuotaExhausted
