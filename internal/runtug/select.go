@@ -196,8 +196,9 @@ type selPlan struct {
 	// escalation records a chosen rung above the role effort.
 	roleSkips  []map[string]any
 	escalation map[string]any
-	// capsGap names required caps no usable host declares, for the
-	// refusal text (host_fit.go).
+	// hosts explains host-first admission per host (host_fit.go); capsGap
+	// names required caps no usable host declares, for the refusal text.
+	hosts   []hostTrace
 	capsGap string
 }
 type selReq struct {
@@ -452,6 +453,12 @@ type selHost struct {
 	excluded bool
 	load     *float64
 	score    *float64
+	// over marks a host at or above its load threshold (local
+	// max_load_ratio, else placement.load_threshold); it ranks last among
+	// awake hosts. fit names why the host cannot take this work at all
+	// (host_fit.go), "" when it can.
+	over bool
+	fit  string
 }
 
 // selPresence snapshots eligible hosts and their current account bindings for
@@ -467,11 +474,15 @@ type selPresence struct {
 	now       time.Time
 	degraded  []string
 	refreshed map[string]accountRefresh
+	// unreachable names hosts a refresh could not reach this round;
+	// host-first admission skips them (a holder that completed a refresh is
+	// known reachable, one that failed is not).
+	unreachable map[string]string
 }
 
 func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPresence {
 	required := req.tags
-	sp := &selPresence{a: a, now: a.Now(), presTTL: a.placementTTL("presence_ttl_s", 86400), accounts: map[string]SharedAccount{}, refreshed: map[string]accountRefresh{}}
+	sp := &selPresence{a: a, now: a.Now(), presTTL: a.placementTTL("presence_ttl_s", 86400), accounts: map[string]SharedAccount{}, refreshed: map[string]accountRefresh{}, unreachable: map[string]string{}}
 	sp.hub, sp.degraded = a.hostViews(ctx, s.CWD)
 	if a.Source == nil {
 		sp.presErr = true
@@ -484,12 +495,16 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 	}
 	machine := a.machine()
 	excluded, _ := parseHosts(s.ExcludeHosts)
+	threshold := a.loadThreshold()
 	add := func(name string, cfg map[string]any, local bool) {
 		h := selHost{name: name, local: local, cfg: cfg, presence: firstNonempty(str(cfg, "presence_id"), name)}
 		if local {
 			h.presence = firstNonempty(str(cfg, "presence_id"), machine)
 			h.awake = true
 			h.load = a.localLoad(ctx)
+			if hv, reported := sp.hub[name]; reported {
+				h.score = hv.Score
+			}
 			if !boolean(cfg, "spawn", true) {
 				h.excluded = true
 			}
@@ -508,7 +523,28 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 		if slices.Contains(excluded, name) || s.Host != "" && s.Host != "auto" && s.Host != name && !(local && s.Host == "local") {
 			h.excluded = true
 		}
-		h.eligible = len(missingCaps(cfg, required)) == 0 && roleRefusal(cfg, req.role, req.grade) == ""
+		// The same pressure rule as the placement plan: the local
+		// max_load_ratio guard (an unreadable load counts as pressured),
+		// then the fleet load threshold for every host.
+		if maxRatio, guard := number(cfg, "max_load_ratio"); local && guard && (h.load == nil || *h.load >= maxRatio) {
+			h.over = true
+		}
+		if h.load != nil && *h.load >= threshold {
+			h.over = true
+		}
+		missing := missingCaps(cfg, required)
+		refusal := roleRefusal(cfg, req.role, req.grade)
+		h.eligible = len(missing) == 0 && refusal == ""
+		switch {
+		case h.excluded:
+			h.fit = "excluded"
+		case len(missing) > 0:
+			h.fit = "missing_caps:" + strings.Join(missing, ",")
+		case refusal != "":
+			h.fit = refusal
+		case !h.awake && !h.wakeable:
+			h.fit = "disconnected"
+		}
 		sp.hosts = append(sp.hosts, h)
 	}
 	add(machine, a.Config.Local, true)
@@ -694,26 +730,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	}
 	orderSelCands(pending)
 	p.ranked = pending
-	for _, c := range pending {
-		if p.chosen != nil {
-			c.outcome = "below_choice"
-			continue
-		}
-		qr := QuotaRequest{Profile: c.seat.Canon, GateProfile: c.seat.gateName(), Effort: c.row.Effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose, AccountKey: c.accountKey}
-		judgments, err := pres.admitAccount(ctx, qr, c, p)
-		c.judgments = append(c.judgments, judgments...)
-		if err != nil {
-			if c.reason == "" {
-				c.reason, c.code = fmt.Sprintf("gate_refused:%d", exitCode(err)), gateOutcome(err)
-				c.outcome = "dropped:gate_refused"
-			} else {
-				c.outcome = "dropped:" + c.reason
-			}
-			continue
-		}
-		c.host, c.outcome, c.code = judgments[len(judgments)-1].Host, "chosen", outcomeAdmitted
-		p.chosen, p.outcome = c, outcomeAdmitted
-	}
+	pres.admitHostFirst(ctx, s, p, pending)
 	p.markRoleEffort(roleCap)
 	if p.chosen == nil {
 		return a.selectionRefused(ctx, s, req, p)
@@ -973,6 +990,14 @@ func (p *selPlan) record() map[string]any {
 	}
 	if len(p.degraded) > 0 {
 		rec["degraded"] = p.degraded
+	}
+	if p.hosts != nil {
+		hosts := []any{}
+		for _, t := range p.hosts {
+			hosts = append(hosts, t.record())
+		}
+		rec["hosts"] = hosts
+		rec["host_rule"] = "hosts that fit (caps, roles, grades, hub availability) ranked by load bucket, then hub score or load; on each host its present accounts in pool order; first admitted pair wins"
 	}
 	if p.req.route != nil {
 		rt := p.req.route.record(p.routeRefusal)

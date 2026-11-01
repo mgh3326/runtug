@@ -135,6 +135,9 @@ func (sp *selPresence) account(ctx context.Context, key, pool string, hosts []se
 			sp.refreshed[key], sp.accounts[key] = result, acc
 			return acc
 		}
+		if gateOutcome(result.err) == outcomeNoEligibleHost {
+			sp.unreachable[h.name] = "measure_failed"
+		}
 		if !hostGateFailure(result.err) {
 			break
 		}
@@ -235,8 +238,10 @@ func hostGateFailure(err error) bool {
 	return code == outcomeNoEligibleHost || code == outcomePolicyUnavailable
 }
 
-func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *selCand, p *selPlan) ([]quotaJudgment, error) {
-	ordered := slices.Clone(c.hosts)
+// admitAccount judges one account candidate on the given hosts in order. A
+// refresh may still measure the account on any of its holders (c.hosts).
+func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *selCand, p *selPlan, hosts []selHost) ([]quotaJudgment, error) {
+	ordered := slices.Clone(hosts)
 	// A holder that just completed the refresh is known reachable.
 	if host := sp.refreshed[c.accountKey].host; host != "" {
 		if i := slices.IndexFunc(ordered, func(h selHost) bool { return h.name == host }); i > 0 {
