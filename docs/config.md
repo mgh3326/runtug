@@ -1000,6 +1000,23 @@ Behaviour differences from the script:
 - Not ported: the script's own command line. Operators keep using the script for
   `status`, `job-get`, `lease`, `release` and `event` by hand.
 
+## Fleet events
+
+runtug appends one fleet-event v1 line (JSON: `ts, host, tool, kind, job,
+outcome, reason, detail`) to `$XDG_STATE_HOME/runtug/events/fleet-events.jsonl`
+(default `~/.local/state/runtug/events/fleet-events.jsonl`) for:
+
+| `kind` | `outcome` | `reason` | When |
+| --- | --- | --- | --- |
+| `spawn`, `plan` | `refused` or `failed` | the exit status name (`config`, `seat_refused`, `placement`, ...) | the command exits non-zero; `detail` is `exit=N <message>` |
+| `placement` | `placed` | ranking metric: `score`, `raw_load` (some host had no hub score), `single_candidate`, `wake`, `forced` | a non-dry-run spawn chose a host; `detail` names `chosen=`, `candidates=`, `pool=` and the hosts that `refused=` first |
+| `quota_observation` | `stale` or `unusable` | the shared-observation reason (`stale`, `not_observed`, `measure_failed`, ...) | a target account's quota observation refused a host; `detail` carries `target=`, `pool=` and `age_min=` |
+
+Every field is redacted (tokens, URL credentials) and bounded (`detail` at
+1 KiB); the file rotates to `.1` at 4 MiB. Writing an event never changes the
+command's result. Grafana Alloy ships the file to Loki; the shipping, dashboard
+and alerts live in panewire `deploy/alloy` and `deploy/grafana`.
+
 ## Exit statuses
 
 | Code | Meaning |
