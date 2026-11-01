@@ -130,20 +130,26 @@ func TestSelectMeasurementFailureRefuses(t *testing.T) {
 	}
 }
 
-func TestSelectDoesNotMeasureAccountLocalHolds(t *testing.T) {
+func TestSelectPinnedRefreshUsesEligibleRemoteHolder(t *testing.T) {
 	a, s, _, src := remoteFreeFixture(t, freeReceipt)
 	const key = "devin:fedcba9876543210"
 	src.accounts[key] = SharedAccount{Key: key, Observed: true}
-	// The spawning host holds the very same account; pacelever refreshes it.
+	// A matching local login does not override the caller's remote host pin.
 	src.presence = append(src.presence, PresenceRecord{HostID: "local", AccountKey: key, LastSeen: a.Now()})
+	measured := 0
 	a.Runner = wrapRunner(a.Runner, func(c Command) (Result, bool) {
+		if c.Name == "pacelever" {
+			t.Fatal("pinned refresh used the local holder")
+		}
 		if c.Name == "ssh" {
-			t.Errorf("measured an account the local host holds: %v", c.Args)
+			measured++
+			src.accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true}
+			return Result{}, true
 		}
 		return Result{}, false
 	})
-	if _, err := a.selectProfile(context.Background(), s); err == nil {
-		t.Fatal("stale evidence admitted without measurement")
+	if _, err := a.selectProfile(context.Background(), s); err != nil || measured != 1 {
+		t.Fatalf("eligible pinned holder was not measured: %v; measurements=%d", err, measured)
 	}
 }
 

@@ -24,7 +24,7 @@ func TestCLIQuotaAccountReceipt(t *testing.T) {
 		{"text only", "pool=claude\n", 0, 70},
 		{"missing result", strings.ReplaceAll(good, `,"exit_code":0`, ""), 0, 70},
 		{"denied receipt", strings.ReplaceAll(good, `"ok":true`, `"ok":false`), 0, 70},
-		{"quota denial", good, 3, 3},
+		{"inconsistent process exit", good, 3, 70},
 		{"role denial", good, 5, 77},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

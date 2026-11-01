@@ -136,7 +136,9 @@ func TestPlanJSONAndExitCodes(t *testing.T) {
 
 	// Nothing admitted by selection → 77.
 	a, q, _, _, _ = planFixture(t)
-	q.GateDo = func(QuotaRequest) (string, error) { return "", fail(3, "refused") }
+	q.GateDo = func(QuotaRequest) (string, error) {
+		return "", &gateRefusal{cause: fail(3, "refused"), outcome: outcomeNoRoleCandidate}
+	}
 	if e := a.planCmd(context.Background(), []string{"--grade", "A", "--t", "T1"}); exitCode(e) != exitSeatRefused {
 		t.Fatalf("want exit %d, got %v", exitSeatRefused, e)
 	}

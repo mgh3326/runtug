@@ -3,6 +3,7 @@ package runtug
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 	"strings"
 )
@@ -95,12 +96,10 @@ func (sp *selPresence) account(ctx context.Context, key, pool string, hosts []se
 		return acc
 	}
 	ordered := slices.Clone(hosts)
-	for _, local := range sp.hosts {
-		if local.local && hostAccount(sp.presence, pool, local.presence, sp.now, sp.presTTL) == key {
-			ordered = slices.DeleteFunc(ordered, func(h selHost) bool { return h.name == local.name })
-			ordered = append([]selHost{local}, ordered...)
-			break
-		}
+	if i := slices.IndexFunc(ordered, func(h selHost) bool { return h.local }); i > 0 {
+		local := ordered[i]
+		copy(ordered[1:i+1], ordered[:i])
+		ordered[0] = local
 	}
 	refresh, cancel := context.WithTimeout(ctx, sp.a.placementTTL("measure_timeout_s", 60))
 	defer cancel()
@@ -206,12 +205,11 @@ func (p *selPlan) classify(c *selCand, v PoolView) {
 }
 
 func gateOutcome(err error) string {
+	var refusal *gateRefusal
+	if errors.As(err, &refusal) {
+		return refusal.outcome
+	}
 	switch exitCode(err) {
-	case 3:
-		if strings.Contains(err.Error(), "quota exhausted") {
-			return outcomeQuotaExhausted
-		}
-		return outcomeNoRoleCandidate
 	case exitEvictionUnconfirmed:
 		return outcomeQuotaUnknown
 	case 6:

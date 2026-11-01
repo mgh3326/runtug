@@ -88,6 +88,7 @@ const (
 
 // Exit statuses of dependency CLIs that runtug interprets.
 const (
+	quotaGateBlocked    = 3 // legacy gate adapter: quota blocked; JSON needs typed evidence
 	quotaGateRoleDenied = 5 // quota gate: the role may not use the seat
 )
 

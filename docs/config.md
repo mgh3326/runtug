@@ -568,7 +568,9 @@ Each account's shared observation supplies its projection, waste risk, and
 quota ranking. Unknown observations receive one bounded refresh per account
 for the selection round. A transport or host-tool failure can move that
 refresh to another holder within the same deadline. A completed measurement
-ends the refresh operation. If the observation remains unknown, selection
+ends the refresh operation. Local preference only reorders holders already
+eligible for that binding; it never adds an excluded, disabled, pinned-away,
+or capability-ineligible host. If the observation remains unknown, selection
 cannot call it exhausted. The exact profile's account-bound gate remains
 the final check, including model and free buckets. A host-scoped gate failure
 tries the next holder of that account. An account-scoped quota refusal ends
@@ -604,6 +606,19 @@ If no account is bound, missing-login or missing-host outcomes apply. An exhaust
 once using only its listed profiles and records `downgraded_from`.
 Lead and consult never take this path. Exit 86 reports a refusal, not a
 scheduled retry.
+
+Account-bound gate refusals validate the same schema, account, pool, and
+process/receipt result as successful gates. Recognized `outcome_code`,
+`reason_code`, or machine refusal flags determine their category. Diagnostic
+prose never determines exhaustion. An ambiguous JSON exit 3 remains
+`QUOTA_UNKNOWN`, even when `used_pct` is present. Publishing stable typed
+reason codes from pacelever is tracked separately as hk 2477.
+
+Legacy `QuotaGate` adapters can use raw gate exit 3 for quota-blocked
+compatibility. That interpretation is attached only at the gate boundary;
+a refresh process returning 3 is an infrastructure error, not measured
+exhaustion. Adapters with broader exit-3 meanings must provide a typed
+refusal.
 
 ### Record and resolve
 
