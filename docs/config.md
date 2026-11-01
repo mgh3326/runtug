@@ -345,6 +345,16 @@ always ranks ahead of one whose cannot; unpaceable pools keep the lower
 projected use at reset (the used percentage when it cannot be paced yet) —
 then the smaller effort, then the catalog score.
 
+The pool-order policy is version `2`. A version `1` file supplied through
+`[local].pool_policy`, `RUNTUG_POOL_POLICY`, or `simulate --policy` is refused
+with exit 70 and a migration error. To migrate, copy
+`internal/runtug/pool-order.json`, retain any custom thresholds and free
+model sets, and set `version` to `2`. The order is
+`["free", "waste", "ranked", "credit"]`, and `credit_pools` includes both
+`anthropic-api` and `openai-api`. Version 2 requires credit last, after ranked.
+This version changes credit admission as well as the tier order: credit no
+longer requires a balance observation, but its pool class must remain readable.
+
 The projection is pacelever's pace: for each account-scope bucket in the
 quota status, used percentage ÷ elapsed share of its window, paced at the
 status document's `generated_at`; a bucket past its reset or under 5% into its
@@ -388,6 +398,12 @@ status. The named credit pools, `anthropic-api` and `openai-api`, have no
 balance reader and remain admissible without a balance observation. An
 operator pool class of `exclude` refuses them. Their selection record carries
 `tier=credit`, with absent balance values left unset.
+If the pool-status query fails, credit candidates are dropped as
+`QUOTA_UNKNOWN` with reason `quota_unknown` and the selection records
+`credit_pool_status_unavailable` in `degraded`. Healthy subscription candidates
+remain eligible. Remote placement and executing-host admission recheck credit
+pool classes and the selected login, then use the account-bound gate without
+requesting a balance refresh.
 
 Every candidate needs fresh
 host-presence evidence for its quota account on a spawn-eligible host and a

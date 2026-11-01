@@ -87,7 +87,10 @@ func LoadPoolPolicy(path string) (PoolPolicy, error) {
 // validate checks a decoded pool policy and fills absent thresholds with
 // their defaults. It is rerun after simulate's --policy-set overrides.
 func (p *PoolPolicy) validate() error {
-	if p.Version != 1 || len(p.Order) == 0 {
+	if p.Version != 2 {
+		return fail(exitConfig, "pool order policy version %d is unsupported; migrate to version 2 with order free,waste,ranked,credit and credit_pools anthropic-api,openai-api (docs/config.md)", p.Version)
+	}
+	if len(p.Order) == 0 {
 		return fail(exitConfig, "invalid pool order policy")
 	}
 	for _, tier := range poolTiers {
@@ -99,6 +102,9 @@ func (p *PoolPolicy) validate() error {
 		if !slices.Contains(poolTiers, tier) {
 			return fail(exitConfig, "unknown pool order tier %q", tier)
 		}
+	}
+	if slices.Index(p.Order, "credit") != len(p.Order)-1 {
+		return fail(exitConfig, "pool order policy v2 requires credit last, after ranked")
 	}
 	for _, fs := range p.Free {
 		if !validID(fs.Pool) {
@@ -586,8 +592,12 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	// API credit has no balance reader. Pool classes still carry the
 	// operator's exclusion, and the account-bound gate remains authoritative.
 	var creditViews map[string]PoolView
+	var creditErr error
 	if slices.ContainsFunc(rows, func(row CatalogRow) bool { return policy.isCredit(row.Pool) }) {
-		creditViews, _ = a.Quota.Pools(ctx)
+		creditViews, creditErr = a.Quota.Pools(ctx)
+		if creditErr != nil {
+			p.degraded = append(p.degraded, "credit_pool_status_unavailable")
+		}
 	}
 	var pending []*selCand
 	for _, row := range rows {
@@ -641,6 +651,10 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			x.accountKey, x.hosts = binding.key, binding.hosts
 			p.cands = append(p.cands, &x)
 			if policy.isCredit(row.Pool) {
+				if creditErr != nil {
+					x.reason, x.code, x.outcome = "quota_unknown", outcomeQuotaUnknown, "dropped:quota_unknown"
+					continue
+				}
 				p.classify(&x, creditViews[row.Pool])
 				if x.reason == "" {
 					pending = append(pending, &x)

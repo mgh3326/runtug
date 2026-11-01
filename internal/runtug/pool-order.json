@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "source_doc": "policy/quota-stop",
   "order": ["free", "waste", "ranked", "credit"],
   "free": [

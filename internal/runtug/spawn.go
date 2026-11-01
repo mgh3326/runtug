@@ -599,20 +599,36 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 		return Launch{}, "", fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
 	}
 	qr.Effort = launch.Effort
+	pool := firstNonempty(launch.Pool, strings.SplitN(s.AccountKey, ":", 2)[0])
+	policy, err := a.poolPolicy()
+	if err != nil {
+		return Launch{}, "", err
+	}
 	if s.AccountKey != "" {
-		pool := firstNonempty(launch.Pool, strings.SplitN(s.AccountKey, ":", 2)[0])
-		policy, err := a.poolPolicy()
-		if err != nil {
-			return Launch{}, "", err
-		}
 		key, acc := a.remoteAccount(ctx, pool, a.machine(), a.Config.Local)
 		if key != s.AccountKey || !policy.isCredit(pool) && sharedReason(key, acc) != "" {
 			return Launch{}, "", fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: executing host no longer holds the selected account")
 		}
 	}
+	if policy.isCredit(pool) {
+		if err := a.creditPoolStatus(ctx, pool); err != nil {
+			return Launch{}, "", err
+		}
+	}
 	gate, e := a.Quota.Gate(ctx, qr)
 	if e != nil {
 		return Launch{}, "", e
+	}
+	// Older launch responses can omit the pool. The read-only gate receipt
+	// then supplies it before any lease or agent execution is allowed.
+	receiptPool := gatePool(gate)
+	if receiptPool == "" {
+		return Launch{}, "", fail(exitConfig, "quota gate omitted the launch pool")
+	}
+	if receiptPool != pool && policy.isCredit(receiptPool) {
+		if err := a.creditPoolStatus(ctx, receiptPool); err != nil {
+			return Launch{}, "", err
+		}
 	}
 	if e = a.hubGate(ctx, s.CWD, gate); e != nil {
 		return Launch{}, "", e

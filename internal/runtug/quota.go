@@ -347,6 +347,25 @@ func (a *App) measureTarget(ctx context.Context, host, pool string) error {
 
 func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
 	j := quotaJudgment{Host: host, AccountKey: r.AccountKey, Source: "local", Outcome: "unknown", ExitCode: 4}
+	policy, err := a.poolPolicy()
+	if err != nil {
+		return j, err
+	}
+	if policy.isCredit(pool) {
+		if !local {
+			j.Source, j.AccountKey = "shared", key
+			if key == "" || r.AccountKey != "" && r.AccountKey != key {
+				j.Reason, j.ExitCode = "account_mismatch", exitAuthUnavailable
+				return j, fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: target no longer holds the selected account")
+			}
+			r.AccountKey = key
+		}
+		if err := a.creditPoolStatus(ctx, pool); err != nil {
+			j.Reason, j.ExitCode = strings.ToLower(gateOutcome(err)), exitCode(err)
+			return j, err
+		}
+		return a.judgeGate(ctx, r, pool, j)
+	}
 	if !local {
 		j.Source, j.AccountKey = "shared", key
 		j.Reason = sharedReason(key, acc)
@@ -378,6 +397,22 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		r.AccountKey = key
 	}
 	return a.judgeGate(ctx, r, pool, j)
+}
+
+// creditPoolStatus checks policy metadata, not a credit balance. A successful
+// read can omit a balance-less pool, but a failed read cannot clear exclusions.
+func (a *App) creditPoolStatus(ctx context.Context, pool string) error {
+	if a.Quota == nil {
+		return &gateRefusal{cause: fail(exitQuotaUnknown, "QUOTA_UNKNOWN: credit pool status unavailable"), outcome: outcomeQuotaUnknown}
+	}
+	views, err := a.Quota.Pools(ctx)
+	if err != nil {
+		return &gateRefusal{cause: fail(exitQuotaUnknown, "QUOTA_UNKNOWN: credit pool status unavailable"), outcome: outcomeQuotaUnknown}
+	}
+	if views[pool].Class == "exclude" {
+		return &gateRefusal{cause: fail(exitSeatRefused, "NO_ROLE_CANDIDATE: credit pool %s is excluded", pool), outcome: outcomeNoRoleCandidate}
+	}
+	return nil
 }
 
 // judgeGate preserves the quota gate's account, pool and policy authority.

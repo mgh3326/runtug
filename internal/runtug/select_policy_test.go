@@ -206,11 +206,11 @@ func TestPoolPolicyProjectionThresholds(t *testing.T) {
 	}
 	dir := t.TempDir()
 	for body, ok := range map[string]bool{
-		`{"version":1,"order":["free","waste","credit","ranked"]}`:                                                                true,
-		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":80,"exclude_at_projected_pct":100}`:  true,
-		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":110,"exclude_at_projected_pct":100}`: false,
-		`{"version":1,"order":["free","waste","credit","ranked"],"waste_below_projected_pct":0}`:                                  true,
-		`{"version":1,"order":["free","waste","credit","ranked"],"exclude_at_projected_pct":0}`:                                   false,
+		`{"version":2,"order":["free","waste","ranked","credit"]}`:                                                                true,
+		`{"version":2,"order":["free","waste","ranked","credit"],"waste_below_projected_pct":80,"exclude_at_projected_pct":100}`:  true,
+		`{"version":2,"order":["free","waste","ranked","credit"],"waste_below_projected_pct":110,"exclude_at_projected_pct":100}`: false,
+		`{"version":2,"order":["free","waste","ranked","credit"],"waste_below_projected_pct":0}`:                                  true,
+		`{"version":2,"order":["free","waste","ranked","credit"],"exclude_at_projected_pct":0}`:                                   false,
 	} {
 		path := dir + "/p.json"
 		if e := os.WriteFile(path, []byte(body), 0600); e != nil {

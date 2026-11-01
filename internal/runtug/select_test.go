@@ -396,7 +396,7 @@ func TestSelectRecordsPolicyVersionAndOverride(t *testing.T) {
 		t.Fatal(e)
 	}
 	rec := sel.record()
-	if rec["policy_version"] != float64(1) && rec["policy_version"] != 1 {
+	if rec["policy_version"] != float64(2) && rec["policy_version"] != 2 {
 		t.Fatalf("policy version must be recorded: %v", rec["policy_version"])
 	}
 	if rec["policy_source"] != "policy/quota-stop" {
