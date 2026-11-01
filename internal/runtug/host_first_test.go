@@ -227,3 +227,48 @@ func TestHostFirstRanksByHubScoreWithLocal(t *testing.T) {
 		t.Fatalf("local trace lost its hub score: %v", hostRow(t, sel, a.machine()))
 	}
 }
+
+// Only a transport failure of a refresh marks the host down. An exit 81
+// (NO_ELIGIBLE_HOST) is also a capability- or account-scoped refusal; it
+// fails that account's measurement but must not skip the host's other
+// accounts.
+func TestHostFirstRefreshRefusalKeepsHostUp(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		code     int
+		wantHost string
+		wantDown bool
+	}{
+		{"scoped refusal (81)", exitPlacement, "mac-b", false},
+		{"ssh unreachable (255)", exitUnreachable, "", true},
+		{"timeout (124)", exitTimeout, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := []CatalogRow{leadRows[0], {Profile: "codex-sol", Effort: "high", Grade: "S", Pool: "codex", Gate: "default", ModelID: "sol-m"}}
+			a, s, q, src := hostFirstFixture(t, "builder", "A", rows, nil, map[string]float64{"mac-b": 0.1})
+			// mac-b holds claude A (unmeasured: needs a refresh) and codex C.
+			src.presence = []PresenceRecord{{HostID: "mac-b", AccountKey: testClaudeA, LastSeen: a.Now()}, {HostID: "mac-b", AccountKey: testCodexA, LastSeen: a.Now()}}
+			src.accounts[testClaudeA] = SharedAccount{Key: testClaudeA, Observed: true}
+			c := PoolView{Status: "ok", Class: "spend", Blocking: ptrF(40)}
+			src.accounts[testCodexA] = SharedAccount{Key: testCodexA, Observed: true, Fresh: true, MeasuredAt: a.Now(), Quota: &c}
+			q.GateDo = gatePools(map[string]string{"opus": "claude", "codex-sol": "codex"})
+			a.Runner = wrapRunner(a.Runner, func(cmd Command) (Result, bool) {
+				if cmd.Name != "ssh" || !strings.Contains(strings.Join(cmd.Args, " "), "pacelever refresh 'claude'") {
+					return Result{}, false
+				}
+				return Result{Code: tc.code, Err: "refused"}, true
+			})
+			sel, err := a.selectProfile(context.Background(), s)
+			row := hostRow(t, sel, "mac-b")
+			if tc.wantDown {
+				if err == nil || row["outcome"] != "host_unavailable:measure_failed" {
+					t.Fatalf("an unreachable host must be skipped: %v %v", err, row)
+				}
+				return
+			}
+			if err != nil || sel.chosen.host != tc.wantHost || sel.chosen.accountKey != testCodexA {
+				t.Fatalf("a scoped refresh refusal took the host down: %v %v", err, row)
+			}
+		})
+	}
+}

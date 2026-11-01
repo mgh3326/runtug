@@ -135,7 +135,10 @@ func (sp *selPresence) account(ctx context.Context, key, pool string, hosts []se
 			sp.refreshed[key], sp.accounts[key] = result, acc
 			return acc
 		}
-		if gateOutcome(result.err) == outcomeNoEligibleHost {
+		// Only a transport failure takes the host down for the round:
+		// NO_ELIGIBLE_HOST (exit 81) also covers account- and
+		// capability-scoped refusals, which fail this account only.
+		if code := exitCode(result.err); code == exitUnreachable || code == exitTimeout {
 			sp.unreachable[h.name] = "measure_failed"
 		}
 		if !hostGateFailure(result.err) {
