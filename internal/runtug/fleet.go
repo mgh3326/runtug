@@ -255,9 +255,9 @@ func (c *hkQuota) presence(ctx context.Context) ([]PresenceRecord, error) {
 func (c *hkQuota) sharedAccount(ctx context.Context, key string) (SharedAccount, error) {
 	var body struct {
 		Observation *struct {
-			Kind       string    `json:"kind"`
-			MeasuredAt time.Time `json:"measured_at"`
-			Buckets    any       `json:"buckets"`
+			Kind       string          `json:"kind"`
+			MeasuredAt time.Time       `json:"measured_at"`
+			Buckets    []accountBucket `json:"buckets"`
 		} `json:"observation"`
 	}
 	if i := strings.IndexByte(key, ':'); i <= 0 || !validID(key[:i]) || !accountFP.MatchString(key[i+1:]) {
@@ -273,6 +273,67 @@ func (c *hkQuota) sharedAccount(ctx context.Context, key string) (SharedAccount,
 		if age := c.now().Sub(o.MeasuredAt); age >= -time.Minute && age <= c.freshTTL {
 			acc.Fresh = true
 		}
+		acc.Quota = accountPoolView(o.Buckets, c.now())
 	}
 	return acc, nil
+}
+
+// accountBucket is the allowlisted shared-observation wire format. Model and
+// group buckets are left to the exact profile's gate; account windows rank it.
+type accountBucket struct {
+	Window   string   `json:"window"`
+	UsedPct  *float64 `json:"used_pct"`
+	ResetsAt string   `json:"resets_at"`
+	Scope    string   `json:"scope"`
+	Model    string   `json:"model,omitempty"`
+}
+
+func accountPoolView(buckets []accountBucket, now time.Time) *PoolView {
+	if len(buckets) == 0 {
+		return nil
+	}
+	v := &PoolView{Status: "ok", Class: "spend"}
+	var longest time.Duration
+	for _, b := range buckets {
+		if b.UsedPct == nil || !finite(*b.UsedPct) || *b.UsedPct < 0 || *b.UsedPct > 100 {
+			return nil
+		}
+		if b.ResetsAt != "" {
+			reset, err := time.Parse(time.RFC3339Nano, b.ResetsAt)
+			if err != nil || !reset.After(now) {
+				return nil
+			}
+		}
+		if b.Scope != "account" {
+			continue
+		}
+		if v.Blocking == nil || *b.UsedPct > *v.Blocking {
+			v.Blocking = b.UsedPct
+		}
+		w, err := windowDuration(b.Window)
+		long := err == nil && w >= 24*time.Hour
+		if long && w > longest {
+			longest, v.Urgency, v.ResetHours = w, nil, nil
+		}
+		if err == nil && !long && (v.ShortUsed == nil || *b.UsedPct > *v.ShortUsed) {
+			v.ShortUsed = b.UsedPct
+		}
+		if x := projectAtReset(b.UsedPct, b.Window, b.ResetsAt, now); x != nil {
+			if v.Projected == nil || *x > *v.Projected {
+				v.Projected = x
+			}
+			if long && (v.LongProjected == nil || *x > *v.LongProjected) {
+				v.LongProjected = x
+			}
+			if long && w == longest {
+				reset, _ := time.Parse(time.RFC3339Nano, b.ResetsAt)
+				h := reset.Sub(now).Hours()
+				u := (100 - *x) / h
+				if v.Urgency == nil || u > *v.Urgency {
+					v.Urgency, v.ResetHours = &u, &h
+				}
+			}
+		}
+	}
+	return v
 }

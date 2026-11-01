@@ -58,10 +58,11 @@ func (r *deadlineRunner) named(name string) []Command {
 }
 
 type delegateEnv struct {
-	a      *App
-	runner *deadlineRunner
-	cwd    string
-	prompt string
+	a           *App
+	runner      *deadlineRunner
+	cwd         string
+	prompt      string
+	routingBody string
 	// label is the name herdr reports for the delegate agent (single calls).
 	mu    sync.Mutex
 	label string
@@ -108,6 +109,23 @@ func newDelegateEnvWith(t *testing.T, rows []CatalogRow, gates map[string]string
 	a.Quota = rowQuota{q}
 	a.Config.Local = map[string]any{"workspace": "ws"}
 	e := &delegateEnv{a: a, cwd: filepath.Join(a.Home, "repo"), prompt: filepath.Join(a.Home, "ask.md")}
+	// These tests exercise delegation mechanics with explicitly qualified
+	// fixture profiles. Routing eligibility has separate live-v1 regressions.
+	policy, err := parseRoutingJSON([]byte(routingBlockV1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var qualified []string
+	for _, row := range rows {
+		qualified = append(qualified, row.Profile)
+	}
+	for _, role := range []string{"explorer", "implementer", "verifier"} {
+		rule := policy.Roles[role]
+		rule.Allowed = qualified
+		policy.Roles[role] = rule
+	}
+	block, _ := json.Marshal(policy)
+	e.routingBody = routingDoc(string(block))
 	if err := os.MkdirAll(filepath.Join(e.cwd, "pkg"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +140,9 @@ func newDelegateEnvWith(t *testing.T, rows []CatalogRow, gates map[string]string
 	e.runner = &deadlineRunner{do: func(c Command) Result {
 		args := strings.Join(c.Args, " ")
 		switch {
+		case c.Name == "handoffkeep" && args == "doc get "+routingDocKey:
+			body, _ := json.Marshal(map[string]any{"body": e.routingBody})
+			return Result{Out: string(body)}
 		case c.Name == "handoffkeep" && strings.HasPrefix(args, "tasks show"):
 			return Result{Out: `{"id":42,"title":"work (grade B, T1)","state":"ready","refs":{}}`}
 		case c.Name == "herdr" && strings.HasPrefix(args, "agent list"):
@@ -635,6 +656,7 @@ func TestDelegateHeadlessKindWithoutOneShotRefusesBeforeClaiming(t *testing.T) {
 	q := e.a.Quota.(rowQuota).fakeQuota
 	q.CatalogRows = []CatalogRow{{Profile: "kiro-glm", Effort: "high", Grade: "C", Pool: "claude", Gate: "default", ModelID: "glm"}}
 	q.GateDo = gatePools(map[string]string{"kiro-glm": "claude"})
+	e.routingBody = routingDoc(strings.ReplaceAll(routingBlockV1, `"sonnet", "haiku", "codex-luna", "devin-swe2-medium", "agy-flash38-high"`, `"kiro-glm"`))
 	err := e.a.delegate(context.Background(), delegateArgs(e, "--role", "reader", "--headless"))
 	if code(err) != exitConfig || !strings.Contains(err.Error(), "no headless form") || len(e.a.JobStore.(*fakeJobStore).records) != 0 {
 		t.Fatalf("an unsupported kind must be refused before any record is claimed: %v", err)

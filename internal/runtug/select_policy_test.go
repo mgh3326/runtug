@@ -255,8 +255,8 @@ func TestSelectionRecordExplainsChoice(t *testing.T) {
 	if got := candOutcome(rec, "opus", "high"); got["outcome"] != "dropped:projected_exhaust" || got["projected_pct"] != 120.0 {
 		t.Fatalf("a pool projected past reset must be excluded and say so: %v", got)
 	}
-	if got := candOutcome(rec, "haiku", "low"); got["outcome"] != "dropped:grade_insufficient" || got["projected_pct"] != 120.0 {
-		t.Fatalf("a row dropped earlier still records its pool's projection: %v", got)
+	if got := candOutcome(rec, "haiku", "low"); got["outcome"] != "dropped:grade_insufficient" || got["account_key"] != "" || got["projected_pct"] != nil {
+		t.Fatalf("a static refusal must not borrow another account's projection: %v", got)
 	}
 	if got := candOutcome(rec, "sonnet", "medium"); got["used_pct"] != 8.0 {
 		t.Fatalf("the chosen row records its used percentage: %v", got)

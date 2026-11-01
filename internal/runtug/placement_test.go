@@ -22,6 +22,7 @@ type fakePlacementSource struct {
 	accounts    map[string]SharedAccount
 	accountErr  error
 	presenceDo  func() []PresenceRecord
+	quotaDo     func(string) *PoolView
 }
 
 func (f *fakePlacementSource) Hosts(context.Context, string) ([]HostView, error) {
@@ -38,6 +39,9 @@ func (f *fakePlacementSource) SharedAccount(_ context.Context, key string) (Shar
 		return SharedAccount{Key: key, Degraded: true}, f.accountErr
 	}
 	if a, ok := f.accounts[key]; ok {
+		if a.Quota == nil && f.quotaDo != nil {
+			a.Quota = f.quotaDo(key)
+		}
 		return a, nil
 	}
 	return SharedAccount{Key: key}, nil

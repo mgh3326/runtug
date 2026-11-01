@@ -54,7 +54,11 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 		return fail(exitUsage, "plan takes no positional arguments")
 	}
 	o.grade = strings.ToUpper(o.grade)
-	if _, ok := gradeOrder[o.grade]; !ok {
+	top := topRoutingRole(builtinRoleMap[o.role]) || topRoutingRole(o.routingRole)
+	if top && flagPassed(f, "grade") {
+		return fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
+	}
+	if _, ok := gradeOrder[o.grade]; !ok && !top {
 		return fail(exitUsage, "plan needs --grade C|B|A|A+|S|S+")
 	}
 	o.t = strings.ToUpper(o.t)
@@ -87,10 +91,11 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 		req.urgency, req.urgencySource = o.urgency, "flag"
 	}
 	if req.route, e = a.routeFor(ctx, o.role, o.routingRole); e != nil {
+		a.printPlan(o.json, map[string]any{"mode": "plan", "routing_role": firstNonempty(o.routingRole, builtinRoleMap[o.role]), "outcome_code": outcomeForError(e)}, nil, nil, nil, "", e)
 		return e
 	}
 	sel, selErr := a.selectFor(ctx, s, req)
-	out := map[string]any{"mode": "plan"}
+	out := map[string]any{"mode": "plan", "routing_role": req.route.role, "outcome_code": outcomeForError(selErr)}
 	if sel != nil {
 		rec := sel.record()
 		rec["mode"] = "plan"
@@ -102,6 +107,7 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 	}
 	c := sel.chosen
 	s.Profile = c.seatName
+	s.AccountKey, s.RoutingRole = c.accountKey, sel.req.route.role
 	if c.row.Effort != "" {
 		s.Effort = c.row.Effort
 	}
@@ -113,8 +119,14 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 		out["preflight"] = pre
 	}
 	if placeErr == nil {
-		out["chosen"] = map[string]any{"host": host, "seat": c.seatName, "model_id": c.row.ModelID, "effort": c.row.Effort, "pool": c.row.Pool, "tier": c.tierName, "grade": c.row.Grade, "waste_risk": c.risk}
+		c.host = host
+		rec := sel.record()
+		rec["mode"] = "plan"
+		out["selection"] = rec
+		out["account_key"], out["host"] = c.accountKey, host
+		out["chosen"] = map[string]any{"host": host, "account_key": c.accountKey, "routing_role": req.route.role, "outcome_code": outcomeAdmitted, "seat": c.seatName, "model_id": c.row.ModelID, "effort": c.row.Effort, "pool": c.row.Pool, "tier": c.tierName, "grade": c.row.Grade, "waste_risk": c.risk}
 	}
+	out["outcome_code"] = outcomeForError(placeErr)
 	a.printPlan(o.json, out, sel, pp, pre, host, placeErr)
 	return placeErr
 }
@@ -123,6 +135,9 @@ func (a *App) planCmd(ctx context.Context, args []string) error {
 // does, stopping at the first host whose quota gate admits it. It returns the
 // plan (for its record) and the chosen host name.
 func (a *App) planHosts(ctx context.Context, s Spawn, grade string) (*placePlan, string, error) {
+	if topRoutingRole(s.RoutingRole) {
+		grade = ""
+	}
 	pool := a.quotaPool(ctx, s)
 	p, e := a.plan(ctx, s, pool, 0)
 	if e != nil {

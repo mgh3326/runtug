@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -81,6 +82,8 @@ type PoolView struct {
 // can implement this interface or the same CLI/JSON contract.
 type QuotaGate interface {
 	Launch(context.Context, QuotaRequest) (Launch, error)
+	// Raw exit 3 is legacy quota-blocked compatibility at this boundary.
+	// Adapters with broader codes must supply a typed gateRefusal.
 	Gate(context.Context, QuotaRequest) (string, error)
 	Catalog(context.Context) ([]CatalogRow, error)
 	Pools(context.Context) (map[string]PoolView, error)
@@ -130,25 +133,107 @@ func (q CLIQuota) Gate(ctx context.Context, r QuotaRequest) (string, error) {
 	if x.Code == quotaGateRoleDenied {
 		return "", fail(exitSeatRefused, "quota role-denied (gate exit 5 → runtug exit 77): %s", x.Err)
 	}
+	if r.AccountKey != "" && (x.Code == 0 || x.Code == quotaGateBlocked) {
+		receipt, err := readAccountGateReceipt(x, r.AccountKey)
+		if x.Code == quotaGateBlocked {
+			outcome := outcomeQuotaUnknown
+			if err == nil {
+				outcome, err = receipt.refusalOutcome()
+			}
+			reason := clip(receipt.Reason, 200)
+			if err != nil {
+				// A blocked gate with untrusted evidence cannot establish
+				// exhaustion or a policy failure. Keep it typed for refresh.
+				outcome, reason = outcomeQuotaUnknown, err.Error()
+			}
+			return "", &gateRefusal{cause: fail(x.Code, "quota gate: %s", reason), outcome: outcome}
+		}
+		if err != nil {
+			return "", err
+		}
+	}
 	if e := check(x, "quota gate"); e != nil {
 		return "", e
 	}
-	if r.AccountKey != "" {
-		// Older pacelever versions accept this flag but ignore it. Require an
-		// account-bound receipt before trusting a successful remote judgement.
-		var receipt struct {
-			Schema     string `json:"schema"`
-			AccountKey string `json:"account_key"`
-			Pool       string `json:"provider_id"`
-			OK         bool   `json:"ok"`
-			ExitCode   *int   `json:"exit_code"`
+	return x.Out, nil
+}
+
+// gateRefusal carries a gate outcome independently of diagnostic prose;
+// untrusted receipts stay unknown. Unwrap preserves the dependency exit code.
+type gateRefusal struct {
+	cause   error
+	outcome string
+}
+
+func (e *gateRefusal) Error() string { return e.cause.Error() }
+func (e *gateRefusal) Unwrap() error { return e.cause }
+
+type accountGateReceipt struct {
+	Schema       string `json:"schema"`
+	AccountKey   string `json:"account_key"`
+	Pool         string `json:"provider_id"`
+	OK           *bool  `json:"ok"`
+	ExitCode     *int   `json:"exit_code"`
+	OutcomeCode  string `json:"outcome_code"`
+	ReasonCode   string `json:"reason_code"`
+	Reason       string `json:"reason"`
+	RoleDenied   bool   `json:"role_denied"`
+	Unmeasurable bool   `json:"unmeasurable"`
+	Unsubscribed bool   `json:"unsubscribed"`
+}
+
+func readAccountGateReceipt(x Result, key string) (accountGateReceipt, error) {
+	var receipt accountGateReceipt
+	pool, _, _ := strings.Cut(key, ":")
+	if uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != key || receipt.Pool != pool || receipt.OK == nil || *receipt.OK != (x.Code == 0) || receipt.ExitCode == nil || *receipt.ExitCode != x.Code {
+		return receipt, fail(exitConfig, "quota gate did not confirm the target account and result")
+	}
+	return receipt, nil
+}
+
+func (r accountGateReceipt) refusalOutcome() (string, error) {
+	outcome := ""
+	merge := func(next string) error {
+		if next == "" {
+			return nil
 		}
-		pool, _, _ := strings.Cut(r.AccountKey, ":")
-		if uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != r.AccountKey || receipt.Pool != pool || !receipt.OK || receipt.ExitCode == nil || *receipt.ExitCode != 0 {
-			return "", fail(exitConfig, "quota gate did not confirm the target account")
+		if outcome != "" && outcome != next {
+			return fail(exitConfig, "quota gate has conflicting refusal codes")
+		}
+		outcome = next
+		return nil
+	}
+	if r.OutcomeCode != "" {
+		switch r.OutcomeCode {
+		case outcomeQuotaExhausted, outcomeQuotaUnknown, outcomeNoRoleCandidate, outcomeAuthUnavailable, outcomeNoEligibleHost, outcomePolicyUnavailable:
+			outcome = r.OutcomeCode
+		default:
+			return outcomeQuotaUnknown, nil
 		}
 	}
-	return x.Out, nil
+	reasons := map[string]string{
+		"quota_exhausted": outcomeQuotaExhausted, "window_exhausted": outcomeQuotaExhausted, "projected_exhaust": outcomeQuotaExhausted,
+		"quota_unknown": outcomeQuotaUnknown, "role_denied": outcomeNoRoleCandidate, "no_role_candidate": outcomeNoRoleCandidate,
+		"auth_unavailable": outcomeAuthUnavailable, "unsubscribed": outcomeAuthUnavailable,
+		"no_eligible_host": outcomeNoEligibleHost, "policy_unavailable": outcomePolicyUnavailable,
+	}
+	if err := merge(reasons[r.ReasonCode]); err != nil {
+		return "", err
+	}
+	for _, flag := range []struct {
+		set     bool
+		outcome string
+	}{{r.RoleDenied, outcomeNoRoleCandidate}, {r.Unmeasurable, outcomeQuotaUnknown}, {r.Unsubscribed, outcomeAuthUnavailable}} {
+		if flag.set {
+			if err := merge(flag.outcome); err != nil {
+				return "", err
+			}
+		}
+	}
+	if outcome == "" {
+		outcome = outcomeQuotaUnknown
+	}
+	return outcome, nil
 }
 
 // sharedReason names why a target account's shared observation is unusable,
@@ -261,7 +346,7 @@ func (a *App) measureTarget(ctx context.Context, host, pool string) error {
 }
 
 func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, local bool, key string, acc SharedAccount) (quotaJudgment, error) {
-	j := quotaJudgment{Host: host, Source: "local", Outcome: "unknown", ExitCode: 4}
+	j := quotaJudgment{Host: host, AccountKey: r.AccountKey, Source: "local", Outcome: "unknown", ExitCode: 4}
 	if !local {
 		j.Source, j.AccountKey = "shared", key
 		j.Reason = sharedReason(key, acc)
@@ -296,6 +381,14 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		return j, fail(exitEvictionUnconfirmed, "quota gate unavailable")
 	}
 	gate, err := a.Quota.Gate(ctx, r)
+	if err != nil && exitCode(err) == quotaGateBlocked {
+		var typed *gateRefusal
+		if !errors.As(err, &typed) {
+			// The legacy QuotaGate contract uses raw exit 3 for quota blocks.
+			// Only this gate boundary grants that meaning, never refresh errors.
+			err = &gateRefusal{cause: err, outcome: outcomeQuotaExhausted}
+		}
+	}
 	if err == nil {
 		if got := gatePool(gate); pool != "" && got != pool && (got != "" || !local) {
 			err = fail(exitConfig, "quota gate pool mismatch")

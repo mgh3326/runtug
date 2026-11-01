@@ -41,10 +41,9 @@ type Spawn struct {
 	// other families, or of one family (`runtug delegate --panel`).
 	ExcludeFamilies []string `json:"-"`
 	OnlyFamily      string   `json:"-"`
-	// RoutingRole overrides the policy/model-routing role the seat role maps
-	// to; Unrouted skips role routing (delegate picks spare-quota seats).
-	RoutingRole string `json:"-"`
-	Unrouted    bool   `json:"-"`
+	// RoutingRole and AccountKey bind delegated admission to the selection.
+	RoutingRole string `json:"routing_role,omitempty"`
+	AccountKey  string `json:"account_key,omitempty"`
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -56,6 +55,7 @@ func parseSpawn(args []string) (Spawn, error) {
 	}{{"c", &s.CWD}, {"m", &s.Profile}, {"profile", &s.Profile}, {"p", &s.Prompt}, {"w", &s.Workspace}, {"l", &s.Label}, {"t", &s.T}, {"job", &s.Job}, {"owner", &s.Owner}, {"effort", &s.Effort}, {"role", &s.Role}, {"lane", &s.Lane}, {"parent", &s.Parent}, {"task", &s.Task}, {"parent-job", &s.ParentJob}, {"host", &s.Host}, {"report", &s.Report}, {"L", &s.ExecutionLane}, {"operator-request", &s.OperatorRequest}, {"requested-by", &s.RequestedBy}, {"purpose", &s.Purpose}, {"lane-defer", &s.LaneDefer}, {"report-relative", &s.ReportRelative}, {"tags", &s.Tags}, {"exclude-host", &s.ExcludeHosts}, {"override-reason", &s.OverrideReason}, {"wait-timeout", &s.WaitTimeout}, {"urgency", &s.Urgency}, {"builder-family", &s.BuilderFamily}, {"builder-job", &s.BuilderJob}, {"routing-role", &s.RoutingRole}} {
 		f.StringVar(p.v, p.k, *p.v, "")
 	}
+	f.StringVar(&s.Grade, "grade", "", "task grade (workers only)")
 	f.BoolVar(&s.Keep, "keep", false, "")
 	f.BoolVar(&s.DupOK, "job-dup-ok", false, "")
 	f.BoolVar(&s.Bypass, "task-hk-bypass", false, "")
@@ -73,6 +73,9 @@ func parseSpawn(args []string) (Spawn, error) {
 	}
 	if s.Role == "captain" {
 		s.Role = "builder"
+	}
+	if flagPassed(f, "grade") && (topRoutingRole(builtinRoleMap[s.Role]) || topRoutingRole(s.RoutingRole)) {
+		return s, fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
 	}
 	return s, nil
 }
@@ -152,6 +155,9 @@ func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 	return a.event(ctx, s.Job, "job.task_link", map[string]any{"task_id": s.Task, "job_id": s.Job, "claimed_by": s.Label, "status": status, "inherited_from": s.Inherited})
 }
 func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
+	if s.Grade != "" && (topRoutingRole(builtinRoleMap[s.Role]) || topRoutingRole(s.RoutingRole)) {
+		return fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
+	}
 	if s.CWD == "" || s.Prompt == "" || s.Workspace == "" || s.Label == "" || !slices.Contains([]string{"T0", "T1", "T2", "T3"}, s.T) {
 		return fail(exitUsage, "spawn requires -c -p -w -l --t T0..T3")
 	}
@@ -266,12 +272,15 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			return e
 		}
 		s.Profile = sel.chosen.seatName
+		s.AccountKey, s.RoutingRole = sel.chosen.accountKey, sel.req.route.role
 		selEffort = sel.chosen.row.Effort
 		if selEffort != "" {
 			s.Effort = selEffort
 		}
-	} else if !s.Delegated {
-		s.Sel = map[string]any{"mode": "override", "profile": s.Profile}
+	} else {
+		if e := a.admitPinnedProfile(ctx, &s); e != nil {
+			return e
+		}
 	}
 	// An unknown -m seat can never admit anywhere: refuse before placement
 	// burns a remote round on hosts that must all answer rc70.
@@ -354,14 +363,26 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			if strings.ToUpper(m[2]) != s.T {
 				return fail(exitSeatRefused, "task scale does not match --t")
 			}
-		} else if !bypassed {
+		} else if !bypassed && !topRoutingRole(s.RoutingRole) {
 			return fail(exitSeatRefused, "task title lacks (grade X, Tn marker")
 		}
+	}
+	if s.Sel != nil && s.Sel["requested"] == nil {
+		s.Sel["requested"] = map[string]any{"grade": grade, "role": s.Role, "t": s.T, "effort": effort}
 	}
 	launch, gate, e := a.admitLaunch(ctx, s, seat, effort, selEffort, grade, builderFamily, autoSel)
 	if e != nil {
 		return e
 	}
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
+	if e != nil {
+		return ledgerFail(e, "lease")
+	}
+	if s.AccountKey == "" {
+		key, _ := a.remoteAccount(ctx, firstNonempty(launch.Pool, gatePool(gate)), a.machine(), a.Config.Local)
+		s.AccountKey = key
+	}
+	a.stampSelection(&s, a.machine())
 	owner := s.Owner
 	if owner == "" {
 		owner = "default"
@@ -442,10 +463,6 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			}
 		}
 	}()
-	granted, e := arbiter.ParseGate(seat.gateName(), gate)
-	if e != nil {
-		return ledgerFail(e, "lease")
-	}
 	rec, e := a.ledger().RecordQuotaPool(ctx, arbiter.QuotaRun{Job: s.Job, Profile: seat.gateName(), LaunchProfile: launchProfile(seat.Canon, launch.Effort), Gate: granted})
 	if e != nil {
 		return ledgerFail(e, "lease")
@@ -548,7 +565,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 // gate and the hub for the spawn. It is the admission half shared by spawn and
 // `runtug delegate --headless`; it claims and writes nothing.
 func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEffort, grade, builderFamily string, autoSel bool) (Launch, string, error) {
-	qr := QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose}
+	qr := QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose, AccountKey: s.AccountKey}
 	launch, e := a.Quota.Launch(ctx, qr)
 	if e != nil {
 		// Preserve the gate's role/quota refusal even when the catalog also
@@ -567,6 +584,9 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 	if launch.Profile != seat.Canon {
 		return Launch{}, "", fail(exitConfig, "catalog profile mismatch")
 	}
+	if topRoutingRole(s.RoutingRole) {
+		grade = ""
+	}
 	if e = seat.Check(launch, s.Role, grade, builderFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
 		return Launch{}, "", e
 	}
@@ -576,6 +596,12 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 		return Launch{}, "", fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
 	}
 	qr.Effort = launch.Effort
+	if s.AccountKey != "" {
+		key, acc := a.remoteAccount(ctx, firstNonempty(launch.Pool, strings.SplitN(s.AccountKey, ":", 2)[0]), a.machine(), a.Config.Local)
+		if key != s.AccountKey || sharedReason(key, acc) != "" {
+			return Launch{}, "", fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: executing host no longer holds the selected account")
+		}
+	}
 	gate, e := a.Quota.Gate(ctx, qr)
 	if e != nil {
 		return Launch{}, "", e

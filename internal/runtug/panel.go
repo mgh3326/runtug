@@ -66,7 +66,7 @@ type PanelDispute struct {
 
 func (a *App) delegatePanel(ctx context.Context, d delegateReq) error {
 	n := d.o.panel
-	pick := Spawn{CWD: d.cwd, Profile: "auto", T: "T0", Role: d.seatRole, Host: "auto", Grade: d.o.grade, ParentFamily: d.caller.family, Task: d.caller.task, Inherited: d.caller.parent, Unrouted: true}
+	pick := Spawn{CWD: d.cwd, Profile: "auto", T: "T0", Role: d.seatRole, Host: "auto", Grade: d.o.grade, ParentFamily: d.caller.family, Task: d.caller.task, Inherited: d.caller.parent, RoutingRole: d.routingRole()}
 	if d.o.headless || d.o.patch {
 		pick.Host = "local"
 	}
