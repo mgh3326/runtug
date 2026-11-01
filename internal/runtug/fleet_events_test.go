@@ -164,3 +164,34 @@ func TestStaleQuotaObservationEventCarriesAge(t *testing.T) {
 		t.Fatal("the account fingerprint must not reach the events file")
 	}
 }
+
+// A failed re-measure of a stale target refuses the host with exactly one
+// quota_observation event (measure_failed), never a second one for the
+// stale reason it started from.
+func TestFailedRemeasureWritesOneQuotaObservationEvent(t *testing.T) {
+	key := "claude:0123456789abcdef"
+	src := &fakePlacementSource{}
+	a := placementApp(t, src)
+	a.Config.Hosts = map[string]map[string]any{"host-b": {}}
+	measures := 0
+	a.Runner = &fakeRunner{Do: func(c Command) Result {
+		if c.Name == "ssh" && strings.Contains(strings.Join(c.Args, " "), "pacelever refresh") {
+			measures++
+			return Result{Code: 1, Err: "refresh failed " + fakeSecretText}
+		}
+		return Result{}
+	}}
+	acc := SharedAccount{Key: key, Observed: true, Fresh: false, MeasuredAt: a.Now().Add(-75 * time.Minute)}
+	_, err := a.judgeHost(context.Background(), QuotaRequest{}, "claude", "host-b", false, key, acc)
+	if err == nil || measures != 1 {
+		t.Fatalf("a failed re-measure must refuse after one measurement: measures=%d err=%v", measures, err)
+	}
+	raw, events := readFleetEvents(t, a)
+	if len(events) != 1 {
+		t.Fatalf("want exactly one event, got %d: %s", len(events), raw)
+	}
+	ev := events[0]
+	if ev["kind"] != "quota_observation" || ev["outcome"] != "stale" || ev["reason"] != "measure_failed" || ev["detail"] != "target=host-b pool=claude age_min=75" {
+		t.Fatalf("event: %+v", ev)
+	}
+}
