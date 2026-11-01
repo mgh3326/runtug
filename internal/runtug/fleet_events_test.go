@@ -3,6 +3,7 @@ package runtug
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,5 +194,42 @@ func TestFailedRemeasureWritesOneQuotaObservationEvent(t *testing.T) {
 	ev := events[0]
 	if ev["kind"] != "quota_observation" || ev["outcome"] != "stale" || ev["reason"] != "measure_failed" || ev["detail"] != "target=host-b pool=claude age_min=75" {
 		t.Fatalf("event: %+v", ev)
+	}
+}
+
+func TestUntypedErrorRefusalRecordsExitOne(t *testing.T) {
+	a := testApp(t)
+	a.refusalEvent("spawn", "job-a", errors.New("open brief: no such file or directory"))
+	raw, events := readFleetEvents(t, a)
+	if len(events) != 1 || events[0]["reason"] != "failure" || !strings.HasPrefix(events[0]["detail"], "exit=1 ") {
+		t.Fatalf("an untyped error exits 1 from Main: %s", raw)
+	}
+}
+
+func TestExplicitLocalSpawnRecordsForcedPlacement(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
+	a.Config.Local["machine_id"] = "desk-a"
+	if err := a.Spawn(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	raw, events := readFleetEvents(t, a)
+	if len(events) != 1 || events[0]["kind"] != "placement" || events[0]["reason"] != "forced" || !strings.HasPrefix(events[0]["detail"], "chosen=desk-a ranking=forced") {
+		t.Fatalf("want one forced placement naming the machine: %s", raw)
+	}
+}
+
+func TestHubOutageDuringRemeasureIsNotAStaleQuotaEvent(t *testing.T) {
+	key := "claude:0123456789abcdef"
+	a := placementApp(t, &fakePlacementSource{})
+	a.Config.Hosts = map[string]map[string]any{"host-b": {"via": "hub"}}
+	var events []string
+	a.Hub = &fakeHub{t: t, events: &events, refresh: func(string, string) error { return &HubError{Kind: hubDown} }}
+	acc := SharedAccount{Key: key, Observed: true, Fresh: false, MeasuredAt: a.Now().Add(-75 * time.Minute)}
+	j, err := a.judgeHost(context.Background(), QuotaRequest{}, "claude", "host-b", false, key, acc)
+	if code(err) != exitPlacement || j.Reason != hubDown {
+		t.Fatalf("a hub outage is a placement refusal: %v %+v", err, j)
+	}
+	if raw, got := readFleetEvents(t, a); len(got) != 0 {
+		t.Fatalf("a hub outage must not be reported as quota staleness: %s", raw)
 	}
 }

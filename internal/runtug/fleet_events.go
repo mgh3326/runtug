@@ -17,6 +17,18 @@ func (a *App) emitFleetEvent(kind, job, outcome, reason, detail string) {
 	fleetevent.New(a.stateDir(), "runtug", a.Now).Emit(kind, job, outcome, reason, detail)
 }
 
+// spawnEvents records how a spawn ended: its refusal, or, for --host local
+// (which never goes through place), the forced placement it completed.
+func (a *App) spawnEvents(s Spawn, err error) {
+	if err != nil {
+		a.refusalEvent("spawn", s.Job, err)
+		return
+	}
+	if s.Host == "local" {
+		a.placementEvent(s, map[string]any{"source": "forced"}, nil)
+	}
+}
+
 // refusalEvent records a spawn or plan that ended in an error. The reason is
 // the exit status class (docs/config.md); the detail carries the status and
 // the message, redacted and bounded by the writer.
@@ -25,6 +37,10 @@ func (a *App) refusalEvent(kind, job string, err error) {
 		return
 	}
 	code := exitCode(err)
+	if code == 0 {
+		// An untyped error exits 1 from Main; record what the caller saw.
+		code = exitFailure
+	}
 	outcome := "refused"
 	switch code {
 	case exitWaitEscalated, exitWaitLost, exitWaitTimeout, exitSubmitUnconfirmed, exitLaneUnregistered:
@@ -115,6 +131,9 @@ func (a *App) placementEvent(s Spawn, rec map[string]any, err error) {
 	ranking, _ := rec["ranking"].(string)
 	if src, _ := rec["source"].(string); src == "forced" {
 		chosen, ranking = s.Host, "forced"
+		if chosen == "local" {
+			chosen = a.machine()
+		}
 	}
 	if ranking == "" {
 		ranking = "unknown"

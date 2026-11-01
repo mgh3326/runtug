@@ -363,13 +363,14 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 		if (j.Reason == "stale" || j.Reason == "not_observed") && a.Source != nil && !slices.Contains(a.localAccountKeys(ctx, pool), key) {
 			if err := a.measureTarget(ctx, host, pool); err != nil {
 				j.Measured, j.Reason = "failed", "measure_failed"
-				observed = j.Reason
 				if exitCode(err) == exitPlacement && str(a.Config.Hosts[host], "via") == "hub" {
 					// The hub is the only way to measure a hub host; its
-					// outage is a placement refusal, not an unconfirmed quota.
+					// outage is a placement refusal, not an unconfirmed quota,
+					// so it records no quota_observation event either.
 					j.Reason = hubDown
 					return j, err
 				}
+				observed = j.Reason
 				return j, fail(exitEvictionUnconfirmed, "target account measurement failed: %v", err)
 			}
 			j.Measured = "ok"

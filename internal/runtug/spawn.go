@@ -155,7 +155,7 @@ func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 	return a.event(ctx, s.Job, "job.task_link", map[string]any{"task_id": s.Task, "job_id": s.Job, "claimed_by": s.Label, "status": status, "inherited_from": s.Inherited})
 }
 func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
-	defer func() { a.refusalEvent("spawn", s.Job, err) }()
+	defer func() { a.spawnEvents(s, err) }()
 	if s.Grade != "" && (topRoutingRole(builtinRoleMap[s.Role]) || topRoutingRole(s.RoutingRole)) {
 		return fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
 	}
