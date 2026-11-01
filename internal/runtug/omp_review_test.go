@@ -190,7 +190,7 @@ func TestOMPSpawnReceiptPoolBinding(t *testing.T) {
 
 func TestOMPCreditRemotePlacement(t *testing.T) {
 	for _, mode := range []string{"auto", "forced", "plan"} {
-		for _, change := range []string{"none", "account", "excluded", "status failure", "gate denied"} {
+		for _, change := range []string{"none", "pool omitted", "account", "excluded", "status failure", "gate denied"} {
 			t.Run(mode+"/"+change, func(t *testing.T) {
 				const key = "anthropic-api:0000000000000001"
 				src := &fakePlacementSource{hosts: []HostView{{Name: "host-b", Connected: true}}}
@@ -226,6 +226,12 @@ func TestOMPCreditRemotePlacement(t *testing.T) {
 				s.Profile, s.Effort, s.AccountKey, s.RoutingRole = sel.chosen.seatName, sel.chosen.row.Effort, sel.chosen.accountKey, sel.req.route.role
 				s.Sel = sel.record()
 				switch change {
+				case "pool omitted":
+					q.GateDo = func(r QuotaRequest) (string, error) {
+						gateKeys = append(gateKeys, r.AccountKey)
+						body, _ := json.Marshal(map[string]any{"schema": "scopefuel.gate.v1", "account_key": r.AccountKey, "ok": true, "exit_code": 0})
+						return string(body), nil
+					}
 				case "account":
 					src.presence[0].AccountKey = "anthropic-api:0000000000000002"
 				case "excluded":
@@ -241,7 +247,7 @@ func TestOMPCreditRemotePlacement(t *testing.T) {
 				if mode == "plan" {
 					_, host, planErr := a.planHosts(context.Background(), s, "A")
 					err = planErr
-					if change == "none" && host != "host-b" {
+					if (change == "none" || change == "pool omitted") && host != "host-b" {
 						t.Fatalf("selected remote credit must remain usable in plan: host=%q err=%v", host, err)
 					}
 				} else {
@@ -250,7 +256,7 @@ func TestOMPCreditRemotePlacement(t *testing.T) {
 					}
 					_, _, err = a.place(context.Background(), s, "fixture brief")
 				}
-				if change == "none" {
+				if change == "none" || change == "pool omitted" {
 					if err != nil || mode != "plan" && spawns != 1 || len(gateKeys) != 2 {
 						t.Fatalf("remote placement lost balance-less credit admission: err=%v spawns=%d gates=%v", err, spawns, gateKeys)
 					}

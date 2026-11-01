@@ -375,7 +375,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e != nil {
 		return e
 	}
-	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, launch.Pool, gate)
 	if e != nil {
 		return ledgerFail(e, "lease")
 	}
@@ -600,7 +600,11 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 		return Launch{}, "", fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
 	}
 	qr.Effort = launch.Effort
-	pool := firstNonempty(launch.Pool, strings.SplitN(s.AccountKey, ":", 2)[0])
+	accountPool, _, _ := strings.Cut(s.AccountKey, ":")
+	pool, err := boundPool(launch.Pool, accountPool)
+	if err != nil {
+		return Launch{}, "", err
+	}
 	policy, err := a.poolPolicy()
 	if err != nil {
 		return Launch{}, "", err
@@ -620,21 +624,17 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 	if e != nil {
 		return Launch{}, "", e
 	}
-	// Older launch responses can omit the pool. The read-only gate receipt
-	// then supplies it before any lease or agent execution is allowed.
-	receiptPool := gatePool(gate)
-	if receiptPool == "" {
-		return Launch{}, "", fail(exitConfig, "quota gate omitted the launch pool")
+	granted, err := admissionGate(seat.gateName(), s.AccountKey, pool, gate)
+	if err != nil {
+		return Launch{}, "", err
 	}
-	if pool != "" && receiptPool != pool {
-		return Launch{}, "", fail(exitConfig, "quota gate pool mismatch")
-	}
-	if pool == "" && policy.isCredit(receiptPool) {
-		if err := a.creditPoolStatus(ctx, receiptPool); err != nil {
+	if pool == "" && policy.isCredit(granted.Pool) {
+		if err := a.creditPoolStatus(ctx, granted.Pool); err != nil {
 			return Launch{}, "", err
 		}
 	}
-	if e = a.hubGate(ctx, s.CWD, gate); e != nil {
+	launch.Pool = granted.Pool
+	if e = a.hubGate(ctx, s.CWD, launch.Pool); e != nil {
 		return Launch{}, "", e
 	}
 	return launch, gate, nil

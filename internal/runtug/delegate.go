@@ -484,7 +484,7 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 	if e != nil {
 		return "", e
 	}
-	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, launch.Pool, gate)
 	if e != nil {
 		return "", ledgerFail(e, "lease")
 	}

@@ -187,7 +187,7 @@ func TestStructuredGateRefusalMustConfirmItsAccountAndCode(t *testing.T) {
 		{"different exit", func(r map[string]any) { r["exit_code"] = 0 }, outcomeQuotaUnknown, 3},
 		{"contradictory ok", func(r map[string]any) { r["ok"] = true }, outcomeQuotaUnknown, 3},
 		{"missing account", func(r map[string]any) { delete(r, "account_key") }, outcomeQuotaUnknown, 3},
-		{"missing pool", func(r map[string]any) { delete(r, "provider_id") }, outcomeQuotaUnknown, 3},
+		{"pool from account", func(r map[string]any) { delete(r, "provider_id") }, outcomeQuotaExhausted, 3},
 		{"missing exit", func(r map[string]any) { delete(r, "exit_code") }, outcomeQuotaUnknown, 3},
 		{"missing ok", func(r map[string]any) { delete(r, "ok") }, outcomeQuotaUnknown, 3},
 		{"invalid field type", func(r map[string]any) { r["ok"] = "false" }, outcomeQuotaUnknown, 3},

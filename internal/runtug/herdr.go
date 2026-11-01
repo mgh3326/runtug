@@ -557,11 +557,10 @@ func (a *App) registerLane(ctx context.Context, lane, parent, pane, role, machin
 	args = append(args, a.Config.hubArgs(role)...)
 	return a.must(ctx, "panewire", args...)
 }
-func (a *App) hubGate(ctx context.Context, cwd, gate string) error {
+func (a *App) hubGate(ctx context.Context, cwd, pool string) error {
 	if str(a.Config.Hub, "hub_token_env") == "" {
 		return nil
 	}
-	pool := gatePool(gate)
 	if !validID(pool) {
 		return fail(exitConfig, "quota gate response lacks pool")
 	}

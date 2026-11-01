@@ -185,7 +185,7 @@ type accountGateReceipt struct {
 func readAccountGateReceipt(x Result, key string) (accountGateReceipt, error) {
 	var receipt accountGateReceipt
 	pool, _, _ := strings.Cut(key, ":")
-	if uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != key || receipt.Pool != pool || receipt.OK == nil || *receipt.OK != (x.Code == 0) || receipt.ExitCode == nil || *receipt.ExitCode != x.Code {
+	if !validID(pool) || uniqueJSON([]byte(x.Out)) != nil || json.Unmarshal([]byte(x.Out), &receipt) != nil || receipt.Schema != "scopefuel.gate.v1" || receipt.AccountKey != key || receipt.Pool != "" && receipt.Pool != pool || receipt.OK == nil || *receipt.OK != (x.Code == 0) || receipt.ExitCode == nil || *receipt.ExitCode != x.Code {
 		return receipt, fail(exitConfig, "quota gate did not confirm the target account and result")
 	}
 	return receipt, nil
@@ -442,8 +442,11 @@ func (a *App) judgeGate(ctx context.Context, r QuotaRequest, pool string, j quot
 		}
 	}
 	if err == nil {
-		if got := gatePool(gate); pool != "" && got != pool && (got != "" || j.Source != "local") {
-			err = fail(exitConfig, "quota gate pool mismatch")
+		accountPool, _, _ := strings.Cut(r.AccountKey, ":")
+		var resolved string
+		resolved, err = boundPool(pool, accountPool, gatePool(gate))
+		if err == nil && resolved == "" {
+			err = fail(exitConfig, "quota gate omitted the launch pool")
 		}
 	}
 	j.Outcome, j.ExitCode = "admitted", 0
