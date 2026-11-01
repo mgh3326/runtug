@@ -350,6 +350,14 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 	if !local {
 		j.Source, j.AccountKey = "shared", key
 		j.Reason = sharedReason(key, acc)
+		// Every path that leaves this block with a reason refuses the host
+		// and records exactly one quota_observation event, here.
+		observed := ""
+		defer func() {
+			if observed != "" {
+				a.quotaObservationEvent(host, pool, observed, acc)
+			}
+		}()
 		// A stale or missing observation of an account this host does not hold
 		// is never refreshed by the gate, so measure it on the target first.
 		if (j.Reason == "stale" || j.Reason == "not_observed") && a.Source != nil && !slices.Contains(a.localAccountKeys(ctx, pool), key) {
@@ -357,10 +365,12 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 				j.Measured, j.Reason = "failed", "measure_failed"
 				if exitCode(err) == exitPlacement && str(a.Config.Hosts[host], "via") == "hub" {
 					// The hub is the only way to measure a hub host; its
-					// outage is a placement refusal, not an unconfirmed quota.
+					// outage is a placement refusal, not an unconfirmed quota,
+					// so it records no quota_observation event either.
 					j.Reason = hubDown
 					return j, err
 				}
+				observed = j.Reason
 				return j, fail(exitEvictionUnconfirmed, "target account measurement failed: %v", err)
 			}
 			j.Measured = "ok"
@@ -373,6 +383,7 @@ func (a *App) judgeHost(ctx context.Context, r QuotaRequest, pool, host string, 
 			}
 		}
 		if j.Reason != "" {
+			observed = j.Reason
 			return j, fail(exitEvictionUnconfirmed, "target account quota unavailable: %s", j.Reason)
 		}
 		r.AccountKey = key
