@@ -404,6 +404,10 @@ If the pool-status query fails, credit candidates are dropped as
 remain eligible. Remote placement and executing-host admission recheck credit
 pool classes and the selected login, then use the account-bound gate without
 requesting a balance refresh.
+The gate receipt must match the pool supplied by the launch or selected
+account. A different pool refuses with exit 70, regardless of its class.
+When neither supplies a pool, the receipt can supply it; credit class checks
+still apply before execution.
 
 Every candidate needs fresh
 host-presence evidence for its quota account on a spawn-eligible host and a

@@ -68,10 +68,10 @@ func TestAdmissionKeepsProfileAndAuditValidation(t *testing.T) {
 
 func TestSpawnRejectsMismatchedAccountReceipt(t *testing.T) {
 	const key = "example:0123456789abcdef"
-	for _, tc := range []struct{ name, account, pool string }{
-		{"other account", "example:fedcba9876543210", "example"},
-		{"other pool", key, "other"},
-		{"missing account", "", "example"},
+	for _, tc := range []struct{ name, account, pool, refusal string }{
+		{"other account", "example:fedcba9876543210", "example", "quota gate did not confirm the target account"},
+		{"other pool", key, "other", "quota gate pool mismatch"},
+		{"missing account", "", "example", "quota gate did not confirm the target account"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, s, runner, _ := cmdFixture(t)
@@ -95,7 +95,7 @@ func TestSpawnRejectsMismatchedAccountReceipt(t *testing.T) {
 			if err == nil {
 				t.Fatalf("spawn admitted a valid v1 receipt for %s", tc.name)
 			}
-			if gates != 1 || !strings.Contains(err.Error(), "quota gate did not confirm the target account") {
+			if gates != 1 || !strings.Contains(err.Error(), tc.refusal) {
 				t.Fatalf("spawn refused before receipt validation: gates=%d err=%v", gates, err)
 			}
 			for _, c := range runner.Calls {
@@ -136,7 +136,11 @@ func TestHeadlessRejectsMismatchedAccountReceipt(t *testing.T) {
 			if err == nil {
 				t.Fatalf("headless launch admitted a valid v1 receipt for %s", mode)
 			}
-			if gates != 2 || !strings.Contains(err.Error(), "quota gate did not confirm the target account") {
+			refusal := "quota gate did not confirm the target account"
+			if mode == "other pool" {
+				refusal = "quota gate pool mismatch"
+			}
+			if gates != 2 || !strings.Contains(err.Error(), refusal) {
 				t.Fatalf("headless refused before receipt validation: gates=%d err=%v", gates, err)
 			}
 			if len(e.runner.named("devin")) != 0 {

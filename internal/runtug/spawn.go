@@ -625,7 +625,10 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 	if receiptPool == "" {
 		return Launch{}, "", fail(exitConfig, "quota gate omitted the launch pool")
 	}
-	if receiptPool != pool && policy.isCredit(receiptPool) {
+	if pool != "" && receiptPool != pool {
+		return Launch{}, "", fail(exitConfig, "quota gate pool mismatch")
+	}
+	if pool == "" && policy.isCredit(receiptPool) {
 		if err := a.creditPoolStatus(ctx, receiptPool); err != nil {
 			return Launch{}, "", err
 		}

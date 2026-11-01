@@ -2,6 +2,7 @@ package runtug
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -138,6 +139,52 @@ func TestOMPExplicitCreditOmittedLaunchPool(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOMPSpawnReceiptPoolBinding(t *testing.T) {
+	for _, binding := range []string{"legacy", "unbound-json", "selected", "selected-missing-launch-pool"} {
+		for _, receiptPool := range []string{"anthropic-api", "openai-api", "claude"} {
+			t.Run(binding+"/"+receiptPool, func(t *testing.T) {
+				a, s, fr := ompSpawnFixture(t)
+				q := a.Quota.(*fakeQuota)
+				q.PoolViews = map[string]PoolView{"anthropic-api": {Class: "credit"}, "openai-api": {Class: "credit"}, "claude": {Status: "ok", Class: "spend"}}
+				if strings.HasPrefix(binding, "selected") {
+					s.AccountKey = "anthropic-api:0000000000000001"
+					a.Source = &fakePlacementSource{presence: []PresenceRecord{{HostID: "local", AccountKey: s.AccountKey, LastSeen: a.Now()}}, accounts: map[string]SharedAccount{s.AccountKey: {Key: s.AccountKey}}}
+				}
+				if binding == "selected-missing-launch-pool" {
+					q.LaunchValue.Pool = ""
+				}
+				q.GateDo = func(r QuotaRequest) (string, error) {
+					if binding == "legacy" {
+						return fmt.Sprintf("pool=%s profile=omp-opus\n", receiptPool), nil
+					}
+					receipt := map[string]any{"schema": "scopefuel.gate.v1", "provider_id": receiptPool, "profile": "omp-opus", "ok": true, "exit_code": 0}
+					if s.AccountKey != "" {
+						receipt["account_key"] = s.AccountKey
+					}
+					b, _ := json.Marshal(receipt)
+					return string(b), nil
+				}
+				err := a.Spawn(context.Background(), s)
+				if receiptPool == "anthropic-api" {
+					if err != nil {
+						t.Fatalf("matching pool must launch: %v", err)
+					}
+					return
+				}
+				if code(err) != exitConfig || !strings.Contains(err.Error(), "quota gate pool mismatch") {
+					t.Fatalf("swapped receipt pool must refuse before execution: receipt=%s err=%v", receiptPool, err)
+				}
+				for _, c := range fr.Calls {
+					args := strings.Join(c.Args, " ")
+					if c.Name == "herdr" || c.Name == "panewire" || c.Name == "handoffkeep" && strings.HasPrefix(args, "tasks claim") {
+						t.Fatalf("swapped pool reached a launch side effect: %s %s", c.Name, args)
+					}
+				}
+			})
+		}
 	}
 }
 
