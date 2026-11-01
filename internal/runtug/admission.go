@@ -50,9 +50,13 @@ func (a *App) admitPinnedProfile(ctx context.Context, s *Spawn) error {
 	return nil
 }
 
-// admissionGate keeps the account-bound JSON receipt for quota admission and
-// extracts only the fields the existing local lease records.
-func admissionGate(profile, receipt string) (arbiter.Gate, error) {
+// admissionGate verifies the selected account before extracting lease fields.
+func admissionGate(profile, accountKey, receipt string) (arbiter.Gate, error) {
+	if accountKey != "" {
+		if _, err := readAccountGateReceipt(Result{Out: receipt}, accountKey); err != nil {
+			return arbiter.Gate{}, err
+		}
+	}
 	if !strings.HasPrefix(strings.TrimSpace(receipt), "{") {
 		return arbiter.ParseGate(profile, receipt)
 	}

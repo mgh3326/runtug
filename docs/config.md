@@ -250,8 +250,11 @@ unpublished measurement keeps the refusal; `quota_gates` records
 
 The spawning host needs a pacelever version that supports account-bound gate
 receipts. A successful response must confirm the requested `account_key` and
-pool; versions that silently ignore the flag are refused. The target still
-runs its own final local gate before spawning. Upgrade pacelever on spawning
+pool; versions that silently ignore the flag are refused. Pane and headless
+launches recheck that binding before recording the quota lease, including
+when a quota adapter bypasses the CLI client. A selected account requires a
+JSON receipt; legacy text cannot confirm its identity. The target still runs
+its own final local gate before spawning. Upgrade pacelever on spawning
 hosts before rolling out this change; roll back runtug to restore the earlier
 placement path if needed. No remote checkout provisioning changes are included.
 

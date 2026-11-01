@@ -469,7 +469,7 @@ func TestSpawnRecordsRouting(t *testing.T) {
 			presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: a.Now()}},
 			accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true, Quota: &PoolView{Status: "ok", Class: "spend", Blocking: ptrF(0)}}},
 		}
-		q.GateDo = func(QuotaRequest) (string, error) { return "pool=example\n", nil }
+		q.GateDo = gatePools(map[string]string{"cmd-dsflash41": "example"})
 		serveRouting(a, routingDocV1)
 		return a, s, f
 	}

@@ -293,7 +293,7 @@ func TestLaunchKeepsSelectedAccountAndJSONReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := admissionGate("opus", receipt)
+	lease, err := admissionGate("opus", s.AccountKey, receipt)
 	if err != nil || lease.Pool != "claude" || lease.Audit["requested_by"] != "test-caller" {
 		t.Fatalf("JSON receipt cannot supply the local lease: %v %+v", err, lease)
 	}

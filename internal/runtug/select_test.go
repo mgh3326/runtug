@@ -58,6 +58,10 @@ func gatePools(pools map[string]string) func(QuotaRequest) (string, error) {
 		if !ok {
 			return "", fail(4, "quota refused for %s", name)
 		}
+		if r.AccountKey != "" {
+			b, _ := json.Marshal(map[string]any{"schema": "scopefuel.gate.v1", "provider_id": pool, "account_key": r.AccountKey, "profile": name, "ok": true, "exit_code": 0})
+			return string(b), nil
+		}
 		return fmt.Sprintf("pool=%s profile=%s\n", pool, name), nil
 	}
 }

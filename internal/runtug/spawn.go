@@ -374,6 +374,10 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	if e != nil {
 		return e
 	}
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
+	if e != nil {
+		return ledgerFail(e, "lease")
+	}
 	if s.AccountKey == "" {
 		key, _ := a.remoteAccount(ctx, firstNonempty(launch.Pool, gatePool(gate)), a.machine(), a.Config.Local)
 		s.AccountKey = key
@@ -459,10 +463,6 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			}
 		}
 	}()
-	granted, e := admissionGate(seat.gateName(), gate)
-	if e != nil {
-		return ledgerFail(e, "lease")
-	}
 	rec, e := a.ledger().RecordQuotaPool(ctx, arbiter.QuotaRun{Job: s.Job, Profile: seat.gateName(), LaunchProfile: launchProfile(seat.Canon, launch.Effort), Gate: granted})
 	if e != nil {
 		return ledgerFail(e, "lease")

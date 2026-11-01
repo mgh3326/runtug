@@ -483,7 +483,7 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 	if e != nil {
 		return "", e
 	}
-	granted, e := admissionGate(seat.gateName(), gate)
+	granted, e := admissionGate(seat.gateName(), s.AccountKey, gate)
 	if e != nil {
 		return "", ledgerFail(e, "lease")
 	}
