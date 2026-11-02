@@ -750,10 +750,31 @@ tries the next holder of that account. An account-scoped quota refusal ends
 that account attempt without retrying the same quota on another host. Local
 judgments retain `source=local` and the selected account key.
 
-When no host declares a required capability, the `NO_ELIGIBLE_HOST` refusal
-names it (`no host declares cap unity`).
+Admission is host-first. Hosts that fit the work — required `--tags`
+declared, role and grade accepted, not excluded, awake or wakeable — are
+ranked: awake hosts under the load threshold, then awake hosts without a load
+reading, then awake hosts at or over it (the local `max_load_ratio` guard or
+`placement.load_threshold`), then sleepers; inside a bucket by the hub score
+(free capacity weighted by host power) when every ranked host has one, else
+by load, then configuration order. On each ranked host the ranked account
+candidates present there are judged in the pool order above, through the
+unchanged quota gate, and the first admitted (host, account) pair wins. An
+account-scoped refusal holds on every host, so that candidate is not judged
+again; a host-scoped failure only skips the host, and a host a refresh could
+not reach is skipped for the round. A host whose present accounts are all
+refused is skipped, not fatal. The selection record's `hosts` list explains
+each host: `caps`, `caps_match`, `missing_caps`, `load_ratio`, `score`,
+`over_threshold`, `rank`, each `tried` account and rung with its `result`
+(`admitted`, `refused`, `skipped`) and `reason`, and the host `outcome`
+(`chosen`, `all_refused`, `no_candidate_present`, `not_tried`, or why the
+host does not fit: `missing_caps:…`, `role_not_accepted:…`,
+`grade_not_accepted:…`, `excluded`, `disconnected`). When no host declares a
+required capability, the `NO_ELIGIBLE_HOST` refusal names it (`no host
+declares cap unity`).
 
-After choosing an account, placement considers only hosts holding it. The
+After choosing an account, placement considers only hosts holding it, and
+tries the host selection admitted it on first among hosts in the same load
+bucket. The
 executing host checks the current binding again before launch. An explicit
 `--host` limits the eligible accounts. A refusal names that restriction and
 does not claim fleet exhaustion. Exhausted Claude accounts do not prevent

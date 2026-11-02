@@ -48,8 +48,11 @@ type Spawn struct {
 	// RoutingRole and AccountKey bind delegated admission to the selection.
 	RoutingRole string `json:"routing_role,omitempty"`
 	AccountKey  string `json:"account_key,omitempty"`
+	// SelHost is the host host-first selection admitted the account on;
+	// placement tries it first among hosts in the same load bucket.
 	// TaskGrade is the grade placement checks against a host's grades
 	// list, empty for lead and consult.
+	SelHost   string `json:"-"`
 	TaskGrade string `json:"-"`
 }
 
@@ -280,7 +283,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			return e
 		}
 		s.Profile = sel.chosen.seatName
-		s.AccountKey, s.RoutingRole, s.route = sel.chosen.accountKey, sel.req.route.role, sel.req.route
+		s.AccountKey, s.RoutingRole, s.SelHost, s.route = sel.chosen.accountKey, sel.req.route.role, sel.chosen.host, sel.req.route
 		selEffort = sel.chosen.row.Effort
 		if selEffort != "" {
 			s.Effort = selEffort
