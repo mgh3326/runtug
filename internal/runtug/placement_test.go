@@ -883,3 +883,19 @@ func TestParseSpawnBuilderFamilyFlags(t *testing.T) {
 		t.Fatalf("%+v %v", s, e)
 	}
 }
+
+func TestParseSpawnOperatorRequestImpliesPurpose(t *testing.T) {
+	base := []string{"-c", "/tmp", "-p", "/tmp/brief", "-w", "w", "-l", "l", "--t", "T1"}
+	s, err := parseSpawn(append(append([]string{}, base...), "--operator-request", "hk:task/1"))
+	if err != nil || s.Purpose != "operator-request" {
+		t.Fatalf("purpose = %q, err = %v; want operator-request", s.Purpose, err)
+	}
+	s, err = parseSpawn(append(append([]string{}, base...), "--operator-request", "hk:task/1", "--purpose", "architect"))
+	if err != nil || s.Purpose != "architect" {
+		t.Fatalf("explicit purpose overridden: %q, %v", s.Purpose, err)
+	}
+	s, err = parseSpawn(base)
+	if err != nil || s.Purpose != "" {
+		t.Fatalf("purpose without operator request = %q, %v", s.Purpose, err)
+	}
+}
