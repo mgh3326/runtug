@@ -83,11 +83,19 @@ Before the pool order runs, a **role table** narrows the candidates. The
 table is the hk document `policy/model-routing` (its v1 JSON block); runtug
 reads it at selection time and caches the last good copy under
 `$XDG_STATE_HOME/runtug` (default `~/.local/state/runtug`). The seat role
-maps to a routing role (`builder`/`counsel` → `lead`, `worker` →
+maps to a routing role (`builder` → `lead`, `counsel` → `consult`, `worker` →
 `implementer`, `tester` → `verifier`, `reviewer` → `reviewer`);
-`--routing-role lead|implementer|explorer|verifier|reviewer|judge` overrides
+`--routing-role lead|consult|implementer|explorer|verifier|reviewer|judge` overrides
 it for one spawn or plan. Only the role's `allowed` profiles are candidates,
 then grade, gate, the family rules and the pool order apply as before.
+
+Grade-filtered roles skip catalog rows whose grade is `unrated`, recording
+`grade_unrated`. Leads and consults have no task grade and may select these rows
+under their ordinary role, effort, gate, and quota rules. Plan output preserves
+the `unrated` grade for both chosen and dropped rows.
+
+Lead and consult quota requests carry their routing role to pacelever, including
+when the launcher seat is a worker. Seat and family checks retain the seat role.
 
 When every allowed profile is quota-exhausted, the role's `on_exhaustion`
 decides: `wait` refuses `role_exhausted_wait` (exit 86) with the earliest
@@ -100,7 +108,7 @@ hk unreachable: the cache is used (`policy_source=cache@vN`); no cache:
 routed.
 
 ```sh
-runtug resolve --role lead --grade A [--json]
+runtug resolve --role lead [--json]
 ```
 
 `runtug resolve` runs the same routed selection without placing a host or

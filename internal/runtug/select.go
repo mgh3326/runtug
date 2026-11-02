@@ -190,6 +190,7 @@ type selCand struct {
 	accountKey  string
 	host        string
 	hosts       []selHost
+	holders     []selHost
 	code        string
 	ignoreGrade bool
 }
@@ -475,8 +476,13 @@ type selHost struct {
 	wakeable bool
 	eligible bool
 	excluded bool
-	load     *float64
-	score    *float64
+	// restricted marks a host excluded only by --host or --exclude-host.
+	// It is never placed or gated, but it may still measure an account it
+	// holds: the reading belongs to the account, so a restricted spawn
+	// judges the same evidence as the unrestricted plan.
+	restricted bool
+	load       *float64
+	score      *float64
 	// over marks a host at or above its load threshold (local
 	// max_load_ratio, else placement.load_threshold); it ranks last among
 	// awake hosts. fit names why the host cannot take this work at all
@@ -551,6 +557,7 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 			}
 		}
 		if slices.Contains(excluded, name) || s.Host != "" && s.Host != "auto" && s.Host != name && !(local && s.Host == "local") {
+			h.restricted = !h.excluded
 			h.excluded = true
 		}
 		// The same pressure rule as the placement plan: the local
@@ -674,7 +681,6 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	for _, row := range rows {
 		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
 		roleCap := req.route.roleEffortFor(row)
-		_, validGrade := gradeOrder[row.Grade]
 		switch {
 		case row.RetiredAt != nil:
 			c.reason = "retired"
@@ -682,8 +688,10 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			c.reason = "catalog_incomplete"
 		case !req.route.admits(row.Profile):
 			c.reason = "role_filtered"
-		case !validGrade:
+		case !validCatalogGrade(row.Grade):
 			c.reason = "grade_invalid"
+		case row.Grade == gradeUnrated && !req.route.top():
+			c.reason = "grade_unrated"
 		case !req.route.top() && gradeOrder[row.Grade] < gradeOrder[req.grade]:
 			c.reason = "grade_insufficient"
 		case row.Gate != "default" && row.Gate != "escalation" && row.Gate != "consult_only":
@@ -722,7 +730,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 		}
 		for _, binding := range bindings {
 			x := *c
-			x.accountKey, x.hosts = binding.key, binding.hosts
+			x.accountKey, x.hosts, x.holders = binding.key, binding.hosts, binding.holders
 			p.cands = append(p.cands, &x)
 			if policy.isCredit(row.Pool) {
 				if creditErr != nil {
@@ -735,7 +743,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 				}
 				continue
 			}
-			acc := pres.account(ctx, binding.key, row.Pool, binding.hosts, false)
+			acc := pres.account(ctx, binding.key, row.Pool, binding.holders, false)
 			if why := sharedReason(binding.key, acc); why != "" || acc.Quota == nil {
 				x.code = pres.accountFailureCode(binding.key)
 				x.reason = strings.ToLower(x.code)
@@ -745,7 +753,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			}
 			p.classify(&x, *acc.Quota)
 			if x.code == outcomeQuotaUnknown {
-				acc = pres.account(ctx, binding.key, row.Pool, binding.hosts, true)
+				acc = pres.account(ctx, binding.key, row.Pool, binding.holders, true)
 				if sharedReason(binding.key, acc) == "" && acc.Quota != nil {
 					x.reason, x.code, x.outcome = "", "", ""
 					p.classify(&x, *acc.Quota)
