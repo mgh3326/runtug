@@ -265,7 +265,7 @@ func sharedReason(key string, acc SharedAccount) string {
 // selectedAccountReason names why the executing host cannot confirm that it
 // holds the selected account, or "" when it can. held is the account its own
 // fresh presence names; outside credit pools the shared reading must also be
-// observed, fresh and not degraded. Unknown evidence always refuses.
+// observed and not degraded. Freshness belongs to the account-bound quota gate.
 func selectedAccountReason(selected, held string, acc SharedAccount, credit bool) string {
 	switch {
 	case held == "":
@@ -275,7 +275,11 @@ func selectedAccountReason(selected, held string, acc SharedAccount, credit bool
 	case credit:
 		return ""
 	}
-	return sharedReason(held, acc)
+	why := sharedReason(held, acc)
+	if why == "stale" {
+		return ""
+	}
+	return why
 }
 
 // quotaJudgment binds a gate attempt to its host and, for shared evidence, the

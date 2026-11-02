@@ -82,6 +82,7 @@ const (
 	exitRoleEscalate        = 87  // role routing: every role profile exhausted, ask the parent lane
 	exitAuthUnavailable     = 88  // no usable login/account binding
 	exitQuotaUnknown        = 89  // quota still unknown after one bounded refresh
+	exitTrustPrompt         = 90  // harness is waiting for workspace trust
 	exitTimeout             = 124 // a time-bounded CLI call hit its deadline
 	exitUnreachable         = 255 // SSH could not reach the host (ssh's own status)
 )

@@ -28,6 +28,7 @@ func (a *App) startWatch(job string) error {
 	}
 	defer log.Close()
 	cmd := exec.Command(exe, "_watch", job)
+	cmd.Env = append(os.Environ(), "HERDR_SESSION="+a.herdrSession())
 	cmd.Stdout = log
 	cmd.Stderr = log
 	cmd.Stdin = nil

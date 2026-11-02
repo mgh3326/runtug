@@ -131,6 +131,20 @@ func LoadConfig(path string) (Config, error) {
 	if str(c.Hub, "hub_token_env") != "" && str(c.Hub, "hub_url") == "" {
 		return c, fail(exitConfig, "hub_token_env requires hub_url")
 	}
+	for _, key := range []string{"session_machine_ids", "session_lanes_token_envs"} {
+		if value, exists := c.Hub[key]; exists {
+			mapping, ok := value.(map[string]any)
+			if !ok {
+				return c, fail(exitConfig, "hub.%s must be a session table", key)
+			}
+			for session, value := range mapping {
+				text, ok := value.(string)
+				if !validID(session) || !ok || strings.TrimSpace(text) == "" || key == "session_machine_ids" && !validID(text) {
+					return c, fail(exitConfig, "hub.%s has an invalid session entry", key)
+				}
+			}
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(c.Hosts)) {
 		h := c.Hosts[name]
 		if !validID(name) {

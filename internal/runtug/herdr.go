@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -368,6 +369,9 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		args = append([]string{"agent", "start", s.Label, "--kind", seat.Kind, "--pane", pane, "--timeout", fmt.Sprint(timeout.Milliseconds()), "--"}, argv...)
 	}
 	if e := a.must(ctx, "herdr", args...); e != nil {
+		if trustErr := a.checkTrustPrompt(ctx, seat.Kind, pane, s.CWD); trustErr != nil {
+			return trustErr
+		}
 		return e
 	}
 	if seat.Kind == "devin" || seat.Kind == "cmd" {
@@ -397,7 +401,13 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 		}
 	}
 	if !foreground {
+		if e := a.checkTrustPrompt(ctx, seat.Kind, pane, s.CWD); e != nil {
+			return e
+		}
 		return fail(exitConfig, "agent not in foreground; brief withheld")
+	}
+	if e := a.checkTrustPrompt(ctx, seat.Kind, pane, s.CWD); e != nil {
+		return e
 	}
 	if seat.Kind == "devin" {
 		r := a.call(ctx, "herdr", "agent", "explain", pane)
@@ -427,6 +437,9 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 				proven = true
 				break
 			}
+			if codexTrustPrompt(screen) {
+				return trustPromptError(s.CWD)
+			}
 			if !a.Now().Before(deadline) {
 				break
 			}
@@ -438,7 +451,13 @@ func (a *App) start(ctx context.Context, s Spawn, seat Seat, l Launch, pane stri
 			return fail(exitConfig, "Codex model/effort footer not proven")
 		}
 	}
-	return a.waitAgentIdle(ctx, pane, timeout)
+	if e := a.waitAgentIdle(ctx, pane, timeout); e != nil {
+		if trustErr := a.checkTrustPrompt(ctx, seat.Kind, pane, s.CWD); trustErr != nil {
+			return trustErr
+		}
+		return e
+	}
+	return nil
 }
 
 // waitAgentIdle waits for the pane's agent to go idle. herdr answers
@@ -505,6 +524,10 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 	if before != "idle" && before != "done" {
 		return fail(exitSubmitUnconfirmed, "agent must be idle before initial brief")
 	}
+	initial, e := a.visible(ctx, pane)
+	if e != nil {
+		return e
+	}
 	if kind == "cmd" {
 		if e = a.must(ctx, "herdr", "pane", "send-text", pane, brief); e != nil {
 			return e
@@ -518,6 +541,7 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 		}
 	}
 	for attempt := 0; attempt < 2; attempt++ {
+		residue := false
 		for n := 0; n < 15; n++ {
 			status, e := a.status(ctx, pane)
 			if e != nil {
@@ -529,7 +553,8 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 			}
 			// A pasted chip or the brief in the composer is not proof. Require the
 			// cold idle pane to start working, corroborated by no unsubmitted chip.
-			if status == "working" && !strings.Contains(visible, "[Pasted text") {
+			residue = briefInComposer(kind, visible, brief)
+			if !residue && (status == "working" || submittedBrief(kind, visible, brief) && !submittedBrief(kind, initial, brief)) {
 				return nil
 			}
 			if e = a.Sleep(ctx, time.Second); e != nil {
@@ -537,7 +562,7 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 			}
 		}
 		// Retry the submit key, never paste a second copy of an ambiguous payload.
-		if attempt == 0 {
+		if attempt == 0 && residue {
 			scope := "agent"
 			if kind == "cmd" {
 				scope = "pane"
@@ -547,15 +572,104 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 			}
 		}
 	}
-	return fail(exitSubmitUnconfirmed, "brief submission unconfirmed after one submit retry")
+	return fail(exitSubmitUnconfirmed, "BRIEF_SUBMISSION_UNCONFIRMED: session=%s pane=%s; no working transition or submitted brief turn", a.herdrSession(), pane)
+}
+
+// A prompt marker alone can be the editor. Require the exact payload followed
+// by an assistant turn; this also proves a brief that finished between reads.
+func submittedBrief(kind, screen, brief string) bool {
+	if kind != "codex" {
+		return false
+	}
+	lines := cleanScreen(screen)
+	for i, line := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(line), "› ") {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			if strings.HasPrefix(strings.TrimSpace(lines[j]), "› ") {
+				break
+			}
+			if strings.HasPrefix(strings.TrimSpace(lines[j]), "• ") {
+				payload := strings.TrimPrefix(strings.TrimSpace(line), "› ") + strings.Join(lines[i+1:j], "")
+				if compact(payload) == compact(brief) {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+func compact(s string) string { return strings.Join(strings.Fields(s), "") }
+
+func briefInComposer(kind, screen, brief string) bool {
+	if strings.Contains(screen, "[Pasted text") {
+		return true
+	}
+	if kind != "codex" {
+		return false
+	}
+	lines := cleanScreen(screen)
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "› ") {
+			return strings.Contains(compact(strings.Join(lines[i:], "")), compact(brief)) && !submittedBrief(kind, strings.Join(lines[i:], "\n"), brief)
+		}
+	}
+	return false
+}
+
+func codexTrustPrompt(screen string) bool {
+	s := strings.ToLower(normalized(screen))
+	legacy := strings.Contains(s, "do you trust the contents of this directory?") && strings.Contains(s, "yes, continue") && strings.Contains(s, "no, quit")
+	current := strings.Contains(s, "folder access") && strings.Contains(s, "trust this folder?") && strings.Contains(s, "trust and continue") && strings.Contains(s, "2. quit")
+	return legacy || current
+}
+
+func trustPromptError(cwd string) error {
+	return fail(exitTrustPrompt, "WORKSPACE_TRUST_REQUIRED: Codex directory trust prompt for %s; brief withheld; approve only this worktree in the executing CODEX_HOME", cwd)
+}
+
+func (a *App) checkTrustPrompt(ctx context.Context, kind, pane, cwd string) error {
+	if kind == "codex" {
+		if screen, e := a.visible(ctx, pane); e == nil && codexTrustPrompt(screen) {
+			return trustPromptError(cwd)
+		}
+	}
+	return nil
 }
 func (a *App) registerLane(ctx context.Context, lane, parent, pane, role, machine string) error {
 	if str(a.Config.Hub, "hub_url") == "" {
 		return fail(exitConfig, "hub lane config missing")
 	}
 	args := []string{"lanes", "add", lane, "--machine", machine, "--pane", pane, "--parent", parent}
-	args = append(args, a.Config.hubArgs(role)...)
+	args = append(args, a.laneHubArgs(role)...)
+	for i, arg := range args {
+		if arg != "--hub-token-env" || i+1 == len(args) {
+			continue
+		}
+		env, e := readEnvFile(expand(args[i+1]))
+		if e != nil {
+			return fail(exitConfig, "lane credential: %v", e)
+		}
+		if id := env["HUB_MACHINE_ID"]; id != "operator" && id != machine {
+			return fail(exitConfig, "LANE_SESSION_MACHINE_MISMATCH: session=%s route=%s credential_machine=%s; configure hub.session_machine_ids and hub.session_lanes_token_envs together", a.herdrSession(), machine, id)
+		}
+		args[i+1] = expand(args[i+1])
+	}
 	return a.must(ctx, "panewire", args...)
+}
+
+func (a *App) laneHubArgs(role string) []string {
+	c := a.Config
+	c.Hub = maps.Clone(a.Config.Hub)
+	if tokens, ok := c.Hub["session_lanes_token_envs"].(map[string]any); ok {
+		if token := str(tokens, a.herdrSession()); token != "" {
+			c.Hub["lanes_token_env"] = token
+		}
+	}
+	return c.hubArgs(role)
 }
 func (a *App) hubGate(ctx context.Context, cwd, pool string) error {
 	if str(a.Config.Hub, "hub_token_env") == "" {

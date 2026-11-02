@@ -30,6 +30,7 @@ type App struct {
 	Sleep        func(context.Context, time.Duration) error
 	Now          func() time.Time
 	Bins         map[string]string
+	HerdrSession string // frozen for the lifetime of a spawn
 	// Arbiter is the local job ledger (leases, job events, gc). Nil means the
 	// one under Home and Jobs; tests inject a store over a temp dir.
 	Arbiter   *arbiter.Store
@@ -149,7 +150,15 @@ func (a *App) call(ctx context.Context, bin string, args ...string) Result {
 	if name == "" {
 		name = bin
 	}
-	return a.Runner.Run(ctx, Command{Name: name, Args: args})
+	c := Command{Name: name, Args: args}
+	if bin == "herdr" {
+		c.Env = []string{"HERDR_SESSION=" + a.herdrSession()}
+	}
+	return a.Runner.Run(ctx, c)
+}
+
+func (a *App) herdrSession() string {
+	return firstNonempty(a.HerdrSession, os.Getenv("HERDR_SESSION"), "default")
 }
 func (a *App) must(ctx context.Context, bin string, args ...string) error {
 	return check(a.call(ctx, bin, args...), bin)
