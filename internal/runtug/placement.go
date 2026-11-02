@@ -1411,7 +1411,11 @@ func (a *App) quotaRequest(s Spawn) (QuotaRequest, bool) {
 	if effort == "" {
 		effort = seat.Effort
 	}
-	return QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: s.Role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose, AccountKey: s.AccountKey}, true
+	role := s.Role
+	if topRoutingRole(s.RoutingRole) {
+		role = s.RoutingRole
+	}
+	return QuotaRequest{Profile: seat.Canon, GateProfile: seat.gateName(), Effort: effort, Role: role, OperatorRequest: s.OperatorRequest, RequestedBy: s.RequestedBy, Purpose: s.Purpose, AccountKey: s.AccountKey}, true
 }
 
 func (a *App) quotaPool(ctx context.Context, s Spawn) string {
