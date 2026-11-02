@@ -707,7 +707,7 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 	}
 	// A credit balance is optional: without a readable store every credit
 	// pool keeps the credit tier, as before balances were read.
-	if credits, e := q.creditBalances(ctx, now); e == nil {
+	if credits, e := q.creditBalances(ctx); e == nil {
 		for pool, c := range credits {
 			v := pools[pool]
 			v.Credit = c

@@ -267,7 +267,7 @@ func (a *App) help(cmd string) error {
 	case "delegate":
 		fmt.Fprintln(a.Out, "Usage: runtug delegate --role reader|verifier|reviewer --prompt FILE [--grade G] [--cwd DIR] [--timeout D] [--headless] [--patch] [--panel 2..4] [--family F] [--workspace W] [--json] (hand one bounded reading, verifying or cross-checking task to a free or spare-quota model; the answer is the last thing printed)")
 	case "plan":
-		fmt.Fprintln(a.Out, "Usage: runtug plan [--grade G] --t T0..T3 [--role R] [--tags a,b] [--effort E] [--urgency normal|urgent] [--exclude-host a,b] [--builder-family F] [--routing-role R] [--allow-escalation] [--json] (live, read-only: the host and model a spawn would get now; no task, spawn or job write)")
+		fmt.Fprintln(a.Out, "Usage: runtug plan [--grade G] --t T0..T3 [--role R] [--tags a,b] [--effort E] [--urgency normal|urgent] [--exclude-host a,b] [--builder-family F] [--routing-role R] [--allow-escalation] [--credit-at TIME] [--json] (live, read-only: the host and model a spawn would get now; no task, spawn or job write)")
 	case "resolve":
 		fmt.Fprintln(a.Out, "Usage: runtug resolve --role lead|consult|implementer|explorer|verifier|reviewer|judge [--grade G] [--t T0..T3] [--builder-family F] [--harness KIND] [--allow-escalation] [--json] (read-only: the profile and effort role routing and quota ordering pick now, for an in-session subagent; no host placement, spawn or job write; the answer is the last thing printed)")
 	case "preflight":

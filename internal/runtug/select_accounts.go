@@ -194,16 +194,19 @@ func (p *selPlan) classify(c *selCand, v PoolView) {
 			c.reason, c.code, c.outcome = "pool_excluded", outcomeNoRoleCandidate, "dropped:pool_excluded"
 			return
 		}
-		// A balance the observed pace leaves unspent at expiry is lost like
-		// a subscription's unused share at reset: it ranks as waste risk by
-		// the same urgency unit. The account-bound gate still admits it.
-		if ok, urgency := v.Credit.expiring(); ok {
-			hours, unused := v.Credit.HoursLeft, v.Credit.LeftPct
-			if v.Credit.PacePctH != nil {
-				unused -= *v.Credit.PacePctH * hours
-			}
+		// Credit ranks below subscription quota, which resets sooner, and
+		// is the fallback when none is admitted. In the final window before
+		// expiry a balance left ranks first so it is used up; the
+		// account-bound gate still admits it.
+		at := p.req.creditAt
+		if at.IsZero() {
+			at = p.at
+		}
+		if ok, hours := v.Credit.finalWindow(at, *p.policy.CreditFinalDays); ok {
+			left, urgency := v.Credit.LeftPct, v.Credit.LeftPct/hours
 			c.tierName, c.tier = "waste", slices.Index(p.order, "waste")
-			c.risk, c.urgency, c.resetHrs, c.unused, c.credit = true, &urgency, &hours, &unused, v.Credit
+			c.risk, c.urgency, c.resetHrs, c.unused = true, &urgency, &hours, &left
+			c.credit = &creditFinal{balance: v.Credit, hoursLeft: hours, days: *p.policy.CreditFinalDays}
 		}
 		return
 	}

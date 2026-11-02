@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 // `runtug plan` answers "right now, which host and which model would a spawn
@@ -29,8 +30,8 @@ import (
 // seat (hosts a spawn would wake are listed); a local launch or gate refusal
 // keeps its own code.
 type planOpts struct {
-	grade, t, role, tags, effort, urgency, exclude, builderFamily, routingRole string
-	allowEscalation, json                                                      bool
+	grade, t, role, tags, effort, urgency, exclude, builderFamily, routingRole, creditAt string
+	allowEscalation, json                                                                bool
 }
 
 func (a *App) planCmd(ctx context.Context, args []string) (err error) {
@@ -48,6 +49,7 @@ func (a *App) planCmd(ctx context.Context, args []string) (err error) {
 	f.StringVar(&o.routingRole, "routing-role", "", "override the policy/model-routing role")
 	f.BoolVar(&o.allowEscalation, "allow-escalation", false, "admit escalation and consult-only rungs")
 	f.BoolVar(&o.json, "json", false, "print the full decision as JSON")
+	f.StringVar(&o.creditAt, "credit-at", "", "judge credit expiry as of this RFC3339 time or YYYY-MM-DD (dry run; quota and presence keep the clock)")
 	if e := f.Parse(args); e != nil {
 		return fail(exitUsage, "%v", e)
 	}
@@ -82,12 +84,20 @@ func (a *App) planCmd(ctx context.Context, args []string) (err error) {
 	if _, e := parseHosts(o.exclude); e != nil {
 		return e
 	}
+	var creditAt time.Time
+	if o.creditAt != "" {
+		if creditAt, e = time.Parse(time.RFC3339, o.creditAt); e != nil {
+			if creditAt, e = time.Parse("2006-01-02", o.creditAt); e != nil {
+				return fail(exitUsage, "invalid --credit-at %q: want RFC3339 or YYYY-MM-DD", o.creditAt)
+			}
+		}
+	}
 	if a.Quota == nil {
 		return fail(exitConfig, "plan needs the quota catalog")
 	}
 	cwd, _ := os.Getwd()
 	s := Spawn{CWD: cwd, Profile: "auto", Host: "auto", Role: o.role, T: o.t, Tags: o.tags, Effort: o.effort, ExcludeHosts: o.exclude, AllowEscalation: o.allowEscalation, ParentFamily: o.builderFamily, Urgency: o.urgency, DryRun: true}
-	req := selReq{grade: o.grade, t: o.t, role: o.role, tags: tags, effort: o.effort, allowEscalation: o.allowEscalation, builderFamily: o.builderFamily, urgency: urgencyNormal, urgencySource: "default"}
+	req := selReq{grade: o.grade, t: o.t, role: o.role, tags: tags, effort: o.effort, allowEscalation: o.allowEscalation, builderFamily: o.builderFamily, urgency: urgencyNormal, urgencySource: "default", creditAt: creditAt}
 	if o.urgency != "" {
 		req.urgency, req.urgencySource = o.urgency, "flag"
 	}
@@ -291,8 +301,8 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 	}
 }
 
-// creditNote names why a credit pool ranks as waste: its balance expires
-// unspent at the observed pace.
+// creditNote names why a credit pool ranks first: a balance is left in the
+// final window before its expiry.
 func creditNote(c *selCand) string {
 	if c.credit == nil {
 		return ""

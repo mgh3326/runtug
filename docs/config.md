@@ -426,8 +426,8 @@ A paid pool is at **waste risk** when the projected unused share of its
 longest window (a day or more) at that window's reset — waste urgency ×
 hours to reset, i.e. 100 − its projection — is at least
 `waste_risk.min_unused_pct`, however far the reset is. Free seats and
-`credit_pools` are never at waste risk by this rule (an expiring credit
-balance is, below), and neither is a pool whose
+`credit_pools` are never at waste risk by this rule (a credit balance in
+its final window ranks first instead, below), and neither is a pool whose
 longest window cannot be paced (for example the first 5% of a fresh
 window). Waste-risk pools rank ahead of every tier, free included, and
 among themselves by waste urgency first (a pool resetting sooner with the
@@ -456,19 +456,21 @@ admissible without a balance observation. An operator pool class of `exclude`
 refuses them. Their selection record carries `tier=credit`, with absent
 balance values left unset.
 
-When pacelever's manual store (`pacelever manual list`) holds the pool's
-current credit entry, runtug reads its balance (`100 − used_pct`, plus the
-dollar balance when recorded) and its expiry. The observed pace is the spend
-between that entry and the one it supersedes, under pacelever's own limits
-(newer entry at most a week old, at least an hour apart, no top-up); without
-such a pair the pace is unknown and counts as no spend. A balance the pace
-leaves partly unspent at expiry ranks as waste risk in tier `waste` with
-`waste_reason=credit_expiring`; its waste urgency is the balance left per
-hour to expiry, the same unit as a subscription's unused share per hour to
-reset. `runtug plan` prints `credit_expiring days_left=… balance_pct=…`
-(and `balance_usd=…` when recorded). A credit with no entry, already expired
-or exhausted, or spent in time at the observed pace stays in tier `credit`.
-An unreadable store leaves every credit pool in tier `credit`.
+Credit ranks below every admitted subscription pool, which resets sooner,
+and is used when none is admitted (pace refused, limit, no login on the
+host); how much credit has been spent does not matter. In the final
+`credit_final_days` (default `4`; `0` disables) before the credit's expiry a
+pool with a balance left ranks first, ahead of waste-risk pools and the free
+seats, so the rest is used up: tier `waste`, `waste_reason=credit_expiring`.
+runtug reads the balance (`100 − used_pct`, plus the dollar balance when
+recorded) and the expiry from the pool's current credit entry in pacelever's
+manual store (`pacelever manual list`). `runtug plan` prints
+`credit_expiring final_window_days=… days_left=… balance_pct=…` (and
+`balance_usd=…` when recorded); `runtug plan --credit-at TIME` judges the
+window as of another RFC3339 time or date, read-only, with quota and presence
+still read at the clock. A credit with no entry, already expired or used up,
+or outside the window stays in tier `credit`, and so does every credit pool
+when the store is unreadable.
 If the pool-status query fails, credit candidates are dropped as
 `QUOTA_UNKNOWN` with reason `quota_unknown` and the selection records
 `credit_pool_status_unavailable` in `degraded`. Healthy subscription candidates
