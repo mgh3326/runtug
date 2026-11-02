@@ -44,6 +44,12 @@ type Spawn struct {
 	// RoutingRole and AccountKey bind delegated admission to the selection.
 	RoutingRole string `json:"routing_role,omitempty"`
 	AccountKey  string `json:"account_key,omitempty"`
+	// FreshTTLS is the shared-quota freshness window, in seconds, under which
+	// the placing host admitted AccountKey. The executing host rechecks the
+	// account with the same window, so one reading cannot be fresh at plan
+	// time and stale at spawn time only because the two hosts set (or
+	// default) fresh_ttl_s differently.
+	FreshTTLS int64 `json:"fresh_ttl_s,omitempty"`
 	// SelHost is the host host-first selection admitted the account on;
 	// placement tries it first among hosts in the same load bucket.
 	// TaskGrade is the grade placement checks against a host's grades
@@ -623,8 +629,8 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 	}
 	if s.AccountKey != "" {
 		key, acc := a.remoteAccount(ctx, pool, a.machine(), a.Config.Local)
-		if key != s.AccountKey || !policy.isCredit(pool) && sharedReason(key, acc) != "" {
-			return Launch{}, "", fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: executing host no longer holds the selected account")
+		if why := selectedAccountReason(s.AccountKey, key, acc, policy.isCredit(pool)); why != "" {
+			return Launch{}, "", fail(exitAuthUnavailable, "AUTH_UNAVAILABLE: executing host %s cannot confirm the selected account %s: %s", a.machine(), s.AccountKey, why)
 		}
 	}
 	if policy.isCredit(pool) {

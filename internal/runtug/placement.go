@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	neturl "net/url"
 	"os"
 	"path"
@@ -1057,6 +1058,9 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	remote.Tags = ""
 	remote.Delegated = true
 	remote.Wait = false
+	if remote.AccountKey != "" {
+		remote.FreshTTLS = int64(a.placementTTL("fresh_ttl_s", 300) / time.Second)
+	}
 	if s.Report != "" {
 		if !within(a.Jobs, s.Report) {
 			return candResult{stop: fail(exitUsage, "remote report outside jobs root")}
@@ -1514,6 +1518,9 @@ func (a *App) spawnStdin(ctx context.Context) error {
 	if env.Spawn.Host != "local" {
 		return fail(exitUsage, "delegation must target local")
 	}
+	if e = a.adoptFreshTTL(env.Spawn.FreshTTLS); e != nil {
+		return e
+	}
 	f, e := os.CreateTemp("", "runtug-brief-*")
 	if e != nil {
 		return e
@@ -1529,6 +1536,26 @@ func (a *App) spawnStdin(ctx context.Context) error {
 	env.Spawn.Prompt = f.Name()
 	env.Spawn.Delegated = true
 	return a.Spawn(ctx, env.Spawn)
+}
+
+// adoptFreshTTL makes this delegated spawn judge shared-quota freshness with
+// the placing host's window (seconds; 0 keeps this host's own). Every reading
+// here (hub state, direct hk read, the selected-account recheck) then agrees
+// with the plan that chose this host.
+func (a *App) adoptFreshTTL(seconds int64) error {
+	if seconds == 0 {
+		return nil
+	}
+	if seconds < 0 || seconds > 86400 {
+		return fail(exitUsage, "delegated fresh_ttl_s %d out of range", seconds)
+	}
+	quota := maps.Clone(a.Config.Quota)
+	if quota == nil {
+		quota = map[string]any{}
+	}
+	quota["fresh_ttl_s"] = seconds
+	a.Config.Quota = quota
+	return nil
 }
 func (a *App) prepareBriefForHost(s Spawn, host, body string) (string, error) {
 	copy := *a
