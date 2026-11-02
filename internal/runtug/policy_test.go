@@ -79,7 +79,7 @@ func TestSeatPolicy(t *testing.T) {
 			s := p.Profiles[tt.profile]
 			host := map[string]any{s.Capability: tt.host}
 			l := Launch{ModelID: "provider/model", Effort: "high", Grade: "A+", Gate: tt.gate}
-			if got := code(s.Check(l, tt.role, tt.grade, tt.builder, tt.arm, host)); got != tt.want {
+			if got := code(s.Check(l, tt.role, tt.grade, tt.builder, tt.arm, host, false)); got != tt.want {
 				t.Fatalf("got %d want %d", got, tt.want)
 			}
 		})

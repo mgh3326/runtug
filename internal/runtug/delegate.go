@@ -466,7 +466,7 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 		return "", e
 	}
 	s.Profile, s.Effort = sel.chosen.seatName, firstNonempty(sel.chosen.row.Effort, s.Effort)
-	s.AccountKey, s.RoutingRole = sel.chosen.accountKey, sel.req.route.role
+	s.AccountKey, s.RoutingRole, s.route = sel.chosen.accountKey, sel.req.route.role, sel.req.route
 	seat := a.Policy.Profiles[s.Profile]
 	shot, ok := oneShot[seat.Kind]
 	if !ok {

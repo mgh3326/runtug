@@ -686,6 +686,40 @@ today's ordering.
 - An explicit `--effort` above the role effort also needs
   `--allow-escalation`.
 
+#### Per-family role effort (`family_effort`)
+
+`roles.lead.family_effort` (or `roles.consult.family_effort`) maps a
+profile name to the role effort that family leads at, in place of the
+role's `effort`. The current table carries `{"codex-sol": "xhigh"}`.
+
+- For a mapped family, the mapped rung is the role-effort rung. Every rule
+  above applies to it: rungs above it are `above_role_effort`, and if it is
+  unplaced the family is skipped `role_effort_unplaced` with
+  `role_effort` set to the mapped effort.
+- The entry is the operator's explicit opt-in for that exact rung. runtug
+  admits it even when its catalog gate is `escalation`, and a builder seat
+  may launch it. Without `--allow-escalation`, other escalation rungs stay
+  `gate_class`, and rungs above the mapped one stay excluded.
+  With `family_effort` `codex-sol=xhigh`, a lead admits `codex-sol@xhigh`
+  (gate `escalation`). It still drops `codex-sol@max` as
+  `above_role_effort`.
+- Family rule: a key matches a catalog row whose profile is the key. A key
+  that names a top profile also matches an OMP row whose catalog model is
+  that profile's top model. `omp-sol` runs `openai/gpt-6.1-sol`, so a
+  `codex-sol` entry also sets the `omp-sol` role effort. Likewise, an
+  `opus` entry covers `omp-opus`. If the map
+  names both the profile and its top profile, the profile's own entry wins.
+  An `omp-sol` key applies to `omp-sol` only, never to `codex-sol`.
+  The role's `allowed` list still decides whether `omp-sol` is a
+  candidate at all.
+- The selection record's `routing.family_effort` carries the policy map.
+  When the chosen rung's role effort came from it,
+  `routing.family_effort_chosen` records `profile`, `key`, `effort` and
+  `gate`, and text `plan` prints
+  `family_effort <key>=<effort> chosen=<profile>@<effort> gate=<gate>`.
+  Such a rung is not an escalation, so `routing.escalation` is absent.
+  `resolve` prints `effort=<mapped rung>`.
+
 The document remains v1. If it has no `consult` entry, runtug uses its
 `lead` rule with the distinct `consult` identity. Lead and consult always
 wait on exhaustion and never downgrade. Neither seat role can override its
@@ -696,8 +730,13 @@ routing role to obtain weaker eligibility.
 runtug reads the first fenced `json` block of `policy/model-routing`.
 `version` must be `1`. `roles.R.allowed` lists catalog profile names, or
 `"*"`. The table also supplies `effort`, `on_exhaustion`, `downgrade_to`,
-`family_rule`, and `fixed`. Unknown fields are ignored. Duplicate keys,
-invalid exhaustion modes, and role maps naming absent roles are refused.
+`family_rule`, `fixed`, and, on lead and consult, `family_effort`. Unknown
+fields are ignored. Duplicate keys, invalid exhaustion modes, and role maps
+naming absent roles are refused. A `family_effort` entry is refused with
+`family_effort_invalid` in three cases: it sits on a role other than lead
+or consult, its key is neither a top profile nor a profile the role
+allows (any profile ID when the role allows `"*"`), or its effort is not
+one of `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`.
 This PR does not parse the proposed v2 schema.
 
 `--routing-role lead|consult|implementer|explorer|verifier|reviewer|judge`

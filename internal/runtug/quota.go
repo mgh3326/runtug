@@ -26,6 +26,11 @@ type Launch struct {
 	Family  string `json:"family"`
 }
 
+// row is the catalog rung a launch row stands for, for routing checks.
+func (l Launch) row() CatalogRow {
+	return CatalogRow{Profile: l.Profile, ModelID: l.ModelID, Effort: l.Effort, Gate: l.Gate, Grade: l.Grade, Pool: l.Pool}
+}
+
 // QuotaRequest asks the quota CLI about one launch. Profile is the launch
 // canon; GateProfile, when set, is the name its gate knows the profile by.
 // AccountKey scopes only Gate to shared evidence for a remote host's account.

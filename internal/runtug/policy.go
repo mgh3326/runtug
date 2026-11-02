@@ -106,7 +106,10 @@ var gradeOrder = map[string]int{"C": 0, "B": 1, "A": 2, "A+": 3, "S": 4, "S+": 5
 // form "Grade S+, T3"; both are accepted. Grade and scale must be adjacent.
 var taskMarker = regexp.MustCompile(`(?i)(?:\(|\b)grade (S\+|S|A\+|A|B|C),\s*(T[0-3])\b`)
 
-func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[string]any) error {
+// Check admits one launch row for a seat role. familyGate is the routing
+// table's family_effort opt-in for exactly this escalation rung
+// (routing.familyAdmitsGate); it lets a builder run it.
+func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[string]any, familyGate bool) error {
 	if _, ok := gradeOrder[l.Grade]; !ok || l.ModelID == "" || (l.Effort == "" && s.needsEffort()) || l.Gate == "" {
 		return fail(exitConfig, "canon launch data incomplete")
 	}
@@ -133,7 +136,7 @@ func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[s
 	if !slices.Contains(roles, role) {
 		return fail(exitSeatRefused, "seat does not allow role %s", role)
 	}
-	if role == "builder" && l.Gate != "default" {
+	if role == "builder" && l.Gate != "default" && !familyGate {
 		return fail(exitSeatRefused, "%s rung is worker/tester only", l.Gate)
 	}
 	if e6 && arm != s.Canon+"@"+l.Effort {
