@@ -11,11 +11,11 @@ import (
 )
 
 // A host the hub reports connected while ssh cannot reach it (hk 2647):
-// mac-work holds a codex account only it has and shares a claude account
-// with the local host. The claude reading is stale, so it needs a refresh;
-// the local holder can do it, mac-work over ssh cannot.
+// it holds a codex account only it has and shares a claude account with
+// the local host. The claude reading is stale, so it needs a refresh; the
+// local holder can do it, the hub-only host over ssh cannot.
 const (
-	hubOnlyHost   = "mac-work"
+	hubOnlyHost   = "host-hub"
 	hubOnlyClaude = "claude:00000000000000a1"
 	hubOnlyCodex  = "codex:00000000000000c3"
 )
@@ -50,14 +50,14 @@ func hubOnlyFixture(t *testing.T) *hubOnlyEnv {
 	}
 	e.src.accounts[hubOnlyClaude] = SharedAccount{Key: hubOnlyClaude, Observed: true, MeasuredAt: a.Now().Add(-2 * time.Hour)}
 	e.src.accounts[hubOnlyCodex] = SharedAccount{Key: hubOnlyCodex, Observed: true, Fresh: true, MeasuredAt: a.Now(), State: &StateUse{Source: stateSourceHub}}
-	a.Config.Hosts = map[string]map[string]any{hubOnlyHost: {"ssh": "m1"}, "other": {}}
+	a.Config.Hosts = map[string]map[string]any{hubOnlyHost: {"ssh": "hub-only-ssh"}, "other": {}}
 	a.Config.HostOrder = []string{hubOnlyHost, "other"}
 	q.GateDo = gatePools(map[string]string{"sonnet": "claude", "codex-terra61": "codex"})
 	a.Runner = wrapRunner(a.Runner, func(c Command) (Result, bool) {
 		switch {
 		case c.Name == "ssh":
 			e.ssh = append(e.ssh, strings.Join(c.Args, " "))
-			return Result{Code: exitUnreachable, Err: "ssh: connect to host m1: Operation timed out"}, true
+			return Result{Code: exitUnreachable, Err: "ssh: connect to host hub-only-ssh: Operation timed out"}, true
 		case c.Name == "pacelever" && len(c.Args) == 2 && c.Args[0] == "refresh":
 			e.pace = append(e.pace, c.Args[1])
 			if c.Args[1] == "claude" {
@@ -108,11 +108,11 @@ func chosenOn(t *testing.T, sel *selPlan, err error) (string, string, string) {
 	return sel.chosen.seatName, sel.chosen.accountKey, sel.chosen.host
 }
 
-// Refusals 1 and 2: `-m auto --host mac-work` and `--host auto
-// --exclude-host <every other host>` refused NO_ELIGIBLE_HOST while the
-// unrestricted plan admitted mac-work. The restriction left mac-work the
-// claude account's only measurer; its failed ssh refresh took the host down
-// for every account, the hub-fresh codex account included.
+// Refusals 1 and 2: `-m auto --host HOST` and `--host auto --exclude-host
+// <every other host>` refused NO_ELIGIBLE_HOST while the unrestricted plan
+// admitted HOST. The restriction left HOST the claude account's only
+// measurer; its failed ssh refresh took the host down for every account,
+// the hub-fresh codex account included.
 func TestHubOnlyHostRestrictedSpawnAdmitsLikePlan(t *testing.T) {
 	planSeat, planKey, planHost := planChoice(t, hubOnlyFixture(t))
 	if planHost != hubOnlyHost {
@@ -151,21 +151,21 @@ func TestHubOnlyHostRestrictedHolderIsNotPlaced(t *testing.T) {
 			}
 		}
 	}
-	// Held only by mac-work, an unmeasurable account still refuses, and
+	// Held only by HOST, an unmeasurable account still refuses, and
 	// the host refusal stays scoped to --host.
 	e = hubOnlyFixture(t)
 	e.s.Host = hubOnlyHost
 	e.src.presence = e.src.presence[1:]
-	if _, err := e.a.selectProfile(context.Background(), e.s); exitCode(err) != exitPlacement || !strings.Contains(err.Error(), "--host mac-work restricts accounts") {
+	if _, err := e.a.selectProfile(context.Background(), e.s); exitCode(err) != exitPlacement || !strings.Contains(err.Error(), "--host host-hub restricts accounts") {
 		t.Fatalf("unmeasurable only holder: %v", err)
 	}
-	if len(e.ssh) != 1 || !strings.Contains(e.ssh[0], "m1 pacelever refresh 'claude'") {
+	if len(e.ssh) != 1 || !strings.Contains(e.ssh[0], "hub-only-ssh pacelever refresh 'claude'") {
 		t.Fatalf("only holder was not measured over its transport: %v", e.ssh)
 	}
 }
 
-// Refusal 3: `-m codex-terra61 --host mac-work` named no_usable_presence
-// although mac-work holds the account. The pinned seat's default effort
+// Refusal 3: `-m codex-terra61 --host HOST` named no_usable_presence
+// although HOST holds the account. The pinned seat's default effort
 // (low) has no placed rung, so the pool lookup failed and the account was
 // never looked up; the refusal now names that cause.
 func TestHubOnlyHostPinnedProfileNamesUnplacedRung(t *testing.T) {
@@ -186,8 +186,8 @@ func TestHubOnlyHostPinnedProfileNamesUnplacedRung(t *testing.T) {
 	if err := e.a.Spawn(context.Background(), e.s); err != nil {
 		t.Fatalf("placed pinned rung refused: %v", err)
 	}
-	if out := e.a.Out.(interface{ String() string }).String(); !strings.Contains(out, "dry-run host=mac-work profile=codex-terra61") {
-		t.Fatalf("dry run did not reach mac-work: %s", out)
+	if out := e.a.Out.(interface{ String() string }).String(); !strings.Contains(out, "dry-run host=host-hub profile=codex-terra61") {
+		t.Fatalf("dry run did not reach %s: %s", hubOnlyHost, out)
 	}
 	if got := e.q.Calls[len(e.q.Calls)-1]; got.AccountKey != hubOnlyCodex {
 		t.Fatalf("gate judged %q, want the host's shared account", got.AccountKey)
