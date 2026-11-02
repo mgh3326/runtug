@@ -108,7 +108,7 @@ func (a *App) planCmd(ctx context.Context, args []string) (err error) {
 	}
 	c := sel.chosen
 	s.Profile = c.seatName
-	s.AccountKey, s.RoutingRole = c.accountKey, sel.req.route.role
+	s.AccountKey, s.RoutingRole, s.SelHost = c.accountKey, sel.req.route.role, c.host
 	if c.row.Effort != "" {
 		s.Effort = c.row.Effort
 	}
@@ -267,6 +267,13 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 		}
 		name := firstNonempty(c.seatName, c.row.Profile)
 		fmt.Fprintf(a.Out, "dropped %s@%s pool=%s reason=%s\n", name, c.row.Effort, c.row.Pool, c.reason)
+	}
+	for _, t := range sel.hosts {
+		var tried []string
+		for _, x := range t.tries {
+			tried = append(tried, fmt.Sprintf("%s/%s@%s:%s", x.cand.accountKey, firstNonempty(x.cand.seatName, x.cand.row.Profile), x.cand.row.Effort, firstNonempty(x.reason, x.result)))
+		}
+		fmt.Fprintf(a.Out, "host-first %s rank=%d caps=%v outcome=%s tried=[%s]\n", t.host.name, t.rank, hostCaps(t.host.cfg), t.outcome, strings.Join(tried, " "))
 	}
 	if pp != nil {
 		for _, c := range pp.candidates {

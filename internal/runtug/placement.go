@@ -550,6 +550,14 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		if bx, by := placeBucket(*x, threshold), placeBucket(*y, threshold); bx != by {
 			return bx - by
 		}
+		// Host-first selection already chose this machine for the account;
+		// the load bucket still wins so a pressured host stays a last resort.
+		if px, py := x.name == s.SelHost, y.name == s.SelHost; px != py {
+			if px {
+				return -1
+			}
+			return 1
+		}
 		if rx, ry := loginRank(x.login), loginRank(y.login); rx != ry {
 			return rx - ry
 		}
