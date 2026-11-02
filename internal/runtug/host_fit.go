@@ -18,6 +18,7 @@ import (
 //     lead or consult has no grade, so a host with grades set refuses it.
 
 var spawnRoles = []string{"worker", "builder", "tester", "reviewer", "counsel"}
+var hostCapabilities = []string{"macos", "linux", "unity", "xcode", "gpu", "heavy-go"}
 
 // hostCaps returns the declared capabilities of a host: tags and caps merged.
 func hostCaps(cfg map[string]any) []string {
@@ -54,10 +55,18 @@ func roleRefusal(cfg map[string]any, role, grade string) string {
 	return ""
 }
 
-// validHostFit checks the roles and grades lists of one host table.
+// validHostFit checks the caps, roles, and grades lists of one host table.
 func validHostFit(h map[string]any, key string) error {
-	if e := validTags(h["caps"], key+".caps"); e != nil {
-		return e
+	if v, ok := h["caps"]; ok {
+		list, isList := v.([]any)
+		if !isList {
+			return fail(exitConfig, "%s.caps must be a list of known capability strings, got %#v", key, v)
+		}
+		for _, x := range list {
+			if s, isStr := x.(string); !isStr || !slices.Contains(hostCapabilities, s) {
+				return fail(exitConfig, "%s.caps contains an invalid capability %#v", key, x)
+			}
+		}
 	}
 	for _, f := range []struct {
 		name  string
