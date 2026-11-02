@@ -197,6 +197,7 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 func validID(s string) bool { return idPattern.MatchString(s) && s != "." && s != ".." }
 func (a *App) Run(ctx context.Context, args []string) error {
+	a.flushPlacements()
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprintln(a.Out, "Usage: runtug <spawn|delegate|done|escalate|restore|reap|prune|lanes-missing|hosts|profiles|find|name-sync|artifacts|simulate|plan|resolve|preflight> [options]")
 		return nil

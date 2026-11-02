@@ -60,6 +60,7 @@ type Spawn struct {
 	// list, empty for lead and consult.
 	SelHost   string `json:"-"`
 	TaskGrade string `json:"-"`
+	placement *placementDecision
 }
 
 func parseSpawn(args []string) (Spawn, error) {
@@ -177,6 +178,8 @@ func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 	return a.event(ctx, s.Job, "job.task_link", map[string]any{"task_id": s.Task, "job_id": s.Job, "claimed_by": s.Label, "status": status, "inherited_from": s.Inherited})
 }
 func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
+	s.placement = &placementDecision{}
+	defer func() { a.finishPlacement(ctx, s, err) }()
 	defer func() { a.spawnEvents(s, err) }()
 	if s.Grade != "" && (topRoutingRole(builtinRoleMap[s.Role]) || topRoutingRole(s.RoutingRole)) {
 		return fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
@@ -317,6 +320,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			return e
 		}
 		if handled {
+			a.finishPlacement(ctx, s, nil)
 			return a.afterSpawn(ctx, s, true)
 		}
 		placementRec = rec
@@ -406,6 +410,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		s.AccountKey = key
 	}
 	a.stampSelection(&s, a.machine())
+	s.placement.execution = placementExecution{Host: a.machine(), Family: seat.Family, Model: launch.ModelID, Role: placementRole(s), Profile: s.Profile, Pool: firstNonempty(launch.Pool, gatePool(gate)), AccountKey: placementAccount(s.AccountKey)}
 	owner := s.Owner
 	if owner == "" {
 		owner = "default"
@@ -516,6 +521,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	for _, v := range env {
 		tabArgs = append(tabArgs, "--env", v)
 	}
+	s.placement.started = true
 	r := a.call(ctx, "herdr", tabArgs...)
 	if e = check(r, "herdr tab create"); e != nil {
 		return e
@@ -527,6 +533,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	created = unwrap(created)
 	root, _ := created["root_pane"].(map[string]any)
 	pane = str(root, "pane_id")
+	s.placement.execution.PaneID = pane
 	tab := str(created, "tab_id")
 	if pane == "" {
 		return fail(exitConfig, "tab create omitted pane_id")
@@ -568,6 +575,8 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		return e
 	}
 	committed = true
+	s.placement.placed = true
+	s.placement.execution.Repo = a.placementRepo(ctx, s.CWD)
 	if e = a.startWatch(s.Job); e != nil {
 		a.warn("completion watcher failed: %v", e)
 	}
@@ -577,7 +586,8 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	} else if s.Role == "builder" {
 		laneStatus = " lane=UNREGISTERED"
 	}
-	fmt.Fprintf(a.Out, "OK pane=%s model=%s label=%s status=working landed=yes job=%s quota_record=%s/quota_pool%s\n", pane, s.Profile, s.Label, s.Job, pool, laneStatus)
+	fmt.Fprintf(a.Out, "OK pane=%s model=%s label=%s status=working landed=yes job=%s quota_record=%s/quota_pool%s placement=%s\n", pane, s.Profile, s.Label, s.Job, pool, laneStatus, s.placement.execution.receipt())
+	a.finishPlacement(ctx, s, nil)
 	if s.Role == "builder" && !laneOK && a.envOr("RUNTUG_LANE_STRICT", "WRK_LANE_STRICT") == "1" {
 		return fail(exitLaneUnregistered, "builder pane exists but lane is UNREGISTERED")
 	}

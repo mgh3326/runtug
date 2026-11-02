@@ -455,6 +455,8 @@ var oneShot = map[string]struct {
 // quota pool — and closes the job through `done`, so a headless delegation
 // leaves the same records as a pane one.
 func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, brief string, p delegatePaths, timeout time.Duration) (profile string, err error) {
+	s.placement = &placementDecision{}
+	defer func() { a.finishPlacement(ctx, s, err) }()
 	if c.parent != "" {
 		s.Inherited, s.Owner = c.parent, c.owner
 	}
@@ -480,6 +482,7 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 	if e != nil {
 		return "", e
 	}
+	s.placement.execution = placementExecution{Host: a.machine(), Family: seat.Family, Model: launch.ModelID, Role: placementRole(s), Profile: s.Profile, Pool: launch.Pool, AccountKey: placementAccount(s.AccountKey)}
 	argv, env, e := a.launchArgs(seat, launch)
 	if e != nil {
 		return "", e
@@ -554,10 +557,13 @@ func (a *App) delegateHeadless(ctx context.Context, s Spawn, c delegateCaller, b
 	if _, ok := runner.(ExecRunner); ok {
 		runner = ExecRunner{Timeout: timeout}
 	}
+	s.placement.started = true
 	r := runner.Run(runCtx, cmd)
 	if r.Code != 0 {
 		return "", fail(r.Code, "headless %s: %s", s.Profile, strings.TrimSpace(r.Err+" "+r.Out))
 	}
+	s.placement.placed = true
+	a.finishPlacement(ctx, s, nil)
 	answer := strings.TrimSpace(r.Out)
 	if answer == "" {
 		return "", fail(exitFailure, "headless %s printed no answer", s.Profile)
