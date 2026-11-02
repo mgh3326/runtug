@@ -90,6 +90,12 @@ func parseSpawn(args []string) (Spawn, error) {
 	if s.Role == "captain" {
 		s.Role = "builder"
 	}
+	// An operator request is the operator-request purpose: the astra gate admits
+	// only director, architect or operator-request, and a spawn that cited the
+	// operator's request but forgot --purpose was refused with role_restricted.
+	if s.OperatorRequest != "" && s.Purpose == "" {
+		s.Purpose = "operator-request"
+	}
 	if flagPassed(f, "grade") && (topRoutingRole(builtinRoleMap[s.Role]) || topRoutingRole(s.RoutingRole)) {
 		return s, fail(exitConfig, "%s: --grade is not accepted for lead or consult", noLeadGradeRule)
 	}
