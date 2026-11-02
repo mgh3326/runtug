@@ -249,7 +249,7 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 		if h == "" {
 			h = "none"
 		}
-		fmt.Fprintf(a.Out, "chosen host=%s seat=%s tier=%s waste_risk=%t\n", h, label(c), c.tierName, c.risk)
+		fmt.Fprintf(a.Out, "chosen host=%s seat=%s tier=%s waste_risk=%t%s\n", h, label(c), c.tierName, c.risk, creditNote(c))
 	}
 	for _, c := range sel.ranked {
 		if c == sel.chosen {
@@ -259,7 +259,7 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 		if c.reason != "" {
 			state += " reason=" + c.reason
 		}
-		fmt.Fprintf(a.Out, "runner-up %s tier=%s waste_risk=%t %s\n", label(c), c.tierName, c.risk, state)
+		fmt.Fprintf(a.Out, "runner-up %s tier=%s waste_risk=%t%s %s\n", label(c), c.tierName, c.risk, creditNote(c), state)
 	}
 	for _, c := range sel.cands {
 		if c.tier >= 0 {
@@ -289,4 +289,13 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 	if err != nil {
 		fmt.Fprintf(a.Out, "result refused exit=%d: %v\n", exitCode(err), err)
 	}
+}
+
+// creditNote names why a credit pool ranks as waste: its balance expires
+// unspent at the observed pace.
+func creditNote(c *selCand) string {
+	if c.credit == nil {
+		return ""
+	}
+	return " " + c.credit.note()
 }

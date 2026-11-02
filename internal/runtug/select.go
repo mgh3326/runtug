@@ -167,8 +167,13 @@ type selCand struct {
 	exhausted bool
 	// risk marks a paid pool at waste risk (PoolPolicy.wasteRisk); unused is
 	// its projected unused share at the longest window's reset.
-	risk        bool
-	unused      *float64
+	risk   bool
+	unused *float64
+	// creditPool marks a prepaid credit pool, admitted by its gate alone
+	// whatever its tier; credit is its balance when that balance expires
+	// unspent at the observed pace (tier waste, credit_expiring).
+	creditPool  bool
+	credit      *CreditBalance
 	accountKey  string
 	host        string
 	hosts       []selHost
@@ -364,7 +369,8 @@ func (p PoolPolicy) tierOf(row CatalogRow, order []string, v PoolView) (string, 
 // policy minimum and, when the policy sets a horizon above 0, that reset
 // falls within it. The unused
 // share is (100 − projected) of that window, i.e. waste urgency × hours to
-// reset. Free seats and credit pools are never at waste risk, and a pool
+// reset. Free seats and credit pools are never at waste risk here (an
+// expiring credit balance is judged in selPlan.classify), and a pool
 // without a readable ok spend status, or whose longest window cannot be
 // paced, is not either. The returned share is set whenever it is readable.
 func (p PoolPolicy) wasteRisk(row CatalogRow, free bool, v PoolView, ok bool) (bool, *float64) {
@@ -635,8 +641,9 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	pres := a.newSelPresence(ctx, s, req)
 	p.capsGap = capsGap(pres.hosts, req.tags)
 	p.degraded = append(p.degraded, pres.degraded...)
-	// API credit has no balance reader. Pool classes still carry the
-	// operator's exclusion, and the account-bound gate remains authoritative.
+	// API credit is ranked from pacelever's hand-entered balance when one is
+	// recorded (credit_expiry.go). Pool classes still carry the operator's
+	// exclusion, and the account-bound gate remains authoritative.
 	var creditViews map[string]PoolView
 	var creditErr error
 	if slices.ContainsFunc(rows, func(row CatalogRow) bool { return policy.isCredit(row.Pool) }) {
@@ -932,6 +939,10 @@ func (p *selPlan) record() map[string]any {
 		if c.unused != nil {
 			row["unused_at_reset_pct"] = *c.unused
 		}
+		if c.credit != nil {
+			row["waste_reason"] = "credit_expiring"
+			row["credit"] = c.credit.record()
+		}
 		if c.tier >= 0 {
 			// Ranked candidates state how they were ordered: by waste urgency
 			// when the pool's longest window's reset was paceable, else by
@@ -982,6 +993,10 @@ func (p *selPlan) record() map[string]any {
 		why := fmt.Sprintf("tier=%s grade=%s for task %s", c.tierName, c.row.Grade, p.req.grade)
 		if c.risk {
 			why = "waste_risk " + why
+		}
+		if c.credit != nil {
+			why += " " + c.credit.note()
+			chosen["waste_reason"], chosen["credit"] = "credit_expiring", c.credit.record()
 		}
 		if c.projected != nil {
 			chosen["projected_pct"] = *c.projected

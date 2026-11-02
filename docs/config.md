@@ -426,7 +426,8 @@ A paid pool is at **waste risk** when the projected unused share of its
 longest window (a day or more) at that window's reset — waste urgency ×
 hours to reset, i.e. 100 − its projection — is at least
 `waste_risk.min_unused_pct`, however far the reset is. Free seats and
-`credit_pools` are never at waste risk, and neither is a pool whose
+`credit_pools` are never at waste risk by this rule (an expiring credit
+balance is, below), and neither is a pool whose
 longest window cannot be paced (for example the first 5% of a fresh
 window). Waste-risk pools rank ahead of every tier, free included, and
 among themselves by waste urgency first (a pool resetting sooner with the
@@ -450,10 +451,24 @@ keys take the defaults, and `runtug simulate --policy`/`--policy-set` try
 other values before the policy is changed.
 
 Subscription candidates additionally need a readable `ok` nonstale spend
-status. The named credit pools, `anthropic-api` and `openai-api`, have no
-balance reader and remain admissible without a balance observation. An
-operator pool class of `exclude` refuses them. Their selection record carries
-`tier=credit`, with absent balance values left unset.
+status. The named credit pools, `anthropic-api` and `openai-api`, remain
+admissible without a balance observation. An operator pool class of `exclude`
+refuses them. Their selection record carries `tier=credit`, with absent
+balance values left unset.
+
+When pacelever's manual store (`pacelever manual list`) holds the pool's
+current credit entry, runtug reads its balance (`100 − used_pct`, plus the
+dollar balance when recorded) and its expiry. The observed pace is the spend
+between that entry and the one it supersedes, under pacelever's own limits
+(newer entry at most a week old, at least an hour apart, no top-up); without
+such a pair the pace is unknown and counts as no spend. A balance the pace
+leaves partly unspent at expiry ranks as waste risk in tier `waste` with
+`waste_reason=credit_expiring`; its waste urgency is the balance left per
+hour to expiry, the same unit as a subscription's unused share per hour to
+reset. `runtug plan` prints `credit_expiring days_left=… balance_pct=…`
+(and `balance_usd=…` when recorded). A credit with no entry, already expired
+or exhausted, or spent in time at the observed pace stays in tier `credit`.
+An unreadable store leaves every credit pool in tier `credit`.
 If the pool-status query fails, credit candidates are dropped as
 `QUOTA_UNKNOWN` with reason `quota_unknown` and the selection records
 `credit_pool_status_unavailable` in `degraded`. Healthy subscription candidates

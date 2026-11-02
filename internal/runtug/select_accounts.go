@@ -188,9 +188,22 @@ func (sp *selPresence) unknownJudgment(b accountBinding, why string) quotaJudgme
 func (p *selPlan) classify(c *selCand, v PoolView) {
 	c.blocking, c.projected, c.urgency, c.resetHrs = v.Blocking, v.Projected, v.Urgency, v.ResetHours
 	if p.policy.isCredit(c.row.Pool) || v.Class == "credit" {
+		c.creditPool = true
 		c.tierName, c.tier = "credit", slices.Index(p.order, "credit")
 		if v.Class == "exclude" {
 			c.reason, c.code, c.outcome = "pool_excluded", outcomeNoRoleCandidate, "dropped:pool_excluded"
+			return
+		}
+		// A balance the observed pace leaves unspent at expiry is lost like
+		// a subscription's unused share at reset: it ranks as waste risk by
+		// the same urgency unit. The account-bound gate still admits it.
+		if ok, urgency := v.Credit.expiring(); ok {
+			hours, unused := v.Credit.HoursLeft, v.Credit.LeftPct
+			if v.Credit.PacePctH != nil {
+				unused -= *v.Credit.PacePctH * hours
+			}
+			c.tierName, c.tier = "waste", slices.Index(p.order, "waste")
+			c.risk, c.urgency, c.resetHrs, c.unused, c.credit = true, &urgency, &hours, &unused, v.Credit
 		}
 		return
 	}
@@ -253,7 +266,7 @@ func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *sel
 	}
 	// An earlier rung may have refreshed this account after candidates were
 	// ranked. Reuse its current reading before admitting another rung.
-	if c.tierName != "credit" {
+	if !c.creditPool {
 		acc := sp.accounts[c.accountKey]
 		if why := sharedReason(c.accountKey, acc); why != "" || acc.Quota == nil {
 			c.code = sp.accountFailureCode(c.accountKey)
@@ -282,7 +295,7 @@ func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *sel
 		acc := sp.accounts[c.accountKey]
 		var j quotaJudgment
 		var err error
-		if c.tierName == "credit" {
+		if c.creditPool {
 			source := "shared"
 			if h.local {
 				source = "local"
@@ -291,7 +304,7 @@ func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *sel
 		} else {
 			j, err = sp.a.judgeHost(ctx, qr, c.row.Pool, h.name, h.local, c.accountKey, acc)
 		}
-		if err != nil && c.tierName != "credit" && gateOutcome(err) == outcomeQuotaUnknown {
+		if err != nil && !c.creditPool && gateOutcome(err) == outcomeQuotaUnknown {
 			if _, refreshed := sp.refreshed[c.accountKey]; !refreshed {
 				acc = sp.account(ctx, c.accountKey, c.row.Pool, c.hosts, true)
 				if cause := sp.refreshed[c.accountKey].err; cause != nil {
