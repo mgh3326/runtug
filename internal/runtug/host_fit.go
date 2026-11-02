@@ -221,8 +221,26 @@ func capsGap(hosts []selHost, required []string) string {
 // candidate is not judged again; a host-level failure only skips the host for
 // that candidate, and an unreachable host is skipped for the rest. A host
 // whose present candidates are all refused is skipped, not fatal.
+//
+// A credit balance in its final window before expiry is lost unless it is
+// used, so the hosts that hold such a candidate are tried first, keeping
+// host rank among them and among the rest.
 func (sp *selPresence) admitHostFirst(ctx context.Context, s Spawn, p *selPlan, pending []*selCand) {
 	ranked := rankHosts(sp.hosts)
+	holdsFinal := func(h selHost) bool {
+		return slices.ContainsFunc(pending, func(c *selCand) bool {
+			return c.credit != nil && slices.ContainsFunc(c.hosts, func(x selHost) bool { return x.name == h.name })
+		})
+	}
+	slices.SortStableFunc(ranked, func(x, y selHost) int {
+		if fx, fy := holdsFinal(x), holdsFinal(y); fx != fy {
+			if fx {
+				return -1
+			}
+			return 1
+		}
+		return 0
+	})
 	refusedOn := map[*selCand]string{}
 	for i, h := range ranked {
 		t := hostTrace{host: h, rank: i + 1, missing: missingCaps(h.cfg, p.req.tags)}
