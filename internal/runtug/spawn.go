@@ -34,6 +34,10 @@ type Spawn struct {
 	BuilderJob    string         `json:"-"`
 	Delegated     bool           `json:"-"`
 	Sel           map[string]any `json:"-"`
+	// route is the routing decision that admitted this spawn (auto
+	// selection or admitPinnedProfile); launch admission reads its
+	// family_effort opt-in. Initiator-local like Sel.
+	route *routing
 	// Grade is the task grade a caller states itself (`runtug delegate`),
 	// used instead of the "(grade X, Tn" marker in the bound task's title.
 	Grade string `json:"-"`
@@ -291,7 +295,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 			return e
 		}
 		s.Profile = sel.chosen.seatName
-		s.AccountKey, s.RoutingRole, s.SelHost = sel.chosen.accountKey, sel.req.route.role, sel.chosen.host
+		s.AccountKey, s.RoutingRole, s.SelHost, s.route = sel.chosen.accountKey, sel.req.route.role, sel.chosen.host, sel.req.route
 		selEffort = sel.chosen.row.Effort
 		if selEffort != "" {
 			s.Effort = selEffort
@@ -609,12 +613,13 @@ func (a *App) admitLaunch(ctx context.Context, s Spawn, seat Seat, effort, selEf
 			return Launch{}, "", fail(exitSeatRefused, "NO_ROLE_CANDIDATE: model %s in harness %s cannot lead or consult", launch.ModelID, seat.Kind)
 		}
 	}
-	if e = seat.Check(launch, s.Role, grade, builderFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local); e != nil {
+	familyGate := s.route.familyAdmitsGate(launch.row())
+	if e = seat.Check(launch, s.Role, grade, builderFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local, familyGate); e != nil {
 		return Launch{}, "", e
 	}
 	// A gate alias is the pool gate for a whole family of spellings, so it
 	// cannot tell an escalation rung from a default one; the launch row can.
-	if seat.Gate != "" && launch.Gate != "default" && !s.AllowEscalation {
+	if seat.Gate != "" && launch.Gate != "default" && !s.AllowEscalation && !familyGate {
 		return Launch{}, "", fail(exitSeatRefused, "%s is a %s rung; pass --allow-escalation", seat.Canon, launch.Gate)
 	}
 	qr.Effort = launch.Effort

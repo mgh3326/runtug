@@ -45,7 +45,7 @@ func (a *App) admitPinnedProfile(ctx context.Context, s *Spawn) error {
 	if !active {
 		return fail(exitSeatRefused, "NO_ROLE_CANDIDATE: profile %s is retired, absent or ineligible for routing role %s", s.Profile, route.role)
 	}
-	s.RoutingRole = route.role
+	s.RoutingRole, s.route = route.role, route
 	s.Sel = map[string]any{"mode": "override", "profile": s.Profile, "routing_role": route.role, "routing": route.record(""), "outcome_code": outcomeAdmitted, "account_key": s.AccountKey}
 	return nil
 }

@@ -42,6 +42,10 @@ type PoolPolicy struct {
 	WasteBelow  *float64         `json:"waste_below_projected_pct"`
 	ExcludeAt   *float64         `json:"exclude_at_projected_pct"`
 	WasteRisk   *WasteRiskPolicy `json:"waste_risk"`
+	// CreditFinalDays is the final window before a credit pool's expiry in
+	// which a balance left ranks it first, ahead of subscription waste
+	// (default 4; 0 disables). Outside it credit ranks last.
+	CreditFinalDays *float64 `json:"credit_final_days"`
 }
 
 // WasteRiskPolicy holds the waste-risk override thresholds; absent fields
@@ -54,6 +58,7 @@ type WasteRiskPolicy struct {
 const (
 	defaultWasteRiskHorizonHours = 0.0
 	defaultWasteRiskMinUnusedPct = 20.0
+	defaultCreditFinalDays       = 4.0
 )
 
 type FreeSet struct {
@@ -125,6 +130,13 @@ func (p *PoolPolicy) validate() error {
 	if *p.WasteBelow < 0 || *p.ExcludeAt <= 0 || *p.WasteBelow > *p.ExcludeAt {
 		return fail(exitConfig, "invalid projected-at-reset thresholds")
 	}
+	if p.CreditFinalDays == nil {
+		v := defaultCreditFinalDays
+		p.CreditFinalDays = &v
+	}
+	if d := *p.CreditFinalDays; !finite(d) || d < 0 {
+		return fail(exitConfig, "invalid credit_final_days")
+	}
 	if p.WasteRisk == nil {
 		p.WasteRisk = &WasteRiskPolicy{}
 	}
@@ -167,8 +179,14 @@ type selCand struct {
 	exhausted bool
 	// risk marks a paid pool at waste risk (PoolPolicy.wasteRisk); unused is
 	// its projected unused share at the longest window's reset.
-	risk        bool
-	unused      *float64
+	risk   bool
+	unused *float64
+	// creditPool marks a prepaid credit pool, admitted by its gate alone
+	// whatever its tier; credit is set when a balance is left within the
+	// policy's final window before expiry (credit_expiring): it then ranks
+	// ahead of every other candidate, waste risk included.
+	creditPool  bool
+	credit      *creditFinal
 	accountKey  string
 	host        string
 	hosts       []selHost
@@ -193,9 +211,11 @@ type selPlan struct {
 	before       *selPlan
 	outcome      string
 	// roleSkips names the lead/consult families skipped role_effort_unplaced;
-	// escalation records a chosen rung above the role effort.
-	roleSkips  []map[string]any
-	escalation map[string]any
+	// escalation records a chosen rung above the role effort;
+	// familyEffort records a chosen rung whose role effort family_effort set.
+	roleSkips    []map[string]any
+	escalation   map[string]any
+	familyEffort map[string]any
 	// hosts explains host-first admission per host (host_fit.go); capsGap
 	// names required caps no usable host declares, for the refusal text.
 	hosts   []hostTrace
@@ -216,6 +236,9 @@ type selReq struct {
 	excludeFamilies []string
 	onlyFamily      string
 	harness         string
+	// creditAt judges credit expiry as of this time instead of the plan's
+	// clock (`plan --credit-at`, read-only); zero means the plan's clock.
+	creditAt time.Time
 	// route is the role routing decision (routing.go); nil filters nothing.
 	route *routing
 }
@@ -304,7 +327,7 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 				reason = "family_filtered"
 			case !slices.Contains(roles, req.role):
 				reason = "seat_role"
-			case req.role == "builder" && row.Gate != "default":
+			case req.role == "builder" && row.Gate != "default" && !req.route.familyAdmitsGate(row):
 				reason = "builder_gate"
 			case (req.role == "tester" || req.role == "reviewer") && req.builderFamily == "":
 				reason = "builder_family_unreadable"
@@ -364,7 +387,8 @@ func (p PoolPolicy) tierOf(row CatalogRow, order []string, v PoolView) (string, 
 // policy minimum and, when the policy sets a horizon above 0, that reset
 // falls within it. The unused
 // share is (100 − projected) of that window, i.e. waste urgency × hours to
-// reset. Free seats and credit pools are never at waste risk, and a pool
+// reset. Free seats and credit pools are never at waste risk here (an
+// expiring credit balance is judged in selPlan.classify), and a pool
 // without a readable ok spend status, or whose longest window cannot be
 // paced, is not either. The returned share is set whenever it is readable.
 func (p PoolPolicy) wasteRisk(row CatalogRow, free bool, v PoolView, ok bool) (bool, *float64) {
@@ -635,8 +659,9 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	pres := a.newSelPresence(ctx, s, req)
 	p.capsGap = capsGap(pres.hosts, req.tags)
 	p.degraded = append(p.degraded, pres.degraded...)
-	// API credit has no balance reader. Pool classes still carry the
-	// operator's exclusion, and the account-bound gate remains authoritative.
+	// API credit is ranked from pacelever's hand-entered balance when one is
+	// recorded (credit_expiry.go). Pool classes still carry the operator's
+	// exclusion, and the account-bound gate remains authoritative.
 	var creditViews map[string]PoolView
 	var creditErr error
 	if slices.ContainsFunc(rows, func(row CatalogRow) bool { return policy.isCredit(row.Pool) }) {
@@ -645,10 +670,10 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			p.degraded = append(p.degraded, "credit_pool_status_unavailable")
 		}
 	}
-	roleCap := req.route.roleEffortCap()
 	var pending []*selCand
 	for _, row := range rows {
 		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
+		roleCap := req.route.roleEffortFor(row)
 		_, validGrade := gradeOrder[row.Grade]
 		switch {
 		case row.RetiredAt != nil:
@@ -663,7 +688,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			c.reason = "grade_insufficient"
 		case row.Gate != "default" && row.Gate != "escalation" && row.Gate != "consult_only":
 			c.reason = "gate_unknown"
-		case row.Gate != "default" && !req.allowEscalation:
+		case row.Gate != "default" && !req.allowEscalation && !req.route.familyAdmitsGate(row):
 			c.reason = "gate_class"
 		case aboveEffort(row.Effort, roleCap) && !req.allowEscalation:
 			c.reason = reasonAboveRoleEffort
@@ -737,7 +762,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	orderSelCands(pending)
 	p.ranked = pending
 	pres.admitHostFirst(ctx, s, p, pending)
-	p.markRoleEffort(roleCap)
+	p.markRoleEffort()
 	if p.chosen == nil {
 		return a.selectionRefused(ctx, s, req, p)
 	}
@@ -745,21 +770,23 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 }
 
 // markRoleEffort records how the lead/consult role-effort cap shaped the
-// selection. Without --allow-escalation a rung above the role effort is never
+// selection. A family's role effort is the role's effort unless family_effort
+// names the family. Without --allow-escalation a rung above it is never
 // a candidate (above_role_effort). When its family's role-effort rung was not
 // placed either — dropped by seat rules, refused at its gate (an unplaced E6
 // seat), or absent from the catalog — the family is skipped
 // role_effort_unplaced with that cause, so the choice falls through to the
 // next family at the role effort instead of climbing. With
 // --allow-escalation a chosen rung above the role effort is the escalation.
-func (p *selPlan) markRoleEffort(roleCap string) {
-	if roleCap == "" {
+func (p *selPlan) markRoleEffort() {
+	rt := p.req.route
+	if rt.roleEffortCap() == "" {
 		return
 	}
 	placed := map[string]bool{}
 	causes := map[string]string{}
 	for _, c := range p.cands {
-		if c.row.Effort != roleCap {
+		if c.row.Effort != rt.roleEffortFor(c.row) {
 			continue
 		}
 		if c.outcome == "chosen" || c.outcome == "below_choice" {
@@ -774,19 +801,25 @@ func (p *selPlan) markRoleEffort(roleCap string) {
 		}
 		return "no_role_effort_rung"
 	}
-	if c := p.chosen; c != nil && aboveEffort(c.row.Effort, roleCap) {
-		p.escalation = map[string]any{"profile": c.row.Profile, "role_effort": roleCap, "chosen_effort": c.row.Effort, "by": "allow_escalation", "role_effort_cause": cause(c.row.Profile)}
-		if placed[c.row.Profile] {
-			p.escalation["role_effort_cause"] = "ranked_after"
+	if c := p.chosen; c != nil {
+		roleCap := rt.roleEffortFor(c.row)
+		if aboveEffort(c.row.Effort, roleCap) {
+			p.escalation = map[string]any{"profile": c.row.Profile, "role_effort": roleCap, "chosen_effort": c.row.Effort, "by": "allow_escalation", "role_effort_cause": cause(c.row.Profile)}
+			if placed[c.row.Profile] {
+				p.escalation["role_effort_cause"] = "ranked_after"
+			}
+		} else if key := rt.familyEffortKey(c.row); key != "" && c.row.Effort == roleCap {
+			p.familyEffort = map[string]any{"profile": c.row.Profile, "key": key, "effort": roleCap, "gate": c.row.Gate}
 		}
 	}
-	// An explicit --effort pins another rung: the role-effort rung was never
-	// asked, so it cannot be called unplaced.
-	if p.req.allowEscalation || p.req.effort != "" && p.req.effort != roleCap {
+	if p.req.allowEscalation {
 		return
 	}
 	for _, c := range p.cands {
-		if c.reason != reasonAboveRoleEffort || placed[c.row.Profile] {
+		roleCap := rt.roleEffortFor(c.row)
+		// An explicit --effort pins another rung: the role-effort rung was
+		// never asked, so it cannot be called unplaced.
+		if c.reason != reasonAboveRoleEffort || placed[c.row.Profile] || p.req.effort != "" && p.req.effort != roleCap {
 			continue
 		}
 		c.reason, c.outcome = reasonRoleEffortUnplaced, "dropped:"+reasonRoleEffortUnplaced
@@ -806,6 +839,14 @@ func (p *selPlan) markRoleEffort(roleCap string) {
 // score, profile.
 func orderSelCands(pending []*selCand) {
 	slices.SortStableFunc(pending, func(x, y *selCand) int {
+		// A credit balance in its final window before expiry ranks first:
+		// whatever is left is lost at expiry.
+		if (x.credit != nil) != (y.credit != nil) {
+			if x.credit != nil {
+				return -1
+			}
+			return 1
+		}
 		// Waste-risk pools rank ahead of every tier, free included, and among
 		// themselves by waste urgency first; everything else keeps the tier
 		// order.
@@ -932,6 +973,10 @@ func (p *selPlan) record() map[string]any {
 		if c.unused != nil {
 			row["unused_at_reset_pct"] = *c.unused
 		}
+		if c.credit != nil {
+			row["waste_reason"] = "credit_expiring"
+			row["credit"] = c.credit.record()
+		}
 		if c.tier >= 0 {
 			// Ranked candidates state how they were ordered: by waste urgency
 			// when the pool's longest window's reset was paceable, else by
@@ -956,20 +1001,21 @@ func (p *selPlan) record() map[string]any {
 		tags = []string{}
 	}
 	rec := map[string]any{
-		"routing_role":   routingRole(p.req),
-		"outcome_code":   p.outcome,
-		"mode":           "auto",
-		"decision":       fmt.Sprintf("urgency=%s source=%s tiers=%s", p.req.urgency, p.req.urgencySource, strings.Join(p.order, ">")),
-		"rule":           fmt.Sprintf("waste-risk pools first (longest window projected >= %g%% unused at reset%s; ranked by waste urgency; sub-daily windows refuse only when exhausted), then tier, then lowest grade >= %s, then waste urgency (unused share per hour to the longest window's reset; a paceable reset ranks ahead of an unpaceable one, which keeps the lower projected-at-reset order; sub-daily windows never rank), then smaller effort; waste < %g%%, excluded >= %g%% projected", *p.policy.WasteRisk.MinUnusedPct, horizonClause(*p.policy.WasteRisk.HorizonHours), p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
-		"waste_risk":     map[string]any{"horizon_hours": *p.policy.WasteRisk.HorizonHours, "min_unused_pct": *p.policy.WasteRisk.MinUnusedPct},
-		"policy_version": p.policy.Version,
-		"policy_source":  p.policy.SourceDoc,
-		"requested":      map[string]any{"grade": p.req.grade, "t": p.req.t, "role": p.req.role, "tags": tags, "effort": p.req.effort, "allow_escalation": p.req.allowEscalation},
-		"urgency":        p.req.urgency,
-		"urgency_source": p.req.urgencySource,
-		"tiers":          p.order,
-		"candidates":     cands,
-		"at":             p.at.Format(time.RFC3339Nano),
+		"routing_role":      routingRole(p.req),
+		"outcome_code":      p.outcome,
+		"mode":              "auto",
+		"decision":          fmt.Sprintf("urgency=%s source=%s tiers=%s", p.req.urgency, p.req.urgencySource, strings.Join(p.order, ">")),
+		"rule":              fmt.Sprintf("credit pools with a balance in their last %g days before expiry first (credit_expiring), then waste-risk pools (longest window projected >= %g%% unused at reset%s; ranked by waste urgency; sub-daily windows refuse only when exhausted), then tier, then lowest grade >= %s, then waste urgency (unused share per hour to the longest window's reset; a paceable reset ranks ahead of an unpaceable one, which keeps the lower projected-at-reset order; sub-daily windows never rank), then smaller effort; waste < %g%%, excluded >= %g%% projected", *p.policy.CreditFinalDays, *p.policy.WasteRisk.MinUnusedPct, horizonClause(*p.policy.WasteRisk.HorizonHours), p.req.grade, *p.policy.WasteBelow, *p.policy.ExcludeAt),
+		"waste_risk":        map[string]any{"horizon_hours": *p.policy.WasteRisk.HorizonHours, "min_unused_pct": *p.policy.WasteRisk.MinUnusedPct},
+		"credit_final_days": *p.policy.CreditFinalDays,
+		"policy_version":    p.policy.Version,
+		"policy_source":     p.policy.SourceDoc,
+		"requested":         map[string]any{"grade": p.req.grade, "t": p.req.t, "role": p.req.role, "tags": tags, "effort": p.req.effort, "allow_escalation": p.req.allowEscalation},
+		"urgency":           p.req.urgency,
+		"urgency_source":    p.req.urgencySource,
+		"tiers":             p.order,
+		"candidates":        cands,
+		"at":                p.at.Format(time.RFC3339Nano),
 	}
 	if c := p.chosen; c != nil {
 		canon := c.row.Profile
@@ -982,6 +1028,10 @@ func (p *selPlan) record() map[string]any {
 		why := fmt.Sprintf("tier=%s grade=%s for task %s", c.tierName, c.row.Grade, p.req.grade)
 		if c.risk {
 			why = "waste_risk " + why
+		}
+		if c.credit != nil {
+			why += " " + c.credit.note()
+			chosen["waste_reason"], chosen["credit"] = "credit_expiring", c.credit.record()
 		}
 		if c.projected != nil {
 			chosen["projected_pct"] = *c.projected
@@ -1017,6 +1067,9 @@ func (p *selPlan) record() map[string]any {
 		}
 		if p.escalation != nil {
 			rt["escalation"] = p.escalation
+		}
+		if p.familyEffort != nil {
+			rt["family_effort_chosen"] = p.familyEffort
 		}
 		rec["routing"] = rt
 	}

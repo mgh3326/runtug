@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 // `runtug plan` answers "right now, which host and which model would a spawn
@@ -29,8 +30,8 @@ import (
 // seat (hosts a spawn would wake are listed); a local launch or gate refusal
 // keeps its own code.
 type planOpts struct {
-	grade, t, role, tags, effort, urgency, exclude, builderFamily, routingRole string
-	allowEscalation, json                                                      bool
+	grade, t, role, tags, effort, urgency, exclude, builderFamily, routingRole, creditAt string
+	allowEscalation, json                                                                bool
 }
 
 func (a *App) planCmd(ctx context.Context, args []string) (err error) {
@@ -48,6 +49,7 @@ func (a *App) planCmd(ctx context.Context, args []string) (err error) {
 	f.StringVar(&o.routingRole, "routing-role", "", "override the policy/model-routing role")
 	f.BoolVar(&o.allowEscalation, "allow-escalation", false, "admit escalation and consult-only rungs")
 	f.BoolVar(&o.json, "json", false, "print the full decision as JSON")
+	f.StringVar(&o.creditAt, "credit-at", "", "judge credit expiry as of this RFC3339 time or YYYY-MM-DD (dry run; quota and presence keep the clock)")
 	if e := f.Parse(args); e != nil {
 		return fail(exitUsage, "%v", e)
 	}
@@ -82,12 +84,20 @@ func (a *App) planCmd(ctx context.Context, args []string) (err error) {
 	if _, e := parseHosts(o.exclude); e != nil {
 		return e
 	}
+	var creditAt time.Time
+	if o.creditAt != "" {
+		if creditAt, e = time.Parse(time.RFC3339, o.creditAt); e != nil {
+			if creditAt, e = time.Parse("2006-01-02", o.creditAt); e != nil {
+				return fail(exitUsage, "invalid --credit-at %q: want RFC3339 or YYYY-MM-DD", o.creditAt)
+			}
+		}
+	}
 	if a.Quota == nil {
 		return fail(exitConfig, "plan needs the quota catalog")
 	}
 	cwd, _ := os.Getwd()
 	s := Spawn{CWD: cwd, Profile: "auto", Host: "auto", Role: o.role, T: o.t, Tags: o.tags, Effort: o.effort, ExcludeHosts: o.exclude, AllowEscalation: o.allowEscalation, ParentFamily: o.builderFamily, Urgency: o.urgency, DryRun: true}
-	req := selReq{grade: o.grade, t: o.t, role: o.role, tags: tags, effort: o.effort, allowEscalation: o.allowEscalation, builderFamily: o.builderFamily, urgency: urgencyNormal, urgencySource: "default"}
+	req := selReq{grade: o.grade, t: o.t, role: o.role, tags: tags, effort: o.effort, allowEscalation: o.allowEscalation, builderFamily: o.builderFamily, urgency: urgencyNormal, urgencySource: "default", creditAt: creditAt}
 	if o.urgency != "" {
 		req.urgency, req.urgencySource = o.urgency, "flag"
 	}
@@ -108,7 +118,7 @@ func (a *App) planCmd(ctx context.Context, args []string) (err error) {
 	}
 	c := sel.chosen
 	s.Profile = c.seatName
-	s.AccountKey, s.RoutingRole, s.SelHost = c.accountKey, sel.req.route.role, c.host
+	s.AccountKey, s.RoutingRole, s.SelHost, s.route = c.accountKey, sel.req.route.role, c.host, sel.req.route
 	if c.row.Effort != "" {
 		s.Effort = c.row.Effort
 	}
@@ -153,7 +163,8 @@ func (a *App) planHosts(ctx context.Context, s Spawn, grade string) (*placePlan,
 	admitLocal := func(c *placeCandidate) bool {
 		launch, err := a.Quota.Launch(ctx, qr)
 		if err == nil {
-			err = a.Policy.Profiles[s.Profile].Check(launch, s.Role, grade, s.ParentFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local)
+			seat := a.Policy.Profiles[s.Profile]
+			err = seat.Check(launch, s.Role, grade, s.ParentFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local, s.route.familyAdmitsGate(launch.row()))
 		}
 		if err != nil {
 			c.outcome, localRefusal = "admission_refused", err
@@ -241,6 +252,11 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 	if rt := sel.req.route; rt != nil {
 		fmt.Fprintf(a.Out, "routing role=%s version=%d policy_source=%s%s\n", firstNonempty(rt.role, "-"), rt.version, rt.source, map[bool]string{true: " downgraded_from=" + rt.downgradedFrom}[rt.downgradedFrom != ""])
 	}
+	if fe := sel.familyEffort; fe != nil {
+		// The chosen rung's role effort came from family_effort, which also
+		// opted its escalation gate in.
+		fmt.Fprintf(a.Out, "family_effort %s=%s chosen=%s@%s gate=%s\n", fe["key"], fe["effort"], fe["profile"], fe["effort"], fe["gate"])
+	}
 	label := func(c *selCand) string {
 		return fmt.Sprintf("%s@%s model=%s pool=%s grade=%s", c.seatName, c.row.Effort, c.row.ModelID, c.row.Pool, c.row.Grade)
 	}
@@ -249,7 +265,7 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 		if h == "" {
 			h = "none"
 		}
-		fmt.Fprintf(a.Out, "chosen host=%s seat=%s tier=%s waste_risk=%t\n", h, label(c), c.tierName, c.risk)
+		fmt.Fprintf(a.Out, "chosen host=%s seat=%s tier=%s waste_risk=%t%s\n", h, label(c), c.tierName, c.risk, creditNote(c))
 	}
 	for _, c := range sel.ranked {
 		if c == sel.chosen {
@@ -259,7 +275,7 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 		if c.reason != "" {
 			state += " reason=" + c.reason
 		}
-		fmt.Fprintf(a.Out, "runner-up %s tier=%s waste_risk=%t %s\n", label(c), c.tierName, c.risk, state)
+		fmt.Fprintf(a.Out, "runner-up %s tier=%s waste_risk=%t%s %s\n", label(c), c.tierName, c.risk, creditNote(c), state)
 	}
 	for _, c := range sel.cands {
 		if c.tier >= 0 {
@@ -289,4 +305,13 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 	if err != nil {
 		fmt.Fprintf(a.Out, "result refused exit=%d: %v\n", exitCode(err), err)
 	}
+}
+
+// creditNote names why a credit pool ranks first: a balance is left in the
+// final window before its expiry.
+func creditNote(c *selCand) string {
+	if c.credit == nil {
+		return ""
+	}
+	return " " + c.credit.note()
 }

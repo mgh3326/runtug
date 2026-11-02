@@ -41,6 +41,11 @@ type RoutingRule struct {
 	DowngradeTo  []string `json:"downgrade_to,omitempty"`
 	FamilyRule   string   `json:"family_rule,omitempty"`
 	Fixed        bool     `json:"fixed,omitempty"`
+	// FamilyEffort maps a profile, or a top family, to the role-effort rung
+	// it leads at instead of Effort (lead and consult only). That exact rung
+	// is admitted even when its catalog gate is escalation: the entry is the
+	// operator's opt-in. See routing.familyEffortKey for the family rule.
+	FamilyEffort map[string]string `json:"family_effort,omitempty"`
 }
 
 // routingRoles are the values --routing-role accepts.
@@ -136,9 +141,39 @@ func (p RoutingPolicy) validate() error {
 			return fmt.Errorf("routing role %s has unknown on_exhaustion %q", name, r.OnExhaustion)
 		}
 	}
+	for name, r := range p.Roles {
+		if e := r.validateFamilyEffort(name); e != nil {
+			return e
+		}
+	}
 	for seat, role := range p.RoleMap {
 		if _, ok := p.Roles[role]; !ok {
 			return fmt.Errorf("runtug_role_map maps %s to unknown role %s", seat, role)
+		}
+	}
+	return nil
+}
+
+// reasonFamilyEffortInvalid names a family_effort entry the table refuses.
+const reasonFamilyEffortInvalid = "family_effort_invalid"
+
+// validateFamilyEffort refuses a family_effort runtug would otherwise ignore:
+// on a role without the lead/consult cap, keyed by a profile the role cannot
+// name, or naming no known effort.
+func (r RoutingRule) validateFamilyEffort(role string) error {
+	if len(r.FamilyEffort) == 0 {
+		return nil
+	}
+	if !topRoutingRole(role) {
+		return fmt.Errorf("%s: routing role %s has family_effort; only lead and consult take one", reasonFamilyEffortInvalid, role)
+	}
+	for key, effort := range r.FamilyEffort {
+		known := slices.Contains(topProfiles, key) || slices.Contains(r.Allowed, key) || slices.Contains(r.Allowed, "*") && validID(key)
+		if !known {
+			return fmt.Errorf("%s: routing role %s family_effort names unknown profile %q (want a top profile or one the role allows)", reasonFamilyEffortInvalid, role, key)
+		}
+		if _, ok := effortRank[effort]; !ok || effort == "" {
+			return fmt.Errorf("%s: routing role %s family_effort %s has unknown effort %q", reasonFamilyEffortInvalid, role, key, effort)
 		}
 	}
 	return nil
@@ -341,22 +376,62 @@ func (a *App) routeFor(ctx context.Context, seatRole, override string) (*routing
 }
 
 // effort is the role's starting effort, else the chosen rung's. A lead or
-// consult rung escalated above the role effort reports its own effort.
-func (r *routing) effort(rung string) string {
-	if r != nil && r.rule != nil && r.rule.Effort != "" && !aboveEffort(rung, r.roleEffortCap()) {
+// consult rung escalated above the role effort, or one whose effort a
+// family_effort entry sets, reports its own effort.
+func (r *routing) effort(row CatalogRow) string {
+	if row.Effort != "" && r.familyEffortKey(row) != "" {
+		return row.Effort
+	}
+	if r != nil && r.rule != nil && r.rule.Effort != "" && !aboveEffort(row.Effort, r.roleEffortCap()) {
 		return r.rule.Effort
 	}
-	return rung
+	return row.Effort
 }
 
 // roleEffortCap is the effort a lead or consult never climbs above without
 // --allow-escalation (policy/model-routing: max only on a recorded
 // escalation); "" for every other role, which keeps grade-driven selection.
+// roleEffortFor is the same cap for one catalog row, after family_effort.
 func (r *routing) roleEffortCap() string {
 	if !r.top() || r.rule == nil {
 		return ""
 	}
 	return r.rule.Effort
+}
+
+// familyEffortKey is the family_effort key that sets a lead/consult row's
+// role effort: the row's own profile, else the native top profile its
+// catalog model is (omp-sol runs openai/gpt-6.1-sol, so it follows a
+// codex-sol entry; omp-opus follows opus). An exact profile key wins, and a
+// key naming an OMP profile never applies to the native profile. "" when the
+// map names neither.
+func (r *routing) familyEffortKey(row CatalogRow) string {
+	if !r.top() || r.rule == nil || len(r.rule.FamilyEffort) == 0 {
+		return ""
+	}
+	if _, ok := r.rule.FamilyEffort[row.Profile]; ok {
+		return row.Profile
+	}
+	if native, ok := ompTopModels[row.ModelID]; ok {
+		if _, ok := r.rule.FamilyEffort[native]; ok {
+			return native
+		}
+	}
+	return ""
+}
+
+func (r *routing) roleEffortFor(row CatalogRow) string {
+	if key := r.familyEffortKey(row); key != "" {
+		return r.rule.FamilyEffort[key]
+	}
+	return r.roleEffortCap()
+}
+
+// familyAdmitsGate reports whether family_effort opts this exact escalation
+// rung in without --allow-escalation. Rungs above it stay excluded.
+func (r *routing) familyAdmitsGate(row CatalogRow) bool {
+	key := r.familyEffortKey(row)
+	return key != "" && row.Gate == "escalation" && row.Effort == r.rule.FamilyEffort[key]
 }
 
 // aboveEffort reports whether a named rung ranks above the cap. The catalog's
@@ -377,6 +452,9 @@ func (r *routing) record(refusal string) map[string]any {
 		m["on_exhaustion"] = r.rule.OnExhaustion
 		if r.rule.Effort != "" {
 			m["effort"] = r.rule.Effort
+		}
+		if r.top() && len(r.rule.FamilyEffort) > 0 {
+			m["family_effort"] = r.rule.FamilyEffort
 		}
 	}
 	if r.downgradedFrom != "" {

@@ -26,6 +26,11 @@ type Launch struct {
 	Family  string `json:"family"`
 }
 
+// row is the catalog rung a launch row stands for, for routing checks.
+func (l Launch) row() CatalogRow {
+	return CatalogRow{Profile: l.Profile, ModelID: l.ModelID, Effort: l.Effort, Gate: l.Gate, Grade: l.Grade, Pool: l.Pool}
+}
+
 // QuotaRequest asks the quota CLI about one launch. Profile is the launch
 // canon; GateProfile, when set, is the name its gate knows the profile by.
 // AccountKey scopes only Gate to shared evidence for a remote host's account.
@@ -76,6 +81,9 @@ type PoolView struct {
 	ResetHours    *float64
 	LongProjected *float64
 	ShortUsed     *float64
+	// Credit is a prepaid credit pool's hand-entered balance, nil when the
+	// manual store records none.
+	Credit *CreditBalance
 }
 
 // QuotaGate is deliberately independent of the executable name; pacelever
@@ -701,6 +709,15 @@ func (q CLIQuota) Pools(ctx context.Context) (map[string]PoolView, error) {
 			}
 		}
 		pools[id] = v
+	}
+	// A credit balance is optional: without a readable store every credit
+	// pool keeps the credit tier, as before balances were read.
+	if credits, e := q.creditBalances(ctx); e == nil {
+		for pool, c := range credits {
+			v := pools[pool]
+			v.Credit = c
+			pools[pool] = v
+		}
 	}
 	return pools, nil
 }
