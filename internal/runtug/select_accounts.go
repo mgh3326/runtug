@@ -21,10 +21,18 @@ const (
 type accountBinding struct {
 	key   string
 	hosts []selHost
+	// holders are every host that may measure the account: hosts plus
+	// the holders --host or --exclude-host keep out of placement.
+	holders []selHost
 }
 
 func (sp *selPresence) hostEligible(h selHost, seat *Seat) bool {
-	return h.eligible && !h.excluded && (h.awake || h.wakeable) && (seat.Capability == "standard" || boolean(h.cfg, seat.Capability, false))
+	return !h.excluded && sp.canMeasure(h, seat)
+}
+
+// canMeasure is hostEligible without the placement restriction.
+func (sp *selPresence) canMeasure(h selHost, seat *Seat) bool {
+	return h.eligible && (!h.excluded || h.restricted) && (h.awake || h.wakeable) && (seat.Capability == "standard" || boolean(h.cfg, seat.Capability, false))
 }
 
 func (sp *selPresence) hasHost(seat *Seat) bool {
@@ -32,14 +40,16 @@ func (sp *selPresence) hasHost(seat *Seat) bool {
 }
 
 // bindings groups current logins by account, so two hosts never supply two
-// copies of the same quota. Hosts only compete inside their account.
+// copies of the same quota. Hosts only compete inside their account. An
+// account binds only through a placeable host; its restricted holders may
+// still measure it.
 func (sp *selPresence) bindings(seat *Seat, pool string) []accountBinding {
 	var bindings []accountBinding
 	if sp.presErr {
 		return bindings
 	}
 	for _, h := range sp.hosts {
-		if !sp.hostEligible(h, seat) {
+		if !sp.canMeasure(h, seat) {
 			continue
 		}
 		key := hostAccount(sp.presence, pool, h.presence, sp.now, sp.presTTL)
@@ -51,24 +61,35 @@ func (sp *selPresence) bindings(seat *Seat, pool string) []accountBinding {
 			bindings = append(bindings, accountBinding{key: key})
 			i = len(bindings) - 1
 		}
-		bindings[i].hosts = append(bindings[i].hosts, h)
+		bindings[i].holders = append(bindings[i].holders, h)
+		if sp.hostEligible(h, seat) {
+			bindings[i].hosts = append(bindings[i].hosts, h)
+		}
 	}
+	bindings = slices.DeleteFunc(bindings, func(b accountBinding) bool { return len(b.hosts) == 0 })
 	for _, b := range bindings {
-		byScore := !slices.ContainsFunc(b.hosts, func(h selHost) bool { return h.score == nil })
-		slices.SortStableFunc(b.hosts, func(x, y selHost) int {
-			if x.awake != y.awake {
-				if x.awake {
-					return -1
-				}
-				return 1
-			}
-			if byScore {
-				return cmp.Compare(*y.score, *x.score)
-			}
-			return cmp.Compare(loadOrInf(x.load), loadOrInf(y.load))
-		})
+		sortHolders(b.hosts)
+		sortHolders(b.holders)
 	}
 	return bindings
+}
+
+// sortHolders orders an account's hosts: awake first, then by hub score when
+// every host has one, else by load.
+func sortHolders(hosts []selHost) {
+	byScore := !slices.ContainsFunc(hosts, func(h selHost) bool { return h.score == nil })
+	slices.SortStableFunc(hosts, func(x, y selHost) int {
+		if x.awake != y.awake {
+			if x.awake {
+				return -1
+			}
+			return 1
+		}
+		if byScore {
+			return cmp.Compare(*y.score, *x.score)
+		}
+		return cmp.Compare(loadOrInf(x.load), loadOrInf(y.load))
+	})
 }
 
 // accountRefresh is one bounded refresh operation. A transport failure can
@@ -258,7 +279,7 @@ func hostGateFailure(err error) bool {
 }
 
 // admitAccount judges one account candidate on the given hosts in order. A
-// refresh may still measure the account on any of its holders (c.hosts).
+// refresh may still measure the account on any of its holders (c.holders).
 func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *selCand, p *selPlan, hosts []selHost) ([]quotaJudgment, error) {
 	ordered := slices.Clone(hosts)
 	// A holder that just completed the refresh is known reachable.
@@ -309,7 +330,7 @@ func (sp *selPresence) admitAccount(ctx context.Context, qr QuotaRequest, c *sel
 		}
 		if err != nil && !c.creditPool && gateOutcome(err) == outcomeQuotaUnknown {
 			if _, refreshed := sp.refreshed[c.accountKey]; !refreshed {
-				acc = sp.account(ctx, c.accountKey, c.row.Pool, c.hosts, true)
+				acc = sp.account(ctx, c.accountKey, c.row.Pool, c.holders, true)
 				if cause := sp.refreshed[c.accountKey].err; cause != nil {
 					j.Reason, j.Measured, j.ExitCode = "measure_failed", "failed", exitCode(cause)
 					return append(judgments, j), cause
