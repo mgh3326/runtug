@@ -438,6 +438,9 @@ func TestPlacementHeadlessDelegation(t *testing.T) {
 	if r.Outcome != "placed" || r.Role != "worker" || r.TaskID != 42 || r.Model != "swe-2" || r.PaneID != "" {
 		t.Fatalf("headless execution metadata: %+v", r)
 	}
+	if len(r.Candidates) == 0 || r.Candidates[0].Host != r.Host || r.Candidates[0].Outcome != "chosen" {
+		t.Fatalf("the executing headless host must be the chosen candidate: %+v", r.Candidates)
+	}
 }
 
 func TestPlacementAutomaticModelSelection(t *testing.T) {

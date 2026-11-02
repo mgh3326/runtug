@@ -172,6 +172,9 @@ func (a *App) finishPlacement(ctx context.Context, s Spawn, err error) {
 		for _, raw := range hosts {
 			host, _ := raw.(map[string]any)
 			row := placementCandidateRecord{Host: str(host, "host"), Outcome: "skipped", Reason: placementSkipReason(str(host, "outcome"))}
+			if row.Host == d.execution.Host && (d.placed || d.started) {
+				row.Outcome, row.Reason = "chosen", "available"
+			}
 			if score, ok := number(host, "score"); ok {
 				row.Score = &score
 			}
