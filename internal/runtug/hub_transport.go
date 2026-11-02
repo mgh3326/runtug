@@ -676,6 +676,9 @@ func (a *App) hubReply(host string, checkout *HubCheckout, r HubSpawnReply, forc
 		fmt.Fprint(a.Out, line+" host="+host+"\n")
 		return candResult{ok: true}
 	}
+	if !forced && r.RC == exitConfig && strings.Contains(r.Error+r.StdoutTail, "WORKSPACE_UNCONFIGURED:") {
+		return candResult{rc: r.RC, note: "workspace_unconfigured"}
+	}
 	if forced || slices.Contains([]int{2, 70, 74, 75, 76, 79, 82, exitTrustPrompt}, r.RC) {
 		return candResult{stop: fail(r.RC, "remote spawn: %s", strings.TrimSpace(r.StdoutTail))}
 	}
