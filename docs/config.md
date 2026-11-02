@@ -116,6 +116,7 @@ grades and gates for each effort. The desk publishes the seed after merge.
 | `hub_cf_env` | Optional access-service credential file passed to panewire. |
 | `machine_id` | Host identity fallback. |
 | `session_machine_ids` | Herdr session → machine identity table used for lane placement. |
+| `session_lanes_token_envs` | Herdr session → lane credential-file path. Overrides `lanes_token_env` for that session; pair it with `session_machine_ids` when sessions use separate node identities. |
 | `quota_gate` | Only `"local"` is accepted: explicit local-only quota mode. It contradicts hub_token_env; remove one of those keys. |
 | `state` | `"on"` (default) reads the hub's fleet state for placement and the quota gate; `"off"` skips it and measures directly as before (the rollback switch). See [Fleet state](#fleet-state). |
 | `state_publisher_ttl_s` | Seconds a publisher heartbeat stays alive. Default 90. |
@@ -123,6 +124,17 @@ grades and gates for each effort. The desk publishes the seed after merge.
 Worker lane credentials use lanes_token_env, then hub_token_env. Builder lane
 credentials use lanes_token_env, then operator_token_env, then hub_token_env.
 Panewire owns authentication and relay transport; runtug never prints credentials.
+All herdr calls during a spawn use one frozen `HERDR_SESSION` (default `default`).
+For example, a node serving session `fleet` can use
+`session_machine_ids = { fleet = "host-a", default = "host-a-default" }` and
+`session_lanes_token_envs = { fleet = "/config/node.env", default = "/config/node-default.env" }`.
+The registration warning includes session, machine, pane and panewire's error text;
+it is emitted for workers and builders. A credential explicitly declaring another
+machine fails locally with `LANE_SESSION_MACHINE_MISMATCH` (70); configure both session
+maps rather than relabeling the route. `job.spawned` and the success line also
+record the herdr session, so a pane id is never the only delivery address.
+If no machine identity can be read locally, panewire validates the credential
+and its error is preserved in the registration warning.
 
 ## `[hosts.NAME]`
 
@@ -130,8 +142,8 @@ Panewire owns authentication and relay transport; runtug never prints credential
 | --- | --- | --- |
 | `ssh` | `NAME` | SSH config target; BatchMode is used. |
 | `via` | `ssh` | `ssh` (default; unchanged when unset) or `hub`: spawn, worktree preparation and quota refresh go through the panewire hub (see [Hub transport](#hub-transport-via--hub)). A `hub` host never falls back to ssh. |
-| `herdr_session` | `workers` | Remote HERDR_SESSION. |
-| `workspace` | spawn `-w` | Remote workspace. |
+| `herdr_session` | `worker` | Remote HERDR_SESSION; set it to the session served by the target node. |
+| `workspace` | target `[local] workspace` | Workspace on this remote host. The caller's `-w` / `--workspace` applies only to local placement. Missing target workspace configuration refuses with `WORKSPACE_UNCONFIGURED` (70). Automatic SSH placement tries the next candidate on this early refusal; forced placement still stops. |
 | `cwd_map` | explicit override | Inline table of local prefix → remote prefix; longest prefix wins. Only needed as an exception: the default remote cwd is `$HOME/work/<repo>` on the target, cloned when missing. For a job run from a linked git worktree the default is `<work root>/<worktree dir>`, where the work root is derived from entries that map a checkout directly under the local work root (else `$HOME/work`). |
 | `cwd_keys` | legacy | Kept for legacy hub configurations; not used. A hub host's cwd key is the canonical repo name. |
 | `hub_wait` | `120` | `via = "hub"` only: seconds (1..300) the hub waits for the node to answer a spawn. A first spawn that clones a large repo may need more. |
@@ -320,6 +332,11 @@ unplaced rung, for example) the spawn refuses with that cause
 (`quota pool for PROFILE@EFFORT unresolved: …`), not as missing presence. Local placement keeps the local gate path.
 The selection's `quota_gates` and placement candidate's `quota_gate` record the
 host, account key, evidence source, outcome and exit code of each attempt.
+On the executing host, login confirmation accepts an observed, readable,
+account-matching shared observation even past `fresh_ttl_s`. It still refuses
+missing presence, an account mismatch, missing observation and degraded reads.
+The account-bound quota gate retains responsibility for freshness and refusal;
+an old observation cannot skip that gate.
 
 When the target's shared observation is missing or stale and the spawning host
 does not hold that account (no `[quota.accounts]` pin or local presence record
@@ -1300,7 +1317,7 @@ HTTP 409 warns and drops the conflicting file. Local attempt markers under
 | 70 | Configuration or trust refusal, including `POLICY_UNAVAILABLE` and `lead_consult_take_no_grade`. |
 | 74 | Active job duplicate, including an hk `job_id_taken` claim refusal. |
 | 75 | Unreadable duplicate state (the ledger's record of a duplicate job has no state or an unreadable `job.spawned` receipt; a released job has no receipt and is reclaimed), changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
-| 76 | Initial brief submission unconfirmed after one key retry. |
+| 76 | `BRIEF_SUBMISSION_UNCONFIRMED`: no working transition or submitted brief turn on the launch session and pane. Codex retries a submit key once only for composer residue; other harnesses retain one submit-key retry when submission remains unconfirmed. |
 | 77 | `NO_ROLE_CANDIDATE` or seat, grade, family, or E6 refusal; quota gate exit 5 is remapped here. |
 | 78 | `preflight`: at least one checked remote host failed a check; the reasons are on stdout and in the error. |
 | 79 | Mock isolation refusal. |
@@ -1314,6 +1331,7 @@ HTTP 409 warns and drops the conflicting file. Local attempt markers under
 | 87 | `QUOTA_EXHAUSTED`: every eligible account is measured exhausted and the role escalates to the parent lane. |
 | 88 | `AUTH_UNAVAILABLE`: no usable current account binding on eligible hosts. |
 | 89 | `QUOTA_UNKNOWN`: quota remains unknown after one bounded account refresh. |
+| 90 | `WORKSPACE_TRUST_REQUIRED`: Codex is waiting at its directory trust prompt; initial brief is withheld. |
 | 124 | A time-bounded CLI call reached its context deadline. |
 | 255 | SSH could not reach a remote host (repository check, clone or spawn leg). Never returned for a `via = "hub"` host. |
 

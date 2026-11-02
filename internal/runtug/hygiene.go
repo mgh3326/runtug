@@ -159,7 +159,11 @@ func (a *App) removeLane(ctx context.Context, j Job) error {
 		return nil
 	}
 	args := []string{"lanes", "rm", j.HubLane, "--expect-machine", j.Machine, "--expect-pane", j.Pane}
-	args = append(args, a.Config.hubArgs(j.Role)...)
+	route := *a
+	if session := str(j.Receipt, "herdr_session"); session != "" {
+		route.HerdrSession = session
+	}
+	args = append(args, route.laneHubArgs(j.Role)...)
 	return a.must(ctx, "panewire", args...)
 }
 func (a *App) reapWorktree(ctx context.Context, j Job) error {
@@ -348,7 +352,7 @@ func (a *App) lanesMissing(ctx context.Context) error {
 	if str(a.Config.Hub, "hub_url") == "" {
 		return fail(exitConfig, "lanes audit needs hub config")
 	}
-	args := append([]string{"lanes", "ls"}, a.Config.hubArgs("builder")...)
+	args := append([]string{"lanes", "ls"}, a.laneHubArgs("builder")...)
 	r := a.call(ctx, "panewire", args...)
 	if e := check(r, "lanes audit"); e != nil {
 		return e

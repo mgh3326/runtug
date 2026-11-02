@@ -432,6 +432,28 @@ func TestHubSpawnRCsFollowTheSSHRules(t *testing.T) {
 	}
 }
 
+// A node without a configured workspace refuses that host like the ssh path
+// does; only a forced host stops on it.
+func TestHubUnconfiguredWorkspaceMovesOnUnlessForced(t *testing.T) {
+	reply := func(r HubSpawnRequest) (HubSpawnReply, error) {
+		if r.Machine == "h1" {
+			return HubSpawnReply{RC: exitConfig, StdoutTail: "runtug: WORKSPACE_UNCONFIGURED: set target workspace"}, nil
+		}
+		return HubSpawnReply{Pane: "w:p1"}, nil
+	}
+	a, s, _, hub, _ := hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
+	hub.node = reply
+	if _, rec, e := a.placeAuto(context.Background(), s, "brief"); e != nil || rec["chose"] != "h2" {
+		t.Fatalf("auto placement did not move on: %v %v", rec, e)
+	}
+	a, s, _, hub, _ = hubFixture(t, gitState{pushed: true}, "wk/feat", hubHosts())
+	hub.node = reply
+	s.Host = "h1"
+	if _, _, e := a.place(context.Background(), s, "brief"); e == nil || exitCode(e) != exitConfig {
+		t.Fatalf("forced host did not stop: %v", e)
+	}
+}
+
 // quota.refresh runs through the hub; pacelever over ssh is never invoked.
 func hubRefreshFixture(t *testing.T, host string) (*App, Spawn, *fakeRunner, *fakeHub) {
 	t.Helper()

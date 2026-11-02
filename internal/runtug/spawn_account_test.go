@@ -43,7 +43,8 @@ func TestSpawnRecheckOfSelectedAccount(t *testing.T) {
 		reason   string // "" = admitted
 	}{
 		{name: "holder with fresh evidence", presence: testClaudeB, acc: SharedAccount{Key: testClaudeB, Observed: true, Fresh: true, Quota: &quota}},
-		{name: "holder with stale evidence", presence: testClaudeB, acc: SharedAccount{Key: testClaudeB, Observed: true, Quota: &quota}, reason: ": stale"},
+		{name: "holder with stale evidence", presence: testClaudeB, acc: SharedAccount{Key: testClaudeB, Observed: true, Quota: &quota}},
+		{name: "mismatched observation", presence: testClaudeB, acc: SharedAccount{Key: testClaudeA, Observed: true}, reason: ": account_mismatch"},
 		{name: "holder never observed", presence: testClaudeB, acc: SharedAccount{Key: testClaudeB}, reason: ": not_observed"},
 		{name: "holder with unreadable evidence", presence: testClaudeB, readErr: true, reason: ": degraded"},
 		{name: "non-holder", presence: testClaudeA, acc: SharedAccount{Key: testClaudeB, Observed: true, Fresh: true, Quota: &quota}, reason: ": account_mismatch (host holds " + testClaudeA + ")"},
@@ -103,18 +104,17 @@ func hkServer(t *testing.T, a *App, host, key string, age time.Duration) {
 // The incident: the planner (fresh_ttl_s 1800) chose a holder whose shared
 // reading was 20 minutes old; the executing host, with no fresh_ttl_s of its
 // own, judged the same reading by the 300 s default and refused. A delegated
-// spawn now carries the planner's window and is judged by it; beyond that
-// window the reading is still refused as stale.
-func TestDelegatedSpawnJudgesFreshnessWithPlannerWindow(t *testing.T) {
+// login confirmation must not refuse that account before the quota gate can
+// refresh or refuse it, regardless of the planner's freshness window.
+func TestDelegatedSpawnStaleLoginReachesQuotaGate(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		plannerS  int64
-		age       time.Duration
-		wantError string
+		name     string
+		plannerS int64
+		age      time.Duration
 	}{
-		{name: "own default window", plannerS: 0, age: 20 * time.Minute, wantError: ": stale"},
+		{name: "own default window", plannerS: 0, age: 20 * time.Minute},
 		{name: "planner window", plannerS: 1800, age: 20 * time.Minute},
-		{name: "older than planner window", plannerS: 1800, age: 40 * time.Minute, wantError: ": stale"},
+		{name: "older than planner window", plannerS: 1800, age: 40 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, s := selectedAccountApp(t)
@@ -122,14 +122,34 @@ func TestDelegatedSpawnJudgesFreshnessWithPlannerWindow(t *testing.T) {
 			if err := a.adoptFreshTTL(tc.plannerS); err != nil {
 				t.Fatal(err)
 			}
-			err := admitSelected(a, s)
-			switch {
-			case tc.wantError == "" && err != nil:
+			q := a.Quota.(*fakeQuota)
+			gate := q.GateDo
+			called := false
+			q.GateDo = func(r QuotaRequest) (string, error) {
+				called = true
+				if r.AccountKey != testClaudeB {
+					t.Fatalf("gate lost account binding: %+v", r)
+				}
+				return gate(r)
+			}
+			if err := admitSelected(a, s); err != nil {
 				t.Fatalf("holder refused: %v", err)
-			case tc.wantError != "" && (exitCode(err) != exitAuthUnavailable || !strings.HasSuffix(err.Error(), tc.wantError)):
-				t.Fatalf("want refusal %q, got %v", tc.wantError, err)
+			}
+			if !called {
+				t.Fatal("stale login skipped the quota gate")
 			}
 		})
+	}
+}
+
+func TestStaleLoginDoesNotBypassQuotaRefusal(t *testing.T) {
+	a, s := selectedAccountApp(t)
+	hkServer(t, a, a.machine(), testClaudeB, 40*time.Minute)
+	a.Quota.(*fakeQuota).GateDo = func(r QuotaRequest) (string, error) {
+		return "", fail(exitQuotaUnknown, "quota remains stale after refresh")
+	}
+	if err := admitSelected(a, s); code(err) != exitQuotaUnknown || !strings.Contains(err.Error(), "quota remains stale") {
+		t.Fatalf("quota gate refusal was bypassed: %v", err)
 	}
 }
 

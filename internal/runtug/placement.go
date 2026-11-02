@@ -1058,9 +1058,6 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	remote.CWD = cwd
 	remote.Host = "local"
 	remote.Workspace = str(h, "workspace")
-	if remote.Workspace == "" {
-		remote.Workspace = s.Workspace
-	}
 	remote.Prompt = ""
 	remote.Tags = ""
 	remote.Delegated = true
@@ -1110,7 +1107,10 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	if r.Code == exitUnreachable {
 		return candResult{unreachable: true, rc: r.Code, note: "unreachable", res: r}
 	}
-	if forced || slices.Contains([]int{2, 70, 74, 75, 76, 79, 82}, r.Code) {
+	if !forced && r.Code == exitConfig && strings.Contains(r.Err+r.Out, "WORKSPACE_UNCONFIGURED:") {
+		return candResult{rc: r.Code, note: "workspace_unconfigured", res: r}
+	}
+	if forced || slices.Contains([]int{2, 70, 74, 75, 76, 79, 82, exitTrustPrompt}, r.Code) {
 		return candResult{stop: check(r, "remote spawn"), res: r}
 	}
 	return candResult{rc: r.Code, note: fmt.Sprintf("refused rc=%d", r.Code), res: r}

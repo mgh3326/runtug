@@ -73,6 +73,7 @@ func parseSpawn(args []string) (Spawn, error) {
 		f.StringVar(p.v, p.k, *p.v, "")
 	}
 	f.StringVar(&s.Grade, "grade", "", "task grade (workers only)")
+	f.StringVar(&s.Workspace, "workspace", "", "local herdr workspace")
 	f.BoolVar(&s.Keep, "keep", false, "")
 	f.BoolVar(&s.DupOK, "job-dup-ok", false, "")
 	f.BoolVar(&s.Bypass, "task-hk-bypass", false, "")
@@ -178,6 +179,16 @@ func (a *App) taskLink(ctx context.Context, s Spawn, bypassed bool) error {
 	return a.event(ctx, s.Job, "job.task_link", map[string]any{"task_id": s.Task, "job_id": s.Job, "claimed_by": s.Label, "status": status, "inherited_from": s.Inherited})
 }
 func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
+	// Keep every herdr operation and lane identity on the same session.
+	if a.HerdrSession == "" {
+		a.HerdrSession = firstNonempty(os.Getenv("HERDR_SESSION"), "default")
+	}
+	if s.Delegated && s.Workspace == "" {
+		s.Workspace = str(a.Config.Local, "workspace")
+		if s.Workspace == "" {
+			return fail(exitConfig, "WORKSPACE_UNCONFIGURED: set hosts.<host>.workspace or executing local.workspace")
+		}
+	}
 	s.placement = &placementDecision{}
 	defer func() { a.finishPlacement(ctx, s, err) }()
 	defer func() { a.spawnEvents(s, err) }()
@@ -565,8 +576,15 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 		parent = s.Parent
 	}
 	machine := a.machine()
-	laneOK := s.LaneDefer == "" && a.registerLane(ctx, lane, parent, pane, s.Role, machine) == nil
-	receipt := map[string]any{"pane_id": pane, "tab_id": tab, "label": s.Label, "profile": s.Profile, "launch_profile": launchProfile(seat.Canon, launch.Effort), "model_id": launch.ModelID, "effort": launch.Effort, "family": seat.Family, "role": s.Role, "lane_role": s.Role, "owner_lane": owner, "parent_lane": s.Parent, "task_id": s.Task, "report": s.Report, "cwd": s.CWD, "keep": s.Keep, "pool": pool, "host": machine}
+	laneOK := false
+	if s.LaneDefer == "" {
+		if e := a.registerLane(ctx, lane, parent, pane, s.Role, machine); e != nil {
+			a.warn("lane registration failed (session=%s machine=%s pane=%s): %v", a.herdrSession(), machine, pane, e)
+		} else {
+			laneOK = true
+		}
+	}
+	receipt := map[string]any{"pane_id": pane, "tab_id": tab, "herdr_session": a.herdrSession(), "label": s.Label, "profile": s.Profile, "launch_profile": launchProfile(seat.Canon, launch.Effort), "model_id": launch.ModelID, "effort": launch.Effort, "family": seat.Family, "role": s.Role, "lane_role": s.Role, "owner_lane": owner, "parent_lane": s.Parent, "task_id": s.Task, "report": s.Report, "cwd": s.CWD, "keep": s.Keep, "pool": pool, "host": machine}
 	if laneOK {
 		receipt["hub_lane"] = lane
 		receipt["hub_lane_machine"] = machine
@@ -586,7 +604,7 @@ func (a *App) Spawn(ctx context.Context, s Spawn) (err error) {
 	} else if s.Role == "builder" {
 		laneStatus = " lane=UNREGISTERED"
 	}
-	fmt.Fprintf(a.Out, "OK pane=%s model=%s label=%s status=working landed=yes job=%s quota_record=%s/quota_pool%s placement=%s\n", pane, s.Profile, s.Label, s.Job, pool, laneStatus, s.placement.execution.receipt())
+	fmt.Fprintf(a.Out, "OK pane=%s session=%s model=%s label=%s status=working landed=yes job=%s quota_record=%s/quota_pool%s placement=%s\n", pane, a.herdrSession(), s.Profile, s.Label, s.Job, pool, laneStatus, s.placement.execution.receipt())
 	a.finishPlacement(ctx, s, nil)
 	if s.Role == "builder" && !laneOK && a.envOr("RUNTUG_LANE_STRICT", "WRK_LANE_STRICT") == "1" {
 		return fail(exitLaneUnregistered, "builder pane exists but lane is UNREGISTERED")
@@ -703,7 +721,7 @@ func unwrap(m map[string]any) map[string]any {
 }
 func (a *App) machine() string {
 	if mapping, ok := a.Config.Hub["session_machine_ids"].(map[string]any); ok {
-		session := firstNonempty(os.Getenv("HERDR_SESSION"), "default")
+		session := a.herdrSession()
 		if id := str(mapping, session); id != "" {
 			return id
 		}
