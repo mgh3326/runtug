@@ -248,15 +248,25 @@ func TestRefreshNeverAddsIneligibleLocalHolder(t *testing.T) {
 				src.accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true}
 				return Result{}, true
 			})
-			if _, err := a.selectProfile(context.Background(), s); err != nil {
+			sel, err := a.selectProfile(context.Background(), s)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "eligible-local" {
+			switch mode {
+			case "eligible-local":
 				if local != 1 || remote != 0 {
 					t.Fatalf("eligible local preference: local=%d remote=%d", local, remote)
 				}
-			} else if local != 0 || remote != 1 {
-				t.Fatalf("refresh escaped eligible holders: local=%d remote=%d", local, remote)
+			case "host-pin", "excluded":
+				// A placement restriction keeps the local holder out of
+				// placement, not out of measuring the account (hk 2647).
+				if local != 1 || remote != 0 || sel.chosen.host != "host-b" {
+					t.Fatalf("restricted local holder: local=%d remote=%d host=%s", local, remote, sel.chosen.host)
+				}
+			default:
+				if local != 0 || remote != 1 {
+					t.Fatalf("refresh escaped eligible holders: local=%d remote=%d", local, remote)
+				}
 			}
 		})
 	}

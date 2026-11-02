@@ -300,12 +300,24 @@ candidate remains the spawn fails with the usual placement refusal. An explicit
 `--host NAME` (or `--host local`) that names an excluded host is refused with
 exit 2. The list is initiator-local and is not sent to a delegated host.
 
+Automatic selection measures an account the same way with or without
+`--host NAME` or `--exclude-host`: a stale shared reading is refreshed on any
+holder of that account, the local machine first, and a host those flags keep
+out of placement may still be that holder. It is never placed or gated. So
+`runtug plan` and a restricted spawn judge the same evidence, and a failed
+refresh on the only placeable holder (for example over ssh that is down) no
+longer refuses an account another holder can measure.
+
 Before trying a remote candidate (including an explicit `--host NAME`), runtug
 resolves that host's most recent fresh presence for the launch pool, then asks
 `pacelever gate --account-key POOL:FINGERPRINT --json` to judge its shared
 observation. The spawner's `[quota.accounts]` does not pin remote accounts.
 Missing, ambiguous, stale or degraded target evidence refuses that host; auto
-placement tries the next candidate. Local placement keeps the local gate path.
+placement tries the next candidate. A pinned `-m` with a forced remote
+`--host NAME` that has no selected account resolves the pool from
+`pacelever policy launch` for the seat's effort; when that refuses (an
+unplaced rung, for example) the spawn refuses with that cause
+(`quota pool for PROFILE@EFFORT unresolved: …`), not as missing presence. Local placement keeps the local gate path.
 The selection's `quota_gates` and placement candidate's `quota_gate` record the
 host, account key, evidence source, outcome and exit code of each attempt.
 

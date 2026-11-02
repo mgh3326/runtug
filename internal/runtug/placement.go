@@ -1329,7 +1329,16 @@ func (a *App) placeForced(ctx context.Context, s Spawn, brief string) (bool, map
 	if !ok {
 		return true, nil, fail(exitConfig, "quota_request_unavailable")
 	}
-	pool := a.quotaPool(ctx, s)
+	// Without the pool no presence can name the host's account: refuse
+	// with the catalog's reason (an unplaced rung, say), not as absence.
+	pool, e := a.launchPool(ctx, s)
+	if e != nil {
+		code := exitCode(e)
+		if code == 0 {
+			code = exitConfig
+		}
+		return true, nil, fail(code, "quota pool for %s@%s unresolved: %v", s.Profile, qr.Effort, e)
+	}
 	spawn := func() candResult {
 		key, acc := a.remoteAccount(ctx, pool, c.name, c.cfg)
 		if s.AccountKey != "" && key != s.AccountKey {
@@ -1406,24 +1415,31 @@ func (a *App) quotaRequest(s Spawn) (QuotaRequest, bool) {
 }
 
 func (a *App) quotaPool(ctx context.Context, s Spawn) string {
+	pool, _ := a.launchPool(ctx, s)
+	return pool
+}
+
+// launchPool is quotaPool with the reason a pool is unknown: the selected
+// account's pool, else the catalog's pool for the launch rung.
+func (a *App) launchPool(ctx context.Context, s Spawn) (string, error) {
 	if s.AccountKey != "" {
 		pool, _, _ := strings.Cut(s.AccountKey, ":")
 		if validID(pool) {
-			return pool
+			return pool, nil
 		}
 	}
 	if a.Quota == nil {
-		return ""
+		return "", fail(exitConfig, "quota catalog unavailable")
 	}
 	qr, ok := a.quotaRequest(s)
 	if !ok {
-		return ""
+		return "", fail(exitConfig, "missing seat policy for %s", s.Profile)
 	}
 	l, e := a.Quota.Launch(ctx, qr)
 	if e != nil {
-		return ""
+		return "", e
 	}
-	return l.Pool
+	return l.Pool, nil
 }
 
 func taskWaited(t Task, now time.Time) time.Duration {

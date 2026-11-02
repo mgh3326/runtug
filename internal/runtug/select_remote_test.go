@@ -130,26 +130,28 @@ func TestSelectMeasurementFailureRefuses(t *testing.T) {
 	}
 }
 
-func TestSelectPinnedRefreshUsesEligibleRemoteHolder(t *testing.T) {
+func TestSelectPinnedRefreshMeasuresOnAnyHolder(t *testing.T) {
 	a, s, _, src := remoteFreeFixture(t, freeReceipt)
 	const key = "devin:fedcba9876543210"
 	src.accounts[key] = SharedAccount{Key: key, Observed: true}
-	// A matching local login does not override the caller's remote host pin.
+	// The host pin decides placement; the local holder of the same account
+	// still measures it, as the unrestricted plan does (hk 2647).
 	src.presence = append(src.presence, PresenceRecord{HostID: "local", AccountKey: key, LastSeen: a.Now()})
 	measured := 0
 	a.Runner = wrapRunner(a.Runner, func(c Command) (Result, bool) {
-		if c.Name == "pacelever" {
-			t.Fatal("pinned refresh used the local holder")
-		}
 		if c.Name == "ssh" {
+			t.Fatal("pinned refresh skipped the local holder")
+		}
+		if c.Name == "pacelever" {
 			measured++
 			src.accounts[key] = SharedAccount{Key: key, Observed: true, Fresh: true}
 			return Result{}, true
 		}
 		return Result{}, false
 	})
-	if _, err := a.selectProfile(context.Background(), s); err != nil || measured != 1 {
-		t.Fatalf("eligible pinned holder was not measured: %v; measurements=%d", err, measured)
+	sel, err := a.selectProfile(context.Background(), s)
+	if err != nil || measured != 1 || sel.chosen.host != "host-b" {
+		t.Fatalf("pinned holder: %v; measurements=%d", err, measured)
 	}
 }
 
