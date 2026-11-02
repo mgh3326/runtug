@@ -554,7 +554,7 @@ func parseCatalogText(out string) ([]CatalogRow, error) {
 		if len(f) < 2 {
 			continue
 		}
-		if _, ok := gradeOrder[f[0]]; !ok {
+		if !validCatalogGrade(f[0]) {
 			continue
 		}
 		row := CatalogRow{Grade: f[0]}

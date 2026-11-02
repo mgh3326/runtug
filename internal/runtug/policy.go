@@ -102,6 +102,13 @@ func LoadPolicy(path string) (Policy, error) {
 
 var gradeOrder = map[string]int{"C": 0, "B": 1, "A": 2, "A+": 3, "S": 4, "S+": 5}
 
+const gradeUnrated = "unrated"
+
+func validCatalogGrade(grade string) bool {
+	_, rated := gradeOrder[grade]
+	return rated || grade == gradeUnrated
+}
+
 // Task titles declare their marker as "(grade B, T1)" or the bare sentence
 // form "Grade S+, T3"; both are accepted. Grade and scale must be adjacent.
 var taskMarker = regexp.MustCompile(`(?i)(?:\(|\b)grade (S\+|S|A\+|A|B|C),\s*(T[0-3])\b`)
@@ -110,7 +117,7 @@ var taskMarker = regexp.MustCompile(`(?i)(?:\(|\b)grade (S\+|S|A\+|A|B|C),\s*(T[
 // table's family_effort opt-in for exactly this escalation rung
 // (routing.familyAdmitsGate); it lets a builder run it.
 func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[string]any, familyGate bool) error {
-	if _, ok := gradeOrder[l.Grade]; !ok || l.ModelID == "" || (l.Effort == "" && s.needsEffort()) || l.Gate == "" {
+	if !validCatalogGrade(l.Grade) || l.ModelID == "" || (l.Effort == "" && s.needsEffort()) || l.Gate == "" {
 		return fail(exitConfig, "canon launch data incomplete")
 	}
 	if !boolean(host, s.Capability, false) { // Standard harnesses predate capability flags; only their explicit policy sentinel is implicit.
@@ -144,7 +151,7 @@ func (s Seat) Check(l Launch, role, grade, builderFamily, arm string, host map[s
 	}
 	if grade != "" && role != "builder" && role != "counsel" {
 		n, ok := gradeOrder[grade]
-		if !ok || gradeOrder[l.Grade] < n {
+		if !ok || l.Grade == gradeUnrated || gradeOrder[l.Grade] < n {
 			return fail(exitSeatRefused, "canon grade %s does not cover task grade %s", l.Grade, grade)
 		}
 	}
