@@ -347,7 +347,7 @@ overrides.
 | `url` | `HANDOFFKEEP_URL` | Shared quota cache endpoint; HTTPS required outside loopback. |
 | `credential_env` | `HANDOFFKEEP_TOKEN` | Name of the environment variable holding the bearer token. |
 | `presence_ttl_s` | `86400` | How recent a host-presence record must be to count as login evidence. |
-| `fresh_ttl_s` | `300` | How recent a shared observation must be to count as fresh. |
+| `fresh_ttl_s` | `300` | How recent a shared observation must be to count as fresh. A spawn delegated over ssh with a selected account carries the placing host's value, and the executing host rechecks that account with it (up to 86400). |
 | `measure_timeout_s` | `60` | Bound on the on-target `pacelever refresh` run for a remote account the spawning host does not hold. |
 | `accounts` | unset | Optional pool → 16-hex account-fingerprint table for exact account keys. |
 | `node_env` | `~/.config/panewire/hub-node.env` | Panewire node env file; `HUB_MACHINE_ID` in it is the host id written to job records. `RUNTUG_NODE_ENV` overrides the path. |
