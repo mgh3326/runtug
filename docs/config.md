@@ -129,10 +129,12 @@ For example, a node serving session `fleet` can use
 `session_machine_ids = { fleet = "host-a", default = "host-a-default" }` and
 `session_lanes_token_envs = { fleet = "/config/node.env", default = "/config/node-default.env" }`.
 The registration warning includes session, machine, pane and panewire's error text;
-it is emitted for workers and builders. A node credential for another machine
-fails locally with `LANE_SESSION_MACHINE_MISMATCH` (70); configure both session
+it is emitted for workers and builders. A credential explicitly declaring another
+machine fails locally with `LANE_SESSION_MACHINE_MISMATCH` (70); configure both session
 maps rather than relabeling the route. `job.spawned` and the success line also
 record the herdr session, so a pane id is never the only delivery address.
+If no machine identity can be read locally, panewire validates the credential
+and its error is preserved in the registration warning.
 
 ## `[hosts.NAME]`
 
@@ -141,7 +143,7 @@ record the herdr session, so a pane id is never the only delivery address.
 | `ssh` | `NAME` | SSH config target; BatchMode is used. |
 | `via` | `ssh` | `ssh` (default; unchanged when unset) or `hub`: spawn, worktree preparation and quota refresh go through the panewire hub (see [Hub transport](#hub-transport-via--hub)). A `hub` host never falls back to ssh. |
 | `herdr_session` | `worker` | Remote HERDR_SESSION; set it to the session served by the target node. |
-| `workspace` | target `[local] workspace` | Workspace on this remote host. The caller's `-w` / `--workspace` applies only to local placement. Missing target workspace configuration refuses with `WORKSPACE_UNCONFIGURED` (70). |
+| `workspace` | target `[local] workspace` | Workspace on this remote host. The caller's `-w` / `--workspace` applies only to local placement. Missing target workspace configuration refuses with `WORKSPACE_UNCONFIGURED` (70). Automatic SSH placement tries the next candidate on this early refusal; forced placement still stops. |
 | `cwd_map` | explicit override | Inline table of local prefix → remote prefix; longest prefix wins. Only needed as an exception: the default remote cwd is `$HOME/work/<repo>` on the target, cloned when missing. For a job run from a linked git worktree the default is `<work root>/<worktree dir>`, where the work root is derived from entries that map a checkout directly under the local work root (else `$HOME/work`). |
 | `cwd_keys` | legacy | Kept for legacy hub configurations; not used. A hub host's cwd key is the canonical repo name. |
 | `hub_wait` | `120` | `via = "hub"` only: seconds (1..300) the hub waits for the node to answer a spawn. A first spawn that clones a large repo may need more. |
@@ -1315,7 +1317,7 @@ HTTP 409 warns and drops the conflicting file. Local attempt markers under
 | 70 | Configuration or trust refusal, including `POLICY_UNAVAILABLE` and `lead_consult_take_no_grade`. |
 | 74 | Active job duplicate, including an hk `job_id_taken` claim refusal. |
 | 75 | Unreadable duplicate state (the ledger's record of a duplicate job has no state or an unreadable `job.spawned` receipt; a released job has no receipt and is reclaimed), changed artifact, or a `--parent-job` that resolves neither locally nor in hk within the bound. |
-| 76 | `BRIEF_SUBMISSION_UNCONFIRMED`: no working transition or submitted brief turn on the launch session and pane. A submit key is retried once only when the payload remains in the composer. |
+| 76 | `BRIEF_SUBMISSION_UNCONFIRMED`: no working transition or submitted brief turn on the launch session and pane. Codex retries a submit key once only for composer residue; other harnesses retain one submit-key retry when submission remains unconfirmed. |
 | 77 | `NO_ROLE_CANDIDATE` or seat, grade, family, or E6 refusal; quota gate exit 5 is remapped here. |
 | 78 | `preflight`: at least one checked remote host failed a check; the reasons are on stdout and in the error. |
 | 79 | Mock isolation refusal. |

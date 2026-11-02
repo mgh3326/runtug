@@ -562,7 +562,7 @@ func (a *App) deliver(ctx context.Context, kind, pane, brief string) error {
 			}
 		}
 		// Retry the submit key, never paste a second copy of an ambiguous payload.
-		if attempt == 0 && residue {
+		if attempt == 0 && (kind != "codex" || residue) {
 			scope := "agent"
 			if kind == "cmd" {
 				scope = "pane"
@@ -649,14 +649,11 @@ func (a *App) registerLane(ctx context.Context, lane, parent, pane, role, machin
 		if arg != "--hub-token-env" || i+1 == len(args) {
 			continue
 		}
-		env, e := readEnvFile(expand(args[i+1]))
-		if e != nil {
-			return fail(exitConfig, "lane credential: %v", e)
-		}
-		if id := env["HUB_MACHINE_ID"]; id != "operator" && id != machine {
+		args[i+1] = expand(args[i+1])
+		env, e := readEnvFile(args[i+1])
+		if id := env["HUB_MACHINE_ID"]; e == nil && id != "" && id != "operator" && id != machine {
 			return fail(exitConfig, "LANE_SESSION_MACHINE_MISMATCH: session=%s route=%s credential_machine=%s; configure hub.session_machine_ids and hub.session_lanes_token_envs together", a.herdrSession(), machine, id)
 		}
-		args[i+1] = expand(args[i+1])
 	}
 	return a.must(ctx, "panewire", args...)
 }

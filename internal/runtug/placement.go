@@ -1107,6 +1107,9 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	if r.Code == exitUnreachable {
 		return candResult{unreachable: true, rc: r.Code, note: "unreachable", res: r}
 	}
+	if !forced && r.Code == exitConfig && strings.Contains(r.Err+r.Out, "WORKSPACE_UNCONFIGURED:") {
+		return candResult{rc: r.Code, note: "workspace_unconfigured", res: r}
+	}
 	if forced || slices.Contains([]int{2, 70, 74, 75, 76, 79, 82, exitTrustPrompt}, r.Code) {
 		return candResult{stop: check(r, "remote spawn"), res: r}
 	}
