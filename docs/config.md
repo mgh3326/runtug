@@ -1239,6 +1239,46 @@ Every field is redacted (tokens, URL credentials) and bounded (`detail` at
 command's result. Grafana Alloy ships the file to Loki; the shipping, dashboard
 and alerts live in panewire `deploy/alloy` and `deploy/grafana`.
 
+## Placement record producer
+
+Every real spawn decision produces one immutable handoffkeep record through
+`POST /v1/placements`. This includes automatic and forced placement, local and
+remote sessions, headless delegation, and refusals or failures before launch.
+Dry runs produce no record. See handoffkeep's
+[Linear work board contract](https://github.com/mgh3326/handoffkeep/blob/main/docs/linear-work-board.md).
+
+The record contains `job_id`, a local per-job `attempt`, numeric `task_id` when
+known, `decided_at`, `tool_version`, `source` (`auto` or `forced`), `ranking`,
+`state_source`, `chosen_host`, `outcome` (`placed`, `refused`, or `failed`), and
+a reason code. Candidates include scores, available hub signals, and skip
+reasons. Missing signals stay absent. Forced placements can have an empty
+candidate list. The server derives `decided_on` from the node token's host grant.
+
+Execution metadata includes `family`, the admitted `model`, `role` (`lead`,
+`worker`, `review`, or `consult`), `profile`, `pool`, `pane_id`, the repository
+name, and an opaque `account_key`. Account fingerprints remain fingerprints.
+Other account aliases become hashes. Briefs, local paths, login identities,
+credentials, and terminal output do not enter the record. Mergewake passes the
+owning task with `--task` and `--role reviewer`; the producer records that task
+and `role=review`.
+
+The initiating runtug owns delivery. SSH executors are marked delegated, and
+panewire hub executors use the node-owned `hub-directed` override reason. These
+executors return final launch metadata in the `placement=` part of their `OK`
+receipt. They do not create a second decision. For an older executor, runtug
+resolves the shared hk job record before posting and freezes that payload for
+retries. A successful placement stays `placed` if a later `--wait` fails.
+
+Delivery uses the existing hk client and `[quota]` URL and credentials. Each
+delivery pass has a two-second budget and cannot change the spawn result.
+Records first enter owner-only JSON files under
+`$XDG_STATE_HOME/runtug/placements` (default
+`~/.local/state/runtug/placements`). Each subsequent runtug invocation retries
+up to 32 pending files within the same budget. A failed delivery warns and
+keeps the file. An identical `(job_id, attempt)` payload replays as HTTP 200.
+HTTP 409 warns and drops the conflicting file. Local attempt markers under
+`placement-attempts` survive delivery so later decisions do not reuse keys.
+
 ## Exit statuses
 
 | Code | Meaning |

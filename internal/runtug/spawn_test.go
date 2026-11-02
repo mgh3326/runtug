@@ -66,6 +66,12 @@ func testApp(t *testing.T) *App {
 	if real, e := filepath.EvalSymlinks(root); e == nil {
 		root = real
 	}
+	// HTTP producers must never inherit the developer's hk endpoint or token.
+	t.Setenv("HANDOFFKEEP_CONFIG", filepath.Join(root, "absent-hk.env"))
+	t.Setenv("HANDOFFKEEP_URL", "")
+	t.Setenv("HANDOFFKEEP_TOKEN", "")
+	t.Setenv("HANDOFFKEEP_CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("HANDOFFKEEP_CF_ACCESS_CLIENT_SECRET", "")
 	nodeEnv := filepath.Join(root, "node.env")
 	if e := os.WriteFile(nodeEnv, []byte("HUB_MACHINE_ID=test-host\n"), 0600); e != nil {
 		t.Fatal(e)

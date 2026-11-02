@@ -31,8 +31,9 @@ type HostView struct {
 	// Score is the hub's placement score: free capacity weighted by the
 	// host's configured capacity_weight. Higher is better; nil when the hub
 	// did not send one.
-	Score  *float64
-	Reason string
+	Score   *float64
+	Reason  string
+	Signals PlacementSignals
 }
 
 // PresenceRecord is a pacelever host-presence row: which host measured which
@@ -184,6 +185,7 @@ type placeCandidate struct {
 	judgment    *quotaJudgment
 	load        *float64
 	score       *float64
+	signals     PlacementSignals
 	over        bool
 	outcome     string
 	// preflight is the remote-spawn preflight of a candidate the placement
@@ -445,6 +447,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 	local.load = a.localLoad(ctx)
 	if hv, reported := hub[machine]; reported {
 		local.score = hv.Score
+		local.signals = hv.Signals
 	}
 	maxRatio, hasGuard := number(a.Config.Local, "max_load_ratio")
 	if local.load != nil && hasGuard && *local.load >= maxRatio {
@@ -489,6 +492,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 			}
 			c.load = hv.LoadRatio
 			c.score = hv.Score
+			c.signals = hv.Signals
 		} else {
 			c.awake = !c.wakeable || hub == nil
 		}
@@ -629,6 +633,9 @@ func (p *placePlan) record(chosen string) map[string]any {
 		}
 		if c.load != nil {
 			row["load_ratio"] = *c.load
+		}
+		if c.score != nil {
+			row["score"] = *c.score
 		}
 		if len(c.missing) > 0 {
 			row["missing_tags"] = c.missing
@@ -1084,7 +1091,11 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	if session == "" {
 		session = "worker"
 	}
+	if s.placement != nil {
+		s.placement.started = true
+	}
 	r := a.Runner.Run(ctx, Command{Name: "ssh", Args: []string{"-o", "BatchMode=yes", "--", target, "env HERDR_SESSION=" + shellQuote(session) + " runtug _spawn-stdin"}, Input: string(b)})
+	s.placement.remoteReceipt(c.name, r.Out)
 	fmt.Fprint(a.Err, r.Err)
 	if strings.Contains(r.Out, "OK pane=") {
 		fmt.Fprint(a.Out, strings.TrimRight(r.Out, "\n")+" host="+c.name+"\n")
@@ -1130,6 +1141,9 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 	p, e := a.plan(ctx, s, pool, waited)
 	if e != nil {
 		return true, nil, e
+	}
+	if s.placement != nil {
+		s.placement.plan = p
 	}
 	var repo *repoResolution
 	repoDone := false
@@ -1472,6 +1486,8 @@ func parseHubHosts(raw string) ([]HostView, error) {
 			// underscores, so the field needs its tag.
 			LoadRatio *float64 `json:"load_ratio"`
 			Score     *float64 `json:"score"`
+			PlacementSignals
+			Signals *PlacementSignals `json:"signals"`
 		}
 		var name string
 		if json.Unmarshal(v, &name) != nil {
@@ -1489,7 +1505,10 @@ func parseHubHosts(raw string) ([]HostView, error) {
 		if !validID(name) {
 			continue
 		}
-		hv := HostView{Name: name, Connected: true, LoadRatio: c.LoadRatio, Score: c.Score, Reason: c.Reason}
+		hv := HostView{Name: name, Connected: true, LoadRatio: c.LoadRatio, Score: c.Score, Reason: c.Reason, Signals: c.PlacementSignals}
+		if c.Signals != nil {
+			hv.Signals = *c.Signals
+		}
 		if c.Connected != nil {
 			hv.Connected = *c.Connected
 		}

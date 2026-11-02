@@ -582,7 +582,15 @@ func (a *App) spawnHub(ctx context.Context, s Spawn, brief string, c *placeCandi
 		if e != nil {
 			return candResult{stop: e}
 		}
+		if s.placement != nil {
+			s.placement.started = true
+		}
 		reply, err := hub.Spawn(ctx, HubSpawnRequest{RequestID: id, Machine: c.name, CWDKey: key, Brief: HubBrief{Doc: doc}, Checkout: checkout, Args: args, WaitSeconds: wait})
+		s.placement.remoteReceipt(c.name, reply.StdoutTail)
+		if err == nil && reply.RC == 0 && reply.Error == "" && reply.Status == "" && reply.Pane != "" && s.placement != nil && !s.placement.placed {
+			s.placement.placed = true
+			s.placement.execution = placementExecution{Host: c.name}
+		}
 		if err != nil {
 			var he *HubError
 			if slices.Contains(args, "--report-relative") && errors.As(err, &he) && he.Kind == hubRejected && he.Status == http.StatusBadRequest && he.Code == "invalid_request" {
