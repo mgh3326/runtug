@@ -94,6 +94,9 @@ Grade-filtered roles skip catalog rows whose grade is `unrated`, recording
 under their ordinary role, effort, gate, and quota rules. Plan output preserves
 the `unrated` grade for both chosen and dropped rows.
 
+Lead and consult quota requests carry their routing role to pacelever, including
+when the launcher seat is a worker. Seat and family checks retain the seat role.
+
 When every allowed profile is quota-exhausted, the role's `on_exhaustion`
 decides: `wait` refuses `role_exhausted_wait` (exit 86) with the earliest
 known reset, `escalate` refuses `role_exhausted_escalate` (exit 87), and
