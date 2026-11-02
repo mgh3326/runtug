@@ -108,7 +108,7 @@ func (a *App) planCmd(ctx context.Context, args []string) (err error) {
 	}
 	c := sel.chosen
 	s.Profile = c.seatName
-	s.AccountKey, s.RoutingRole, s.SelHost = c.accountKey, sel.req.route.role, c.host
+	s.AccountKey, s.RoutingRole, s.SelHost, s.route = c.accountKey, sel.req.route.role, c.host, sel.req.route
 	if c.row.Effort != "" {
 		s.Effort = c.row.Effort
 	}
@@ -153,7 +153,8 @@ func (a *App) planHosts(ctx context.Context, s Spawn, grade string) (*placePlan,
 	admitLocal := func(c *placeCandidate) bool {
 		launch, err := a.Quota.Launch(ctx, qr)
 		if err == nil {
-			err = a.Policy.Profiles[s.Profile].Check(launch, s.Role, grade, s.ParentFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local)
+			seat := a.Policy.Profiles[s.Profile]
+			err = seat.Check(launch, s.Role, grade, s.ParentFamily, a.envOr("RUNTUG_E6_ARM", "SCOPEFUEL_E6_ARM"), a.Config.Local, s.route.familyAdmitsGate(launch.row()))
 		}
 		if err != nil {
 			c.outcome, localRefusal = "admission_refused", err
@@ -240,6 +241,11 @@ func (a *App) printPlan(asJSON bool, out map[string]any, sel *selPlan, pp *place
 	fmt.Fprintf(a.Out, "plan grade=%s t=%s role=%s urgency=%s tiers=%s\n", sel.req.grade, sel.req.t, sel.req.role, sel.req.urgency, strings.Join(sel.order, ">"))
 	if rt := sel.req.route; rt != nil {
 		fmt.Fprintf(a.Out, "routing role=%s version=%d policy_source=%s%s\n", firstNonempty(rt.role, "-"), rt.version, rt.source, map[bool]string{true: " downgraded_from=" + rt.downgradedFrom}[rt.downgradedFrom != ""])
+	}
+	if fe := sel.familyEffort; fe != nil {
+		// The chosen rung's role effort came from family_effort, which also
+		// opted its escalation gate in.
+		fmt.Fprintf(a.Out, "family_effort %s=%s chosen=%s@%s gate=%s\n", fe["key"], fe["effort"], fe["profile"], fe["effort"], fe["gate"])
 	}
 	label := func(c *selCand) string {
 		return fmt.Sprintf("%s@%s model=%s pool=%s grade=%s", c.seatName, c.row.Effort, c.row.ModelID, c.row.Pool, c.row.Grade)
