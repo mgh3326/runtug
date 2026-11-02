@@ -341,7 +341,13 @@ func remotePlacementFixture(t *testing.T, transport, source, outcome string, met
 	}
 	result := Result{Out: line}
 	if outcome == "failed" {
-		result = Result{Code: exitConfig, Err: fakeSecretText}
+		result = Result{Code: exitConfig, Out: "FAILED placement=" + execution.receipt(), Err: fakeSecretText}
+	}
+	if outcome == "contact-refused" {
+		result = Result{Code: exitFailure, Err: "remote refused before launching"}
+	}
+	if outcome == "retryable-failed" {
+		result = Result{Code: exitFailure, Out: "FAILED placement=" + execution.receipt()}
 	}
 	src := &fakePlacementSource{hosts: []HostView{{Name: "host-b", Connected: true, Score: ptrF(123), LoadRatio: ptrF(0.2)}}}
 	a, s, _ := remoteFixture(t, src, &fakeWaker{}, "2026-01-01T00:00:00Z", func(args string) Result {
@@ -398,6 +404,9 @@ func TestPlacementRemoteTransportsRecordEveryOutcomeAndSource(t *testing.T) {
 					if outcome == "failed" && r.Host != "host-b" {
 						t.Fatalf("failed remote launch lost the contacted host: %+v", r)
 					}
+					if outcome == "failed" && (r.Family != "anthropic" || r.Pool != "claude" || r.Model != "executing-model") {
+						t.Fatalf("accepted failure receipt lost execution metadata: %+v", r)
+					}
 					if outcome == "failed" && source == "auto" {
 						chosen := slices.ContainsFunc(r.Candidates, func(c placementCandidateRecord) bool { return c.Host == "host-b" && c.Outcome == "chosen" })
 						if !chosen {
@@ -421,6 +430,17 @@ func TestPlacementLegacyRemoteMetadataWaitsForHKAndFreezes(t *testing.T) {
 	if len(requests) != 0 || len(placementSpool(t, a)) != 1 {
 		t.Fatal("an old executor's incomplete metadata must stay spooled")
 	}
+	b, err := os.ReadFile(placementSpool(t, a)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending pendingPlacement
+	if err := json.Unmarshal(b, &pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Record.Family != "anthropic" || pending.Record.Pool != "claude" || !pending.ResolveJob {
+		t.Fatalf("legacy receipt discarded known family/pool before resolution: %+v", pending)
+	}
 	store := a.JobStore.(*fakeJobStore)
 	store.records[s.Job] = map[string]any{"family": "anthropic", "model": "final-model", "profile": "sonnet", "pool": "claude", "pane_id": "w:remote"}
 	h.loseAck = true
@@ -438,6 +458,115 @@ func TestPlacementLegacyRemoteMetadataWaitsForHKAndFreezes(t *testing.T) {
 	}
 	if r.AccountKey != s.AccountKey {
 		t.Fatalf("legacy executor lost the admitted account: got %q, want %q", r.AccountKey, s.AccountKey)
+	}
+}
+
+func TestPlacementContactIsNotLaunchAcceptance(t *testing.T) {
+	for _, transport := range []string{"ssh", "hub"} {
+		for _, source := range []string{"auto", "forced"} {
+			t.Run(transport+"/"+source, func(t *testing.T) {
+				a, s := remotePlacementFixture(t, transport, source, "contact-refused", false)
+				h := placementServer(t, a)
+				if err := a.Spawn(context.Background(), s); err == nil {
+					t.Fatal("remote refusal unexpectedly succeeded")
+				}
+				r := onePlacement(t, h)
+				if r.Outcome != "refused" || r.Host != "" || slices.ContainsFunc(r.Candidates, func(c placementCandidateRecord) bool { return c.Outcome == "chosen" }) {
+					t.Fatalf("contact without acceptance was counted as a launch: outcome=%s chosen_host=%q candidates=%+v", r.Outcome, r.Host, r.Candidates)
+				}
+				if !slices.ContainsFunc(r.Candidates, func(c placementCandidateRecord) bool { return c.Host == "host-b" && c.Reason != "" }) {
+					t.Fatalf("contacted destination missing from refusal trace: %+v", r.Candidates)
+				}
+			})
+		}
+	}
+}
+
+func TestPlacementRetryDoesNotLeakLaunchStateIntoLocalRefusal(t *testing.T) {
+	for _, outcome := range []string{"contact-refused", "retryable-failed"} {
+		for _, transport := range []string{"ssh", "hub"} {
+			t.Run(transport+"/"+outcome, func(t *testing.T) {
+				a, s := remotePlacementFixture(t, transport, "auto", outcome, false)
+				h := placementServer(t, a)
+				a.Config.Local["spawn"] = true
+				a.LoadRatio = func(context.Context) (float64, error) { return 0.9, nil }
+				if err := os.MkdirAll(s.CWD, 0700); err != nil {
+					t.Fatal(err)
+				}
+				f := a.Runner.(*fakeRunner)
+				base, checks := f.Do, 0
+				f.Do = func(c Command) Result {
+					if c.Name == "handoffkeep" && strings.HasPrefix(strings.Join(c.Args, " "), "tasks show") {
+						checks++
+						if checks > 1 {
+							return Result{Code: 1, Err: "local precheck unavailable"}
+						}
+					}
+					return base(c)
+				}
+				if err := a.Spawn(context.Background(), s); exitCode(err) != exitConfig || checks != 2 {
+					t.Fatalf("fixture did not reach local pre-launch refusal: checks=%d err=%v", checks, err)
+				}
+				r := onePlacement(t, h)
+				if r.Outcome != "refused" || r.Host != "" || slices.ContainsFunc(r.Candidates, func(c placementCandidateRecord) bool { return c.Outcome == "chosen" }) {
+					t.Fatalf("previous candidate leaked into final refusal: outcome=%s chosen_host=%q candidates=%+v", r.Outcome, r.Host, r.Candidates)
+				}
+			})
+		}
+	}
+}
+
+func TestPlacementExecutorEmitsFailureOnlyAfterLaunchAttempt(t *testing.T) {
+	for _, delegated := range []bool{false, true} {
+		for _, started := range []bool{false, true} {
+			t.Run(fmt.Sprintf("delegated=%t/started=%t", delegated, started), func(t *testing.T) {
+				a, s, f, _ := cmdFixture(t)
+				s.Delegated = delegated
+				if !delegated {
+					s.OverrideReason = "hub-directed"
+				}
+				a.Config.Local["spawn"] = started
+				base := f.Do
+				f.Do = func(c Command) Result {
+					if c.Name == "herdr" && len(c.Args) >= 2 && c.Args[0] == "tab" && c.Args[1] == "create" {
+						return Result{Code: 1, Err: fakeSecretText}
+					}
+					return base(c)
+				}
+				if err := a.Spawn(context.Background(), s); err == nil {
+					t.Fatal("fixture did not refuse/fail")
+				}
+				out := a.Out.(*bytes.Buffer).String()
+				d := &placementDecision{}
+				d.remoteReceipt(a.machine(), out)
+				if d.started != started || d.placed || (started && (d.execution.Host != a.machine() || d.execution.Model != "provider/example-model")) {
+					t.Fatalf("failure receipt did not describe actual launch phase: started=%t metadata=%+v stdout=%q", d.started, d.execution, out)
+				}
+			})
+		}
+	}
+}
+
+func TestPlacementWakeRetryDoesNotChooseRejectedHost(t *testing.T) {
+	for _, transport := range []string{"ssh", "hub"} {
+		for _, outcome := range []string{"contact-refused", "retryable-failed"} {
+			t.Run(transport+"/"+outcome, func(t *testing.T) {
+				a, s := remotePlacementFixture(t, transport, "auto", outcome, false)
+				h := placementServer(t, a)
+				src := a.Source.(*fakePlacementSource)
+				src.hosts[0].Connected = false
+				a.Config.Hosts["host-b"]["wake"] = "panewire"
+				w := &fakeWaker{onWake: func(string) { src.hosts[0].Connected = true }}
+				a.Wake = w
+				if err := a.Spawn(context.Background(), s); err == nil || len(w.calls) != 1 {
+					t.Fatalf("fixture did not reach the wake refusal: wakes=%v err=%v", w.calls, err)
+				}
+				r := onePlacement(t, h)
+				if r.Outcome != "refused" || r.Host != "" || slices.ContainsFunc(r.Candidates, func(c placementCandidateRecord) bool { return c.Outcome == "chosen" }) {
+					t.Fatalf("wake retry leaked launch state: outcome=%s chosen_host=%q candidates=%+v", r.Outcome, r.Host, r.Candidates)
+				}
+			})
+		}
 	}
 }
 

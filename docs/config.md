@@ -1269,6 +1269,13 @@ receipt. They do not create a second decision. For an older executor, runtug
 resolves the shared hk job record before posting and freezes that payload for
 retries. A successful placement stays `placed` if a later `--wait` fails.
 
+Contacting a remote host does not count as starting a launch. An executor that
+fails after attempting its launch returns `FAILED placement=` metadata; only
+that evidence or a success receipt marks the host as chosen. A refusal keeps
+the contacted host in the candidate trace. Placement clears launch state when
+it moves to another candidate. Older executors without failure receipts are
+conservatively recorded as refusals when no acceptance evidence is available.
+
 Delivery uses the existing hk client and `[quota]` URL and credentials. Each
 delivery pass has a two-second budget and cannot change the spawn result.
 Records first enter owner-only JSON files under

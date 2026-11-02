@@ -1092,8 +1092,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 		session = "worker"
 	}
 	if s.placement != nil {
-		s.placement.started = true
-		s.placement.execution = placementExecution{Host: c.name}
+		s.placement.contactedHost = c.name
 	}
 	r := a.Runner.Run(ctx, Command{Name: "ssh", Args: []string{"-o", "BatchMode=yes", "--", target, "env HERDR_SESSION=" + shellQuote(session) + " runtug _spawn-stdin"}, Input: string(b)})
 	s.placement.remoteReceipt(c.name, r.Out)
@@ -1158,7 +1157,19 @@ func (a *App) placeAuto(ctx context.Context, s Spawn, brief string) (bool, map[s
 		}
 		return repo
 	}
-	spawn := func(c *placeCandidate) candResult {
+	spawn := func(c *placeCandidate) (res candResult) {
+		defer func() {
+			if res.stop != nil && res.note == "" {
+				res.note = exitReason(exitCode(res.stop))
+			}
+			if !res.ok && res.stop == nil && s.placement != nil {
+				if s.placement.started {
+					res.note = "launch_failed"
+				}
+				s.placement.started = false
+				s.placement.execution = placementExecution{}
+			}
+		}()
 		qr, ok := a.quotaRequest(s)
 		if !ok {
 			return candResult{rc: exitConfig, note: "quota_request_unavailable"}

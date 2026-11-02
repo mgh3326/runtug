@@ -583,12 +583,12 @@ func (a *App) spawnHub(ctx context.Context, s Spawn, brief string, c *placeCandi
 			return candResult{stop: e}
 		}
 		if s.placement != nil {
-			s.placement.started = true
-			s.placement.execution = placementExecution{Host: c.name}
+			s.placement.contactedHost = c.name
 		}
 		reply, err := hub.Spawn(ctx, HubSpawnRequest{RequestID: id, Machine: c.name, CWDKey: key, Brief: HubBrief{Doc: doc}, Checkout: checkout, Args: args, WaitSeconds: wait})
 		s.placement.remoteReceipt(c.name, reply.StdoutTail)
 		if err == nil && reply.RC == 0 && reply.Error == "" && reply.Status == "" && reply.Pane != "" && s.placement != nil && !s.placement.placed {
+			s.placement.started = true
 			s.placement.placed = true
 			s.placement.execution = placementExecution{Host: c.name}
 		}

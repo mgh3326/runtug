@@ -75,11 +75,12 @@ type placementRecord struct {
 }
 
 type placementDecision struct {
-	plan      *placePlan
-	execution placementExecution
-	started   bool
-	placed    bool
-	recorded  bool
+	plan          *placePlan
+	execution     placementExecution
+	contactedHost string
+	started       bool
+	placed        bool
+	recorded      bool
 }
 
 // pendingPlacement is local-only. Old executors may return an OK receipt
@@ -129,17 +130,21 @@ func (d *placementDecision) remoteReceipt(host, out string) {
 		return
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "OK pane=") {
+		failed := strings.HasPrefix(line, "FAILED placement=")
+		if !failed && !strings.HasPrefix(line, "OK pane=") {
 			continue
 		}
-		d.placed = true
-		d.execution = placementExecution{Host: host}
+		if !failed {
+			d.started, d.placed = true, true
+			d.execution = placementExecution{Host: host}
+		}
 		for _, word := range strings.Fields(line) {
 			if raw, ok := strings.CutPrefix(word, "placement="); ok {
 				b, err := base64.RawURLEncoding.DecodeString(raw)
 				var e placementExecution
-				if err == nil && json.Unmarshal(b, &e) == nil && e.Host == host && e.Family != "" && e.PaneID != "" {
+				if err == nil && json.Unmarshal(b, &e) == nil && e.Host == host && e.Family != "" && (failed || e.PaneID != "") {
 					e.AccountKey = placementAccount(e.AccountKey)
+					d.started = true
 					d.execution = e
 					return
 				}
@@ -149,11 +154,17 @@ func (d *placementDecision) remoteReceipt(host, out string) {
 }
 
 func (a *App) finishPlacement(ctx context.Context, s Spawn, err error) {
-	if s.DryRun || s.Delegated || s.OverrideReason == "hub-directed" || !validID(s.Job) || s.placement.recorded {
+	if s.DryRun || !validID(s.Job) || s.placement.recorded {
 		return
 	}
 	d := s.placement
 	d.recorded = true
+	if s.Delegated || s.OverrideReason == "hub-directed" {
+		if err != nil && d.started && !d.placed {
+			fmt.Fprintf(a.Out, "FAILED placement=%s\n", d.execution.receipt())
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), placementDeliveryBudget)
 	defer cancel()
 	r := placementRecord{JobID: s.Job, DecidedAt: a.Now().UTC().Format(time.RFC3339Nano), ToolVersion: BuildVersion,
@@ -206,6 +217,13 @@ func (a *App) finishPlacement(ctx context.Context, s Spawn, err error) {
 			r.Candidates = append(r.Candidates, placementCandidateRecord{Host: c.name, Outcome: outcome, Reason: placementSkipReason(reason), Score: c.score, PlacementSignals: signals})
 		}
 	}
+	if len(r.Candidates) == 0 && d.contactedHost != "" {
+		outcome, reason := "refused", exitReason(exitCode(err))
+		if d.started || d.placed {
+			outcome, reason = "chosen", "available"
+		}
+		r.Candidates = append(r.Candidates, placementCandidateRecord{Host: d.contactedHost, Outcome: outcome, Reason: reason})
+	}
 	stateReason := ""
 	if a.fleetLog != nil && a.fleetLog.hosts != nil {
 		r.StateSource = a.fleetLog.hosts.Source
@@ -222,9 +240,11 @@ func (a *App) finishPlacement(ctx context.Context, s Spawn, err error) {
 			r.Outcome = "refused"
 		}
 	}
-	if d.execution.Host != "" {
-		repo, account := r.Repo, r.AccountKey
+	if d.execution.Host != "" && (d.started || d.placed) {
+		family, pool, repo, account := r.Family, r.Pool, r.Repo, r.AccountKey
 		r.placementExecution = d.execution
+		r.Family = firstNonempty(r.Family, family)
+		r.Pool = firstNonempty(r.Pool, pool)
 		r.Repo = firstNonempty(r.Repo, repo)
 		r.AccountKey = firstNonempty(r.AccountKey, account)
 		r.Role = firstNonempty(r.Role, placementRole(s))
