@@ -94,16 +94,38 @@ func TestSelectionExcludesLocalHostHubDoesNotAccept(t *testing.T) {
 	}
 }
 
-// A forced local spawn never reads the hub's refusal: it stays a placement the
-// caller chose (operator decision 2026-11-02, hk 2649).
+// A forced local spawn is not refused, whichever way the host is spelled and
+// whether the profile is pinned or chosen automatically: automatic selection
+// runs before placement and reads the same hub view (operator decision
+// 2026-11-02, hk 2649).
 func TestForcedLocalSpawnIgnoresHubRefusal(t *testing.T) {
-	a, _, _, _, _ := planFixture(t)
-	a.Config.Local["spawn"] = true
-	a.Source.(*fakePlacementSource).hosts = []HostView{{Name: a.machine(), Connected: true, Reason: "not_accepting(on_battery)"}}
-	for _, host := range []string{"local", a.machine()} {
-		remote, rec, e := a.placeForced(context.Background(), Spawn{Host: host, Profile: "sonnet"}, "")
-		if e != nil || remote || rec["source"] != "forced" {
-			t.Fatalf("host %s: remote=%v rec=%v err=%v", host, remote, rec, e)
+	for _, profile := range []string{"auto", "cmd-dsflash41"} {
+		for _, spelling := range []string{"local", "machine"} {
+			t.Run(profile+"/"+spelling, func(t *testing.T) {
+				a, s, _, _ := cmdFixture(t)
+				const key = "example:0123456789abcdef"
+				a.Source = &fakePlacementSource{
+					hosts:    []HostView{{Name: a.machine(), Connected: true, Reason: "not_accepting(on_battery)"}},
+					presence: []PresenceRecord{{HostID: "local", AccountKey: key, LastSeen: a.Now()}},
+					accounts: map[string]SharedAccount{key: {Key: key, Observed: true, Fresh: true, Quota: &PoolView{Status: "ok", Class: "spend", Blocking: ptrF(0)}}},
+				}
+				q := a.Quota.(*fakeQuota)
+				q.GateDo = func(r QuotaRequest) (string, error) {
+					if r.AccountKey != "" {
+						return `{"schema":"scopefuel.gate.v1","provider_id":"example","account_key":"` + r.AccountKey + `","ok":true,"exit_code":0}`, nil
+					}
+					return "pool=example\n", nil
+				}
+				q.CatalogRows = []CatalogRow{{Profile: "cmd-dsflash41", Effort: "high", Grade: "A+", Pool: "example", Gate: "default", ModelID: "provider/example-model"}}
+				q.PoolViews = map[string]PoolView{"example": {Status: "ok", Class: "spend"}}
+				s.Profile, s.Host = profile, "local"
+				if spelling == "machine" {
+					s.Host = a.machine()
+				}
+				if e := a.Spawn(context.Background(), s); e != nil {
+					t.Fatalf("forced local spawn refused: %v", e)
+				}
+			})
 		}
 	}
 }

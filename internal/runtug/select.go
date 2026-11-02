@@ -535,7 +535,9 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 			h.load = a.localLoad(ctx)
 			if hv, reported := sp.hub[name]; reported {
 				h.score = hv.Score
-				if strings.Contains(hv.Reason, "not_accepting") {
+				// Selection runs before placement, so a forced local spawn
+				// reaches this too; only automatic placement is refused.
+				if (s.Host == "" || s.Host == "auto") && strings.Contains(hv.Reason, "not_accepting") {
 					h.excluded, h.hubReason = true, hv.Reason
 				}
 			}
