@@ -1093,6 +1093,7 @@ func (a *App) spawnRemote(ctx context.Context, s Spawn, brief string, c *placeCa
 	}
 	if s.placement != nil {
 		s.placement.started = true
+		s.placement.execution = placementExecution{Host: c.name}
 	}
 	r := a.Runner.Run(ctx, Command{Name: "ssh", Args: []string{"-o", "BatchMode=yes", "--", target, "env HERDR_SESSION=" + shellQuote(session) + " runtug _spawn-stdin"}, Input: string(b)})
 	s.placement.remoteReceipt(c.name, r.Out)

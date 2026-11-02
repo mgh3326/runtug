@@ -1274,7 +1274,9 @@ delivery pass has a two-second budget and cannot change the spawn result.
 Records first enter owner-only JSON files under
 `$XDG_STATE_HOME/runtug/placements` (default
 `~/.local/state/runtug/placements`). Each subsequent runtug invocation retries
-up to 32 pending files within the same budget. A failed delivery warns and
+up to 32 pending records within the same budget; unrelated files do not count.
+A saved delivery cursor rotates attempts across invocations so unresolved
+legacy jobs cannot starve later records. A failed delivery warns and
 keeps the file. An identical `(job_id, attempt)` payload replays as HTTP 200.
 HTTP 409 warns and drops the conflicting file. Local attempt markers under
 `placement-attempts` survive delivery so later decisions do not reuse keys.

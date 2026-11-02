@@ -584,6 +584,7 @@ func (a *App) spawnHub(ctx context.Context, s Spawn, brief string, c *placeCandi
 		}
 		if s.placement != nil {
 			s.placement.started = true
+			s.placement.execution = placementExecution{Host: c.name}
 		}
 		reply, err := hub.Spawn(ctx, HubSpawnRequest{RequestID: id, Machine: c.name, CWDKey: key, Brief: HubBrief{Doc: doc}, Checkout: checkout, Args: args, WaitSeconds: wait})
 		s.placement.remoteReceipt(c.name, reply.StdoutTail)

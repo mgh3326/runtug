@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -222,9 +223,10 @@ func (a *App) finishPlacement(ctx context.Context, s Spawn, err error) {
 		}
 	}
 	if d.execution.Host != "" {
-		repo := r.Repo
+		repo, account := r.Repo, r.AccountKey
 		r.placementExecution = d.execution
 		r.Repo = firstNonempty(r.Repo, repo)
+		r.AccountKey = firstNonempty(r.AccountKey, account)
 		r.Role = firstNonempty(r.Role, placementRole(s))
 		r.Profile = firstNonempty(r.Profile, s.Profile)
 	}
@@ -317,13 +319,28 @@ func (a *App) deliverPlacements(ctx context.Context) {
 		a.warn("placement delivery unavailable; records remain spooled")
 		return
 	}
-	for i, ent := range entries {
-		if i >= 32 || ctx.Err() != nil {
+	cursorPath := filepath.Join(a.stateDir(), "placement-cursor")
+	cursor, _ := os.ReadFile(cursorPath)
+	start := sort.Search(len(entries), func(i int) bool { return entries[i].Name() > string(cursor) })
+	lastAttempted := ""
+	defer func() {
+		if lastAttempted != "" {
+			if e := atomicFile(cursorPath, []byte(lastAttempted), 0600); e != nil {
+				a.warn("placement delivery cursor could not be saved")
+			}
+		}
+	}()
+	attempted := 0
+	for offset := 0; offset < len(entries); offset++ {
+		if attempted >= 32 || ctx.Err() != nil {
 			break
 		}
+		ent := entries[(start+offset)%len(entries)]
 		if ent.Type()&os.ModeSymlink != 0 || ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
 			continue
 		}
+		attempted++
+		lastAttempted = ent.Name()
 		path := filepath.Join(dir, ent.Name())
 		b, e := os.ReadFile(path)
 		var p pendingPlacement

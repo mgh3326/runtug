@@ -395,6 +395,15 @@ func TestPlacementRemoteTransportsRecordEveryOutcomeAndSource(t *testing.T) {
 					if outcome == "placed" && (r.Host != "host-b" || r.Model != "executing-model" || r.AccountKey != "claude:fedcba9876543210" || r.PaneID != "w:remote") {
 						t.Fatalf("must record the executing session, not initiator-model: %+v", r)
 					}
+					if outcome == "failed" && r.Host != "host-b" {
+						t.Fatalf("failed remote launch lost the contacted host: %+v", r)
+					}
+					if outcome == "failed" && source == "auto" {
+						chosen := slices.ContainsFunc(r.Candidates, func(c placementCandidateRecord) bool { return c.Host == "host-b" && c.Outcome == "chosen" })
+						if !chosen {
+							t.Fatalf("failed remote launch marked its host as skipped: %+v", r.Candidates)
+						}
+					}
 				})
 			}
 		}
@@ -404,6 +413,7 @@ func TestPlacementRemoteTransportsRecordEveryOutcomeAndSource(t *testing.T) {
 func TestPlacementLegacyRemoteMetadataWaitsForHKAndFreezes(t *testing.T) {
 	a, s := remotePlacementFixture(t, "ssh", "auto", "placed", false)
 	h := placementServer(t, a)
+	s.AccountKey = "claude:0123456789abcdef"
 	if err := a.Spawn(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +435,72 @@ func TestPlacementLegacyRemoteMetadataWaitsForHKAndFreezes(t *testing.T) {
 	_ = json.Unmarshal(requests[0], &r)
 	if r.Role == "" || r.Family == "" || r.TaskID == 0 || r.Host == "" {
 		t.Fatalf("resolved placed record misses required metadata: %+v", r)
+	}
+	if r.AccountKey != s.AccountKey {
+		t.Fatalf("legacy executor lost the admitted account: got %q, want %q", r.AccountKey, s.AccountKey)
+	}
+}
+
+func TestPlacementDeliverySkipsStrayEntriesWithoutUsingBudget(t *testing.T) {
+	a, s, _, _ := cmdFixture(t)
+	h := placementServer(t, a)
+	dir := filepath.Join(a.stateDir(), "placements")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("000-stray-%02d", i))
+		var err error
+		switch i % 3 {
+		case 0:
+			err = os.WriteFile(path, []byte("not a record"), 0600)
+		case 1:
+			err = os.Mkdir(path+".json", 0700)
+		case 2:
+			err = os.Symlink("absent.json", path+".json")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.Spawn(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	_ = onePlacement(t, h)
+}
+
+func TestPlacementDeliveryProgressesPastUnresolvablePrefix(t *testing.T) {
+	a := testApp(t)
+	h := placementServer(t, a)
+	for i := 0; i < 32; i++ {
+		p := pendingPlacement{Record: placementRecord{
+			JobID: fmt.Sprintf("a-unresolved-%02d", i), TaskID: 42, DecidedAt: a.Now().Format(time.RFC3339Nano),
+			Source: "auto", Ranking: "unknown", StateSource: "unknown", Outcome: "placed", Candidates: []placementCandidateRecord{},
+			placementExecution: placementExecution{Host: "host-b", Role: "worker"},
+		}, ResolveJob: true}
+		if err := a.spoolPlacement(&p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready := pendingPlacement{Record: placementRecord{
+		JobID: "z-ready", TaskID: 42, DecidedAt: a.Now().Format(time.RFC3339Nano),
+		Source: "auto", Ranking: "unknown", StateSource: "unknown", Outcome: "placed", Candidates: []placementCandidateRecord{},
+		placementExecution: placementExecution{Host: "host-b", Family: "anthropic", Role: "worker", Model: "model-a", PaneID: "w:remote"},
+	}}
+	if err := a.spoolPlacement(&ready); err != nil {
+		t.Fatal(err)
+	}
+	a.flushPlacements()
+	if requests, _ := h.snapshot(); len(requests) != 0 {
+		t.Fatal("first pass exceeded the 32-record attempt budget")
+	}
+	// Progress must survive a new CLI process, not just another call on App.
+	next := &App{Home: a.Home, Config: a.Config, Out: io.Discard, Err: io.Discard, Now: a.Now, JobStore: a.JobStore}
+	if err := next.Run(context.Background(), []string{"help"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, rows := h.snapshot(); rows["z-ready/1"] == nil {
+		t.Fatalf("healthy placement is stuck behind unresolved jobs: %d rows", len(rows))
 	}
 }
 
