@@ -193,9 +193,11 @@ type selPlan struct {
 	before       *selPlan
 	outcome      string
 	// roleSkips names the lead/consult families skipped role_effort_unplaced;
-	// escalation records a chosen rung above the role effort.
-	roleSkips  []map[string]any
-	escalation map[string]any
+	// escalation records a chosen rung above the role effort;
+	// familyEffort records a chosen rung whose role effort family_effort set.
+	roleSkips    []map[string]any
+	escalation   map[string]any
+	familyEffort map[string]any
 	// capsGap names required caps no usable host declares, for the
 	// refusal text (host_fit.go).
 	capsGap string
@@ -303,7 +305,7 @@ func (a *App) seatFor(row CatalogRow, req selReq) (string, *Seat, string) {
 				reason = "family_filtered"
 			case !slices.Contains(roles, req.role):
 				reason = "seat_role"
-			case req.role == "builder" && row.Gate != "default":
+			case req.role == "builder" && row.Gate != "default" && !req.route.familyAdmitsGate(row):
 				reason = "builder_gate"
 			case (req.role == "tester" || req.role == "reviewer") && req.builderFamily == "":
 				reason = "builder_family_unreadable"
@@ -609,10 +611,10 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			p.degraded = append(p.degraded, "credit_pool_status_unavailable")
 		}
 	}
-	roleCap := req.route.roleEffortCap()
 	var pending []*selCand
 	for _, row := range rows {
 		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
+		roleCap := req.route.roleEffortFor(row)
 		_, validGrade := gradeOrder[row.Grade]
 		switch {
 		case row.RetiredAt != nil:
@@ -627,7 +629,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			c.reason = "grade_insufficient"
 		case row.Gate != "default" && row.Gate != "escalation" && row.Gate != "consult_only":
 			c.reason = "gate_unknown"
-		case row.Gate != "default" && !req.allowEscalation:
+		case row.Gate != "default" && !req.allowEscalation && !req.route.familyAdmitsGate(row):
 			c.reason = "gate_class"
 		case aboveEffort(row.Effort, roleCap) && !req.allowEscalation:
 			c.reason = reasonAboveRoleEffort
@@ -720,7 +722,7 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 		c.host, c.outcome, c.code = judgments[len(judgments)-1].Host, "chosen", outcomeAdmitted
 		p.chosen, p.outcome = c, outcomeAdmitted
 	}
-	p.markRoleEffort(roleCap)
+	p.markRoleEffort()
 	if p.chosen == nil {
 		return a.selectionRefused(ctx, s, req, p)
 	}
@@ -728,21 +730,23 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 }
 
 // markRoleEffort records how the lead/consult role-effort cap shaped the
-// selection. Without --allow-escalation a rung above the role effort is never
+// selection. A family's role effort is the role's effort unless family_effort
+// names the family. Without --allow-escalation a rung above it is never
 // a candidate (above_role_effort). When its family's role-effort rung was not
 // placed either — dropped by seat rules, refused at its gate (an unplaced E6
 // seat), or absent from the catalog — the family is skipped
 // role_effort_unplaced with that cause, so the choice falls through to the
 // next family at the role effort instead of climbing. With
 // --allow-escalation a chosen rung above the role effort is the escalation.
-func (p *selPlan) markRoleEffort(roleCap string) {
-	if roleCap == "" {
+func (p *selPlan) markRoleEffort() {
+	rt := p.req.route
+	if rt.roleEffortCap() == "" {
 		return
 	}
 	placed := map[string]bool{}
 	causes := map[string]string{}
 	for _, c := range p.cands {
-		if c.row.Effort != roleCap {
+		if c.row.Effort != rt.roleEffortFor(c.row) {
 			continue
 		}
 		if c.outcome == "chosen" || c.outcome == "below_choice" {
@@ -757,19 +761,25 @@ func (p *selPlan) markRoleEffort(roleCap string) {
 		}
 		return "no_role_effort_rung"
 	}
-	if c := p.chosen; c != nil && aboveEffort(c.row.Effort, roleCap) {
-		p.escalation = map[string]any{"profile": c.row.Profile, "role_effort": roleCap, "chosen_effort": c.row.Effort, "by": "allow_escalation", "role_effort_cause": cause(c.row.Profile)}
-		if placed[c.row.Profile] {
-			p.escalation["role_effort_cause"] = "ranked_after"
+	if c := p.chosen; c != nil {
+		roleCap := rt.roleEffortFor(c.row)
+		if aboveEffort(c.row.Effort, roleCap) {
+			p.escalation = map[string]any{"profile": c.row.Profile, "role_effort": roleCap, "chosen_effort": c.row.Effort, "by": "allow_escalation", "role_effort_cause": cause(c.row.Profile)}
+			if placed[c.row.Profile] {
+				p.escalation["role_effort_cause"] = "ranked_after"
+			}
+		} else if key := rt.familyEffortKey(c.row); key != "" && c.row.Effort == roleCap {
+			p.familyEffort = map[string]any{"profile": c.row.Profile, "key": key, "effort": roleCap, "gate": c.row.Gate}
 		}
 	}
-	// An explicit --effort pins another rung: the role-effort rung was never
-	// asked, so it cannot be called unplaced.
-	if p.req.allowEscalation || p.req.effort != "" && p.req.effort != roleCap {
+	if p.req.allowEscalation {
 		return
 	}
 	for _, c := range p.cands {
-		if c.reason != reasonAboveRoleEffort || placed[c.row.Profile] {
+		roleCap := rt.roleEffortFor(c.row)
+		// An explicit --effort pins another rung: the role-effort rung was
+		// never asked, so it cannot be called unplaced.
+		if c.reason != reasonAboveRoleEffort || placed[c.row.Profile] || p.req.effort != "" && p.req.effort != roleCap {
 			continue
 		}
 		c.reason, c.outcome = reasonRoleEffortUnplaced, "dropped:"+reasonRoleEffortUnplaced
@@ -992,6 +1002,9 @@ func (p *selPlan) record() map[string]any {
 		}
 		if p.escalation != nil {
 			rt["escalation"] = p.escalation
+		}
+		if p.familyEffort != nil {
+			rt["family_effort_chosen"] = p.familyEffort
 		}
 		rec["routing"] = rt
 	}

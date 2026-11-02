@@ -115,7 +115,7 @@ func TestLeadAllowEscalationRecordsEscalation(t *testing.T) {
 	}
 
 	// An escalated rung is reported at its own effort, not the role's.
-	if got := sel.req.route.effort(sel.chosen.row.Effort); got != "max" {
+	if got := sel.req.route.effort(sel.chosen.row); got != "max" {
 		t.Fatalf("escalated effort must be the rung's: %s", got)
 	}
 }

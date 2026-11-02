@@ -115,7 +115,7 @@ func (a *App) resolveCmd(ctx context.Context, args []string) error {
 	} else {
 		c := sel.chosen
 		r.Seat, r.ModelID, r.Pool, r.Tier, r.RungEffort = c.seatName, c.row.ModelID, c.row.Pool, c.tierName, c.row.Effort
-		r.Profile, r.Effort = c.seat.Canon, route.effort(c.row.Effort)
+		r.Profile, r.Effort = c.seat.Canon, route.effort(c.row)
 		r.AccountKey, r.Host = c.accountKey, c.host
 		if c.seat.Kind == "omp" && (role == "implementer" || role == "explorer") {
 			r.OMPAgent = a.ompAgent(c.row.ModelID)
