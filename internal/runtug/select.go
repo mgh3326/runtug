@@ -674,7 +674,6 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 	for _, row := range rows {
 		c := &selCand{row: row, tier: -1, ignoreGrade: req.route.top()}
 		roleCap := req.route.roleEffortFor(row)
-		_, validGrade := gradeOrder[row.Grade]
 		switch {
 		case row.RetiredAt != nil:
 			c.reason = "retired"
@@ -682,8 +681,10 @@ func (a *App) selectFor(ctx context.Context, s Spawn, req selReq) (*selPlan, err
 			c.reason = "catalog_incomplete"
 		case !req.route.admits(row.Profile):
 			c.reason = "role_filtered"
-		case !validGrade:
+		case !validCatalogGrade(row.Grade):
 			c.reason = "grade_invalid"
+		case row.Grade == gradeUnrated && !req.route.top():
+			c.reason = "grade_unrated"
 		case !req.route.top() && gradeOrder[row.Grade] < gradeOrder[req.grade]:
 			c.reason = "grade_insufficient"
 		case row.Gate != "default" && row.Gate != "escalation" && row.Gate != "consult_only":
