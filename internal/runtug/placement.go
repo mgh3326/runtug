@@ -180,6 +180,7 @@ type placeCandidate struct {
 	awake       bool
 	wakeable    bool
 	excluded    string
+	hubReason   string // the hub's full reason when it refused this host
 	login       string
 	judgment    *quotaJudgment
 	load        *float64
@@ -445,6 +446,10 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 	local.load = a.localLoad(ctx)
 	if hv, reported := hub[machine]; reported {
 		local.score = hv.Score
+		// A forced local spawn never comes through here, so it is not refused.
+		if local.excluded == "" && strings.Contains(hv.Reason, "not_accepting") {
+			local.excluded, local.hubReason = "not_accepting", hv.Reason
+		}
 	}
 	maxRatio, hasGuard := number(a.Config.Local, "max_load_ratio")
 	if local.load != nil && hasGuard && *local.load >= maxRatio {
@@ -482,7 +487,7 @@ func (a *App) plan(ctx context.Context, s Spawn, pool string, waited time.Durati
 		if hv, reported := hub[name]; reported {
 			switch {
 			case strings.Contains(hv.Reason, "not_accepting"):
-				c.excluded = "not_accepting"
+				c.excluded, c.hubReason = "not_accepting", hv.Reason
 			case !hv.Connected:
 			default:
 				c.awake = true
@@ -635,6 +640,9 @@ func (p *placePlan) record(chosen string) map[string]any {
 		}
 		if c.outcome != "" {
 			row["outcome"] = c.outcome
+		}
+		if c.hubReason != "" {
+			row["hub_reason"] = c.hubReason
 		}
 		if c.judgment != nil {
 			row["quota_gate"] = *c.judgment

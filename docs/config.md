@@ -773,6 +773,11 @@ tries the next holder of that account. An account-scoped quota refusal ends
 that account attempt without retrying the same quota on another host. Local
 judgments retain `source=local` and the selected account key.
 
+A host the hub reports as `not_accepting` (operator override, memory pressure,
+laptop on battery) is excluded, the local host included. The placement record
+keeps the hub's text in `hub_reason`. A forced spawn (`--host local` or the
+host's own name) does not read this and is not refused.
+
 Admission is host-first. Hosts that fit the work — required `--tags`
 declared, role and grade accepted, not excluded, awake or wakeable — are
 ranked: awake hosts under the load threshold, then awake hosts without a load

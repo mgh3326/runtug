@@ -467,16 +467,17 @@ func taskPriority(v any) (int, bool) {
 
 // selHost is one spawn host as the presence rule sees it.
 type selHost struct {
-	name     string
-	local    bool
-	cfg      map[string]any
-	presence string
-	awake    bool
-	wakeable bool
-	eligible bool
-	excluded bool
-	load     *float64
-	score    *float64
+	name      string
+	local     bool
+	cfg       map[string]any
+	presence  string
+	awake     bool
+	wakeable  bool
+	eligible  bool
+	excluded  bool
+	hubReason string // the hub's full reason when it refused this host
+	load      *float64
+	score     *float64
 	// over marks a host at or above its load threshold (local
 	// max_load_ratio, else placement.load_threshold); it ranks last among
 	// awake hosts. fit names why the host cannot take this work at all
@@ -534,6 +535,9 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 			h.load = a.localLoad(ctx)
 			if hv, reported := sp.hub[name]; reported {
 				h.score = hv.Score
+				if strings.Contains(hv.Reason, "not_accepting") {
+					h.excluded, h.hubReason = true, hv.Reason
+				}
 			}
 			if !boolean(cfg, "spawn", true) {
 				h.excluded = true
@@ -544,7 +548,7 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 				h.awake = hv.Connected
 				h.load, h.score = hv.LoadRatio, hv.Score
 				if strings.Contains(hv.Reason, "not_accepting") {
-					h.excluded = true
+					h.excluded, h.hubReason = true, hv.Reason
 				}
 			} else {
 				h.awake = !h.wakeable || sp.hub == nil
@@ -566,6 +570,8 @@ func (a *App) newSelPresence(ctx context.Context, s Spawn, req selReq) *selPrese
 		refusal := roleRefusal(cfg, req.role, grade)
 		h.eligible = len(missing) == 0 && refusal == ""
 		switch {
+		case h.hubReason != "":
+			h.fit = h.hubReason
 		case h.excluded:
 			h.fit = "excluded"
 		case len(missing) > 0:
