@@ -166,6 +166,12 @@ Capabilities use the `--tags` vocabulary: `macos`, `linux`, `unity`,
 `xcode`, `gpu`, `heavy-go`. A task needing a capability goes only to hosts
 that declare it; the others still get the work they can do.
 
+In `[local]` and `[hosts.NAME]`, `caps` must be a TOML array containing only
+the capability strings listed above. An empty array declares no capabilities.
+Booleans, numbers, strings, tables, nonstring array entries, and unknown
+capability names refuse config loading with exit 70. The error names the host's
+`caps` key and the invalid value.
+
 Recommended declarations by machine class:
 
 | Machine class | `tags` | Limits |

@@ -8,6 +8,62 @@ import (
 	"testing"
 )
 
+func TestConfigCaps(t *testing.T) {
+	for _, host := range []string{"local", "hosts.pi"} {
+		t.Run(host, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, value, wantCaps, wantErr string
+			}{
+				{name: "known_list", value: `["macos", "linux", "unity", "xcode", "gpu", "heavy-go"]`, wantCaps: "macos,linux,unity,xcode,gpu,heavy-go"},
+				{name: "empty_list", value: `[]`},
+				{name: "omitted"},
+				{name: "true", value: `true`, wantErr: "must be a list of known capability strings, got true"},
+				{name: "false", value: `false`, wantErr: "must be a list of known capability strings, got false"},
+				{name: "integer", value: `42`, wantErr: "must be a list of known capability strings, got 42"},
+				{name: "float", value: `1.5`, wantErr: "must be a list of known capability strings, got 1.5"},
+				{name: "string", value: `"linux"`, wantErr: `must be a list of known capability strings, got "linux"`},
+				{name: "nested_table", value: `{ linux = true }`, wantErr: `must be a list of known capability strings, got map[string]interface {}{"linux":true}`},
+				{name: "unknown_capability", value: `["teleport"]`, wantErr: `contains an invalid capability "teleport"`},
+				{name: "uppercase", value: `["Unity"]`, wantErr: `contains an invalid capability "Unity"`},
+				{name: "empty_capability", value: `[""]`, wantErr: `contains an invalid capability ""`},
+				{name: "mixed_list", value: `["linux", true]`, wantErr: "contains an invalid capability true"},
+				{name: "nested_list", value: `[["linux"]]`, wantErr: `contains an invalid capability []interface {}{"linux"}`},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					body := "[" + host + "]\n"
+					if tc.value != "" {
+						body += "caps = " + tc.value + "\n"
+					}
+					path := filepath.Join(t.TempDir(), "hosts.toml")
+					if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					cfg, err := LoadConfig(path)
+					if tc.wantErr != "" {
+						if exitCode(err) != exitConfig {
+							t.Fatalf("caps = %s: want exit 70, got %v", tc.value, err)
+						}
+						if want := host + ".caps " + tc.wantErr; err.Error() != want {
+							t.Fatalf("want error %q, got %q", want, err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					h := cfg.Local
+					if host != "local" {
+						h = cfg.Hosts["pi"]
+					}
+					if got := strings.Join(hostCaps(h), ","); got != tc.wantCaps {
+						t.Fatalf("want caps %q, got %q", tc.wantCaps, got)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestConfigPathFleetResolution(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
